@@ -17,7 +17,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const BG_IMAGE = require("../../../assets/images/background-blur.png");
 
-export default function VerifyOTPScreen() {
+export default function OTPScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
 
@@ -30,10 +30,13 @@ export default function VerifyOTPScreen() {
   const inputRefs = useRef<Array<RNTextInput | null>>([]);
 
   const handleChangeText = (text: string, index: number) => {
+    // Clean non-numeric characters
     const cleanText = text.replace(/[^0-9]/g, "");
+
     const newOtp = [...otp];
 
     if (cleanText.length > 1) {
+      // Handle pasted multi-digit OTP string
       const pastedDigits = cleanText.slice(0, 6).split("");
       for (let i = 0; i < 6; i++) {
         newOtp[i] = pastedDigits[i] || "";
@@ -42,6 +45,7 @@ export default function VerifyOTPScreen() {
       const nextIndex = Math.min(pastedDigits.length, 5);
       inputRefs.current[nextIndex]?.focus();
     } else {
+      // Handle single digit typing
       newOtp[index] = cleanText;
       setOtp(newOtp);
 
@@ -73,10 +77,11 @@ export default function VerifyOTPScreen() {
     setIsSubmitting(true);
 
     try {
+      // Perform OTP verification logic here
       setTimeout(() => {
         setIsSubmitting(false);
         // Navigate to reset password screen
-        router.replace("/reset-password" as any);
+        router.replace("/auth/ResetPassword" as any);
       }, 1000);
     } catch (err: any) {
       setIsSubmitting(false);
@@ -93,7 +98,7 @@ export default function VerifyOTPScreen() {
     <ImageBackground source={BG_IMAGE} className="flex-1" resizeMode="cover">
       {/* Top Left Back Arrow Button */}
       <TouchableOpacity
-        className="absolute left-4 z-30 p-2 "
+        className="absolute left-4 z-30 p-2 rounded-full "
         style={{ top: Math.max(insets.top + 8, 16) }}
         onPress={() => router.back()}
       >
@@ -113,12 +118,11 @@ export default function VerifyOTPScreen() {
           <View className="w-full max-w-[380px]">
             {/* Header Block */}
             <View className="items-start mb-6 w-full">
-              <Text className="text-4xl font-extrabold text-[#000000] text-center mb-1">
-                Verification Code
+              <Text className="text-5xl font-extrabold text-[#000000] text-left mb-1">
+                One-time Pin
               </Text>
               <Text className="text-md text-[#000000] text-left">
-                Enter the 6-digit verification code sent to your registered
-                email address.
+                Enter Verification Code
               </Text>
             </View>
 
@@ -170,18 +174,15 @@ export default function VerifyOTPScreen() {
               disabled={isSubmitting}
             >
               <Text className="text-white text-base font-bold">
-                {isSubmitting ? "Verifying..." : "Verify Code"}
+                Verify Code
               </Text>
             </TouchableOpacity>
 
             {/* Resend Code Link */}
             <View className="flex-row justify-center items-center">
-              <Text className="text-sm text-[#4A654C]">
-                Didn't receive the code?{" "}
-              </Text>
               <TouchableOpacity onPress={handleResendCode}>
-                <Text className="text-sm font-bold text-[#2E7D32]">
-                  Resend Code
+                <Text className="text-md  text-[#2E7D32] underline">
+                  Resend Verification Code
                 </Text>
               </TouchableOpacity>
             </View>

@@ -17,7 +17,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const BG_IMAGE = require("../../../assets/images/background-blur.png");
-const LF2_IMAGE = require("../../../assets/images/LF2.png");
+const LF3_IMAGE = require("../../../assets/images/LF3.png");
 const LOGO2_IMAGE = require("../../../assets/images/logo2.png");
 
 const GENDER_OPTIONS = ["Male", "Female", "Other", "Prefer not to say"];
@@ -123,7 +123,7 @@ export default function SignUpScreen() {
         style={{ top: Math.max(insets.top + 8, 16) }}
       >
         <Image
-          source={LF2_IMAGE}
+          source={LF3_IMAGE}
           className="w-[140px] h-[42px]"
           style={{ width: 140, height: 42 }}
           resizeMode="contain"
@@ -383,7 +383,7 @@ export default function SignUpScreen() {
 
             {/* Submit Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90 mt-1"
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center shadow-sm active:opacity-90 mt-1"
               onPress={handleSignUp}
               disabled={isLoading}
             >
@@ -397,8 +397,10 @@ export default function SignUpScreen() {
               <Text className="text-sm text-[#4A654C]">
                 Already have an account?{" "}
               </Text>
-              <TouchableOpacity onPress={() => router.push("/login" as any)}>
-                <Text className="text-sm font-bold text-[#2E7D32]">
+              <TouchableOpacity
+                onPress={() => router.push("/auth/Login" as any)}
+              >
+                <Text className="text-sm font-bold text-[#72AF5B]">
                   Sign In
                 </Text>
               </TouchableOpacity>

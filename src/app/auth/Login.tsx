@@ -17,7 +17,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const BG_IMAGE = require("../../../assets/images/background-blur.png");
-const LF2_IMAGE = require("../../../assets/images/LF2.png");
+const LF3_IMAGE = require("../../../assets/images/LF3.png");
 const LOGO2_IMAGE = require("../../../assets/images/logo2.png");
 
 export default function LoginScreen() {
@@ -25,8 +25,8 @@ export default function LoginScreen() {
   const { signIn, isLoading } = useAuth();
   const insets = useSafeAreaInsets();
 
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  const [email, setEmail] = useState("farmer@example.com");
+  const [password, setPassword] = useState("password123");
   const [showPassword, setShowPassword] = useState(false);
 
   const [emailError, setEmailError] = useState("");
@@ -62,7 +62,7 @@ export default function LoginScreen() {
         style={{ top: Math.max(insets.top + 8, 16) }}
       >
         <Image
-          source={LF2_IMAGE}
+          source={LF3_IMAGE}
           className="w-[140px] h-[42px]"
           style={{ width: 140, height: 42 }}
           resizeMode="contain"
@@ -159,7 +159,7 @@ export default function LoginScreen() {
               ) : null}
               <TouchableOpacity
                 className="self-end mt-1.5"
-                onPress={() => router.push("/forgot-password" as any)}
+                onPress={() => router.push("/auth/ForgotPassword" as any)}
               >
                 <Text className="text-md p-2 text-[#000000]">
                   Forgot Password?
@@ -169,7 +169,7 @@ export default function LoginScreen() {
 
             {/* Submit Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90 mt-1"
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center shadow-sm active:opacity-90 mt-1"
               onPress={handleLogin}
               disabled={isLoading}
             >
@@ -183,8 +183,10 @@ export default function LoginScreen() {
               <Text className="text-sm text-[#4A654C]">
                 Don't have an account?{" "}
               </Text>
-              <TouchableOpacity onPress={() => router.push("/signup" as any)}>
-                <Text className="text-sm font-bold text-[#2E7D32] ">
+              <TouchableOpacity
+                onPress={() => router.push("/auth/Signup" as any)}
+              >
+                <Text className="text-sm font-bold text-[#72AF5B] ">
                   Sign Up
                 </Text>
               </TouchableOpacity>

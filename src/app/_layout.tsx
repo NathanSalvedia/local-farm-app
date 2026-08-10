@@ -13,8 +13,8 @@ import { useColorScheme } from "react-native";
 
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
-import { LoadingScreen } from "@/components/loading-screen";
-import { AnimatedSplashOverlay } from "@/components/splash-screen";
+import { LoadingScreen } from "../components/LoadingScreen";
+import { AnimatedSplashOverlay } from "../components/SplashScreen";
 import { AuthProvider } from "@/context/auth-context";
 import { useAuth } from "@/hooks/use-auth";
 
@@ -53,27 +53,17 @@ function RootNavigation() {
   }, [appPhase, isLoading]);
 
   useEffect(() => {
-    // 3. Once ready, perform route guard check & navigation based on user role
+    // 3. Navigation handling after splash/loading phase
     if (appPhase !== "ready") return;
 
     const firstSegment = (segments[0] as string) || "";
-    const inAuthGroup = firstSegment === "(auth)";
-    const inAdminGroup = firstSegment === "(admin)";
+    const inAuthGroup = firstSegment === "auth";
 
-    if (!user && !inAuthGroup) {
-      // Unauthenticated -> navigate to login page
-      router.replace("/(auth)/login" as any);
-    } else if (user) {
-      if (inAuthGroup) {
-        // Authenticated -> Redirect to role-specific dashboard
-        if (user.role === "admin") {
-          router.replace("/(admin)" as any);
-        } else {
-          router.replace("/(user)" as any);
-        }
-      } else if (user.role !== "admin" && inAdminGroup) {
-        // Guard: Prevent regular user from entering admin route
-        router.replace("/(user)" as any);
+    if (user && inAuthGroup) {
+      if (user.role === "admin") {
+        router.replace("/admin" as any);
+      } else {
+        router.replace("/user/NewsFeed" as any);
       }
     }
   }, [appPhase, user, segments]);
@@ -83,12 +73,12 @@ function RootNavigation() {
     return <AnimatedSplashOverlay />;
   }
 
-  // Phase 2: White Loading Screen with "Loading..." text & green logo
+  // Phase 2: White Loading Screen with animated running green border
   if (appPhase === "loading" || isLoading) {
     return <LoadingScreen />;
   }
 
-  // Phase 3: Ready -> Render App Navigation
+  // Phase 3: Ready -> Render App Navigation (Directly renders whichever route is visited)
   return (
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
       <Slot />

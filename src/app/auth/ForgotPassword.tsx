@@ -44,7 +44,7 @@ export default function ForgotPasswordScreen() {
       // Simulate sending OTP request
       setTimeout(() => {
         setIsLoading(false);
-        setShowModal(true); // Show success modal
+        setShowModal(true);
       }, 1000);
     } catch (err: any) {
       setIsLoading(false);
@@ -56,7 +56,7 @@ export default function ForgotPasswordScreen() {
 
   const handleModalContinue = () => {
     setShowModal(false);
-    router.push("/verify-otp" as any);
+    router.push("/auth/VerifyOtp" as any);
   };
 
   return (
@@ -133,7 +133,7 @@ export default function ForgotPasswordScreen() {
 
             {/* Send Code Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-6"
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-6"
               onPress={handleSendOtp}
               disabled={isLoading}
             >
@@ -147,7 +147,9 @@ export default function ForgotPasswordScreen() {
               <Text className="text-sm text-[#4A654C]">
                 Remember your password?{" "}
               </Text>
-              <TouchableOpacity onPress={() => router.push("/login" as any)}>
+              <TouchableOpacity
+                onPress={() => router.push("/auth/Login" as any)}
+              >
                 <Text className="text-sm font-bold text-[#2E7D32]">
                   Sign In
                 </Text>
@@ -207,7 +209,7 @@ export default function ForgotPasswordScreen() {
 
             {/* Continue Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-3"
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-3"
               onPress={handleModalContinue}
             >
               <Text className="text-white text-base font-bold">
@@ -217,7 +219,7 @@ export default function ForgotPasswordScreen() {
 
             {/* Close / Cancel Button */}
             <TouchableOpacity
-              className="w-full h-11 border border-gray-200 rounded-xl items-center justify-center active:opacity-70"
+              className="w-full h-11 border border-gray-300 rounded-xl items-center justify-center active:opacity-70"
               onPress={() => setShowModal(false)}
             >
               <Text className="text-sm text-[#888888] font-medium">Back</Text>

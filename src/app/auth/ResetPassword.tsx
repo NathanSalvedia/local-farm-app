@@ -73,7 +73,7 @@ export default function ResetPasswordScreen() {
 
   const handleGoToLogin = () => {
     setShowSuccessModal(false);
-    router.replace("/login" as any);
+    router.replace("/auth/Login" as any);
   };
 
   return (
@@ -182,7 +182,7 @@ export default function ResetPasswordScreen() {
 
             {/* Submit Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-4"
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-4"
               onPress={handleResetPassword}
               disabled={isLoading}
             >
@@ -244,7 +244,7 @@ export default function ResetPasswordScreen() {
 
             {/* Back to Sign In Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90"
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center shadow-sm active:opacity-90"
               onPress={handleGoToLogin}
             >
               <Text className="text-white text-base font-bold">

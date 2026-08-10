@@ -11,7 +11,7 @@ interface AuthContextType {
 
 export const AuthContext = createContext<AuthContextType>({
   user: null,
-  isLoading: true,
+  isLoading: false,
   signIn: async () => {},
   signUp: async () => {},
   signOut: async () => {},
@@ -19,21 +19,11 @@ export const AuthContext = createContext<AuthContextType>({
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
   useEffect(() => {
-    // Check for existing session token here (e.g. from SecureStore / AsyncStorage)
-    const checkSession = async () => {
-      try {
-        // Initial session check simulation
-        setUser(null);
-      } catch (e) {
-        console.error('Failed to load session', e);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-    checkSession();
+    setUser(null);
+    setIsLoading(false);
   }, []);
 
   const signIn = async (email: string, password: string) => {

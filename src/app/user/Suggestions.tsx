@@ -1,5 +1,5 @@
-import { useState } from "react";
 import { Ionicons } from "@expo/vector-icons";
+import { useState } from "react";
 import {
   SafeAreaView,
   ScrollView,
@@ -45,7 +45,7 @@ export default function Suggestions() {
   };
 
   const filteredSuggestions = MOCK_SUGGESTIONS.filter((user) =>
-    user.name.toLowerCase().includes(searchQuery.toLowerCase())
+    user.name.toLowerCase().includes(searchQuery.toLowerCase()),
   );
 
   return (
@@ -83,9 +83,7 @@ export default function Suggestions() {
 
       {/* 3. Sub-Header Section */}
       <View className="px-5 mb-4">
-        <Text className="text-lg font-semibold text-gray-800">
-          Suggestions
-        </Text>
+        <Text className="text-lg font-semibold text-gray-800">Suggestions</Text>
       </View>
 
       {/* 4. Suggestions List (Cards) */}
@@ -97,28 +95,29 @@ export default function Suggestions() {
         <View className="px-5">
           {filteredSuggestions.map((item) => {
             const state = suggestionStates[item.id];
+            if (state === "hidden") return null;
 
             return (
               <View
                 key={item.id}
-                className="bg-[#F3F4F6] rounded-2xl p-4 mb-3.5 flex-row items-start justify-between"
+                className="py-3.5 border-b border-gray-100 flex-row items-start justify-between"
               >
                 {/* Circular Gray Avatar Placeholder */}
-                <View className="h-16 w-16 rounded-full bg-gray-400 items-center justify-center mr-3.5 overflow-hidden">
-                  <Ionicons name="person" size={42} color="#FFFFFF" />
+                <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-300 overflow-hidden">
+                  <Ionicons name="person" size={30} color="#6B7280" />
                 </View>
 
                 {/* Info & Action Buttons Container */}
                 <View className="flex-1">
-                  <Text className="font-bold text-gray-900 text-lg leading-6 mb-0.5">
+                  <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
                     {item.name}
                   </Text>
 
                   {/* Mutual Friends Info */}
-                  <View className="flex-row items-center mb-2.5">
+                  <View className="flex-row items-center mb-3">
                     <Ionicons
                       name="people"
-                      size={14}
+                      size={13}
                       color="#6B7280"
                       style={{ marginRight: 4 }}
                     />
@@ -129,25 +128,33 @@ export default function Suggestions() {
 
                   {/* Action Buttons */}
                   {state === "added" ? (
-                    <View className="bg-green-100 py-2 rounded-xl items-center">
-                      <Text className="text-[#72AF5B] font-bold text-sm">
-                        Friend Request Sent
+                    <TouchableOpacity
+                      onPress={() =>
+                        setSuggestionStates((prev) => ({
+                          ...prev,
+                          [item.id]: undefined,
+                        }))
+                      }
+                      className="w-full bg-gray-50 border border-[#72AF5B] py-2.5 rounded-xl items-center justify-center active:bg-gray-300"
+                      activeOpacity={0.8}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel friend request"
+                    >
+                      <Text className="text-[#000000] font-semibold text-xs sm:text-sm">
+                        Cancel Request
                       </Text>
-                    </View>
-                  ) : state === "hidden" ? (
-                    <View className="bg-gray-200 py-2 rounded-xl items-center">
-                      <Text className="text-gray-500 font-semibold text-sm">
-                        Hidden
-                      </Text>
-                    </View>
+                    </TouchableOpacity>
                   ) : (
-                    <View className="flex-row items-center">
+                    <View className="flex-row items-center gap-2">
                       {/* Add Friend Button */}
                       <TouchableOpacity
                         onPress={() => handleAddFriend(item.id)}
-                        className="flex-1 bg-[#72AF5B] py-2 rounded-xl items-center justify-center mr-2 active:opacity-80"
+                        className="flex-1 bg-[#72AF5B] py-2.5 px-3 rounded-xl flex-row items-center justify-center active:bg-[#62974e] shadow-2xs"
+                        activeOpacity={0.8}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Add ${item.name} as friend`}
                       >
-                        <Text className="text-white font-bold text-sm">
+                        <Text className="text-white font-bold text-xs sm:text-sm">
                           Add friend
                         </Text>
                       </TouchableOpacity>
@@ -155,9 +162,15 @@ export default function Suggestions() {
                       {/* Not Interested Button */}
                       <TouchableOpacity
                         onPress={() => handleNotInterested(item.id)}
-                        className="flex-1 bg-[#E5E7EB] py-2 rounded-xl items-center justify-center active:opacity-80"
+                        className="flex-1 bg-gray-200 py-2.5 px-2 rounded-xl flex-row items-center justify-center active:bg-gray-300"
+                        activeOpacity={0.8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Not interested"
                       >
-                        <Text className="text-gray-700 font-semibold text-sm">
+                        <Text
+                          className="text-gray-700 font-semibold text-xs sm:text-sm text-center"
+                          numberOfLines={1}
+                        >
                           Not Interested
                         </Text>
                       </TouchableOpacity>

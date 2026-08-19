@@ -8,7 +8,11 @@ export interface TabRoute {
   params?: object;
 }
 
-export interface TabNavigationProps {
+export interface NavigationProps {
+  activeTab?: "Home" | "Friends" | "Messages" | "Map" | "Menu" | string;
+  activeTabName?: string;
+  onFabPress?: () => void;
+  showFab?: boolean;
   state?: {
     index: number;
     routes: TabRoute[];
@@ -25,42 +29,25 @@ export interface TabNavigationProps {
     }) => { defaultPrevented: boolean };
     navigate: (name: string) => void;
   };
-  onFabPress?: () => void;
-  showFab?: boolean;
-  activeTabName?: string;
 }
 
-const ACTIVE_COLOR = "#72AF5B";
-const INACTIVE_COLOR = "#9CA3AF";
+const ACTIVE_COLOR = "#006400"; // Dark green matching reference image
+const INACTIVE_COLOR = "#9CA3AF"; // Neutral gray
 
-// Icon mapping: route name → Ionicons vector icon names (active | inactive)
-const TAB_ICONS: Record<
-  string,
-  {
-    active: keyof typeof Ionicons.glyphMap;
-    inactive: keyof typeof Ionicons.glyphMap;
-  }
-> = {
-  index: { active: "home", inactive: "home-outline" },
-  community: { active: "people", inactive: "people-outline" },
-  chat: { active: "chatbubble", inactive: "chatbubble-outline" },
-  explore: { active: "map", inactive: "map-outline" },
-  more: { active: "menu", inactive: "menu" },
-};
+interface TabItemConfig {
+  key: string;
+  title: "Home" | "Friends" | "Messages" | "Map" | "Menu";
+  icon: keyof typeof Ionicons.glyphMap;
+  badge?: number;
+}
 
-const STATIC_TABS = [
-  { key: "index", name: "index", title: "Home", badge: 0 },
-  { key: "community", name: "community", title: "Community", badge: 2 },
-  { key: "chat", name: "chat", title: "Chat", badge: 7 },
-  { key: "explore", name: "explore", title: "Explore", badge: 0 },
-  { key: "more", name: "more", title: "More", badge: 0 },
+const STATIC_TABS: TabItemConfig[] = [
+  { key: "index", title: "Home", icon: "home" },
+  { key: "community", title: "Friends", icon: "people", badge: 2 },
+  { key: "chat", title: "Messages", icon: "chatbubble", badge: 7 },
+  { key: "explore", title: "Map", icon: "map" },
+  { key: "more", title: "Menu", icon: "menu" },
 ];
-
-// Badge counts per route
-const BADGES: Record<string, number> = {
-  community: 2,
-  chat: 7,
-};
 
 export function UserTabBar({
   state,
@@ -68,7 +55,7 @@ export function UserTabBar({
   navigation,
   onFabPress,
   showFab = true,
-}: TabNavigationProps) {
+}: NavigationProps) {
   const router = useRouter();
 
   if (!state || !descriptors || !navigation) return null;
@@ -76,8 +63,8 @@ export function UserTabBar({
   return (
     <View
       className="absolute bottom-0 left-0 right-0 w-full z-50"
-      pointerEvents="box-none"
       style={{
+        pointerEvents: "box-none",
         position: "absolute",
         bottom: 0,
         left: 0,
@@ -101,20 +88,46 @@ export function UserTabBar({
       )}
 
       {/* Navigation Bar */}
-      <View className="flex-row items-center justify-around w-full h-16 bg-white border-t border-gray-200 shadow-2xl elevation-10 px-2">
+      <View className="flex-row items-center justify-around w-full h-14 bg-white border-t border-gray-200 shadow-2xl elevation-10">
         {state.routes.map((route: TabRoute, index: number) => {
           const options = descriptors[route.key]?.options || {};
           const isFocused = state.index === index;
-          const icons = TAB_ICONS[route.name];
-          const badgeCount = BADGES[route.name];
+          const tabConfig = STATIC_TABS.find(
+            (t) =>
+              t.key === route.name ||
+              t.title.toLowerCase() === route.name.toLowerCase()
+          ) || STATIC_TABS[index] || { icon: "home", badge: 0 };
 
-          const iconName = isFocused ? icons?.active : icons?.inactive;
           const iconColor = isFocused ? ACTIVE_COLOR : INACTIVE_COLOR;
 
           const onPress = () => {
             if (route.name === "index" || route.name === "home") {
               try {
                 router.push("/user/NewsFeed");
+                return;
+              } catch (e) {}
+            }
+            if (route.name === "chat" || route.name === "Chats") {
+              try {
+                router.push("/user/Chats");
+                return;
+              } catch (e) {}
+            }
+            if (route.name === "community" || route.name === "People") {
+              try {
+                router.push("/user/People");
+                return;
+              } catch (e) {}
+            }
+            if (route.name === "explore" || route.name === "Map" || route.name === "NearbyUsers") {
+              try {
+                router.push("/user/ExploreMap");
+                return;
+              } catch (e) {}
+            }
+            if (route.name === "more" || route.name === "Menu" || route.name === "Profile") {
+              try {
+                router.push("/user/MenuProfile");
                 return;
               } catch (e) {}
             }
@@ -140,17 +153,31 @@ export function UserTabBar({
               accessibilityLabel={options.tabBarAccessibilityLabel}
               onPress={onPress}
               onLongPress={onLongPress}
-              className="flex-1 items-center justify-center h-full relative"
+              className="flex-1 h-full justify-center items-center relative"
               activeOpacity={0.7}
             >
-              {iconName && (
-                <Ionicons name={iconName} size={24} color={iconColor} />
+              {/* Short Active Green Line Indicator at Top */}
+              {isFocused && (
+                <View
+                  className="absolute top-0 w-8 h-[3.5px] bg-[#006400] rounded-b-md"
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    width: 34,
+                    height: 3.5,
+                    backgroundColor: "#006400",
+                    borderBottomLeftRadius: 3,
+                    borderBottomRightRadius: 3,
+                  }}
+                />
               )}
 
-              {badgeCount !== undefined && badgeCount > 0 && (
-                <View className="absolute top-3 right-[22%] min-w-4 h-4 rounded-full bg-red-500 items-center justify-center px-1">
-                  <Text className="text-white text-[10px] font-bold text-center">
-                    {badgeCount > 99 ? "99+" : badgeCount}
+              <Ionicons name={tabConfig.icon} size={24} color={iconColor} />
+
+              {tabConfig.badge !== undefined && tabConfig.badge > 0 && (
+                <View className="absolute top-2 right-[20%] w-4 h-4 rounded-full bg-red-600 items-center justify-center shadow-2xs">
+                  <Text className="text-white text-[10px] font-bold text-center leading-tight">
+                    {tabConfig.badge > 99 ? "99+" : tabConfig.badge}
                   </Text>
                 </View>
               )}
@@ -162,7 +189,7 @@ export function UserTabBar({
   );
 }
 
-export default function BottomNavBar(props?: TabNavigationProps) {
+export default function Navigation(props?: NavigationProps) {
   const router = useRouter();
   const pathname = usePathname();
 
@@ -170,32 +197,61 @@ export default function BottomNavBar(props?: TabNavigationProps) {
     return <UserTabBar {...props} />;
   }
 
-  // Deduce active tab from current route pathname if activeTabName is not explicitly passed
-  let activeTab = props?.activeTabName;
-  if (!activeTab) {
+  // Deduce active tab key from props or current pathname
+  let activeKey = "index";
+
+  if (props?.activeTab) {
+    const tabMap: Record<string, string> = {
+      Home: "index",
+      Friends: "community",
+      Messages: "chat",
+      Map: "explore",
+      Menu: "more",
+    };
+    activeKey = tabMap[props.activeTab] || props.activeTab;
+  } else if (props?.activeTabName) {
+    activeKey = props.activeTabName;
+  } else {
     if (
       pathname.includes("NewsFeed") ||
       pathname === "/" ||
       pathname === "/user"
     ) {
-      activeTab = "index";
+      activeKey = "index";
     } else if (
       pathname.includes("People") ||
       pathname.includes("Friends") ||
       pathname.includes("Suggestions") ||
-      pathname.includes("NearbyUsers") ||
       pathname.includes("SentRequests") ||
       pathname.includes("community")
     ) {
-      activeTab = "community";
-    } else if (pathname.includes("Chat")) {
-      activeTab = "chat";
-    } else if (pathname.includes("Explore")) {
-      activeTab = "explore";
-    } else if (pathname.includes("More")) {
-      activeTab = "more";
+      activeKey = "community";
+    } else if (
+      pathname.includes("Chat") ||
+      pathname.includes("Chats") ||
+      pathname.includes("chat") ||
+      pathname.includes("MessageRequests") ||
+      pathname.includes("SpamMessages") ||
+      pathname.includes("ArchivedMessages") ||
+      pathname.includes("RestrictedAccounts")
+    ) {
+      activeKey = "chat";
+    } else if (
+      pathname.includes("Explore") ||
+      pathname.includes("ExploreMap") ||
+      pathname.includes("NearbyUsers") ||
+      pathname.includes("explore") ||
+      pathname.includes("Map")
+    ) {
+      activeKey = "explore";
+    } else if (
+      pathname.includes("More") ||
+      pathname.includes("Menu") ||
+      pathname.includes("MenuProfile")
+    ) {
+      activeKey = "more";
     } else {
-      activeTab = "index";
+      activeKey = "index";
     }
   }
 
@@ -214,14 +270,32 @@ export default function BottomNavBar(props?: TabNavigationProps) {
       } catch (e) {
         console.warn(e);
       }
+    } else if (tabKey === "chat") {
+      try {
+        router.push("/user/Chats");
+      } catch (e) {
+        console.warn(e);
+      }
+    } else if (tabKey === "explore") {
+      try {
+        router.push("/user/ExploreMap");
+      } catch (e) {
+        console.warn(e);
+      }
+    } else if (tabKey === "more") {
+      try {
+        router.push("/user/MenuProfile");
+      } catch (e) {
+        console.warn(e);
+      }
     }
   };
 
   return (
     <View
       className="absolute bottom-0 left-0 right-0 w-full z-50"
-      pointerEvents="box-none"
       style={{
+        pointerEvents: "box-none",
         position: "absolute",
         bottom: 0,
         left: 0,
@@ -245,27 +319,45 @@ export default function BottomNavBar(props?: TabNavigationProps) {
       )}
 
       {/* Bottom Navigation Bar */}
-      <View className="flex-row items-center justify-around w-full h-16 bg-white border-t border-gray-200 shadow-2xl elevation-10 px-2">
+      <View className="flex-row items-center justify-around w-full h-14 bg-white border-t border-gray-200 shadow-2xl elevation-10">
         {STATIC_TABS.map((tab) => {
-          const isFocused = activeTab === tab.key;
-          const icons = TAB_ICONS[tab.name];
-          const iconName = isFocused ? icons?.active : icons?.inactive;
+          const isFocused =
+            activeKey === tab.key ||
+            activeKey === tab.title ||
+            activeKey.toLowerCase() === tab.title.toLowerCase();
+
           const iconColor = isFocused ? ACTIVE_COLOR : INACTIVE_COLOR;
 
           return (
             <TouchableOpacity
               key={tab.key}
               onPress={() => handleTabPress(tab.key)}
-              className="flex-1 items-center justify-center h-full relative"
+              className="flex-1 h-full justify-center items-center relative"
               activeOpacity={0.7}
+              accessibilityRole="button"
+              accessibilityLabel={tab.title}
             >
-              {iconName && (
-                <Ionicons name={iconName} size={24} color={iconColor} />
+              {/* Short Active Green Line Indicator at Top Edge */}
+              {isFocused && (
+                <View
+                  className="absolute top-0 w-8 h-[3.5px] bg-[#006400] rounded-b-md"
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    width: 34,
+                    height: 3.5,
+                    backgroundColor: "#006400",
+                    borderBottomLeftRadius: 3,
+                    borderBottomRightRadius: 3,
+                  }}
+                />
               )}
 
-              {tab.badge > 0 && (
-                <View className="absolute top-3 right-[22%] min-w-4 h-4 rounded-full bg-red-500 items-center justify-center px-1">
-                  <Text className="text-white text-[10px] font-bold text-center">
+              <Ionicons name={tab.icon} size={24} color={iconColor} />
+
+              {tab.badge !== undefined && tab.badge > 0 && (
+                <View className="absolute top-2 right-[20%] w-4 h-4 rounded-full bg-red-600 items-center justify-center shadow-2xs">
+                  <Text className="text-white text-[10px] font-bold text-center leading-tight">
                     {tab.badge > 99 ? "99+" : tab.badge}
                   </Text>
                 </View>

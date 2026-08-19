@@ -31,3 +31,18 @@ export function validatePassword(password: string): ValidationResult {
   }
   return { isValid: true };
 }
+
+export function isValidPhoneNumber(phone: string): boolean {
+  const phoneRegex = /^\+?[0-9]{10,13}$/;
+  return phoneRegex.test(phone.trim().replace(/[\s-]/g, ''));
+}
+
+export function validatePhoneNumber(phone: string): ValidationResult {
+  if (!phone.trim()) {
+    return { isValid: false, error: 'Phone number required.' };
+  }
+  if (!isValidPhoneNumber(phone)) {
+    return { isValid: false, error: 'Please enter a valid phone number.' };
+  }
+  return { isValid: true };
+}

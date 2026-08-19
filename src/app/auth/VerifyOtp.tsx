@@ -4,6 +4,7 @@ import { useRef, useState } from "react";
 import {
   ImageBackground,
   KeyboardAvoidingView,
+  Modal,
   NativeSyntheticEvent,
   Platform,
   TextInput as RNTextInput,
@@ -25,6 +26,7 @@ export default function VerifyOTPScreen() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [resendSent, setResendSent] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   // References for 6 input boxes
   const inputRefs = useRef<Array<RNTextInput | null>>([]);
@@ -75,13 +77,17 @@ export default function VerifyOTPScreen() {
     try {
       setTimeout(() => {
         setIsSubmitting(false);
-        // Navigate to reset password screen
-        router.replace("/auth/ResetPassword" as any);
-      }, 1000);
+        setShowSuccessModal(true);
+      }, 800);
     } catch (err: any) {
       setIsSubmitting(false);
       setErrorMsg("Invalid or expired OTP code. Please try again.");
     }
+  };
+
+  const handleSuccessContinue = () => {
+    setShowSuccessModal(false);
+    router.replace("/auth/ResetPassword" as any);
   };
 
   const handleResendCode = () => {
@@ -188,6 +194,44 @@ export default function VerifyOTPScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Verification Success Modal */}
+      <Modal
+        visible={showSuccessModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleSuccessContinue}
+      >
+        <View className="flex-1 bg-black/60 items-center justify-center px-6">
+          <View className="w-full max-w-[340px] bg-white rounded-3xl p-6 items-center shadow-xl">
+            {/* Green Badge Icon */}
+            <View className="w-16 h-16 rounded-full bg-[#E8F5E9] items-center justify-center mb-4">
+              <Ionicons name="checkmark-circle" size={48} color="#72AF5B" />
+            </View>
+
+            {/* Title */}
+            <Text className="text-2xl font-bold text-gray-900 text-center mb-2">
+              Verification Successful
+            </Text>
+
+            {/* Description Message */}
+            <Text className="text-sm text-gray-600 text-center mb-6 leading-5">
+              Your verification code has been confirmed successfully.
+            </Text>
+
+            {/* Continue Button */}
+            <TouchableOpacity
+              onPress={handleSuccessContinue}
+              className="w-full h-12 bg-[#72AF5B] rounded-xl items-center justify-center active:opacity-90 shadow-sm"
+              activeOpacity={0.8}
+            >
+              <Text className="text-white text-base font-bold">
+                Continue
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ImageBackground>
   );
 }

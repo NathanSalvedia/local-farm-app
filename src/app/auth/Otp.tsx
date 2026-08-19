@@ -1,9 +1,11 @@
+import { useAuth } from "@/hooks/use-auth";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useRef, useState } from "react";
 import {
   ImageBackground,
   KeyboardAvoidingView,
+  Modal,
   NativeSyntheticEvent,
   Platform,
   TextInput as RNTextInput,
@@ -20,11 +22,27 @@ const BG_IMAGE = require("../../../assets/images/background-blur.png");
 export default function OTPScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
+  const { signUp } = useAuth();
+  const params = useLocalSearchParams<{
+    email?: string;
+    firstName?: string;
+    lastName?: string;
+    username?: string;
+    phoneNumber?: string;
+    password?: string;
+  }>();
+
+  const email = params.email || "";
+  const firstName = params.firstName || "";
+  const lastName = params.lastName || "";
+  const phoneNumber = params.phoneNumber || "";
+  const password = params.password || "";
 
   const [otp, setOtp] = useState<string[]>(["", "", "", "", "", ""]);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [resendSent, setResendSent] = useState(false);
+  const [showSuccessModal, setShowSuccessModal] = useState(false);
 
   // References for 6 input boxes
   const inputRefs = useRef<Array<RNTextInput | null>>([]);
@@ -77,15 +95,27 @@ export default function OTPScreen() {
     setIsSubmitting(true);
 
     try {
-      // Perform OTP verification logic here
       setTimeout(() => {
         setIsSubmitting(false);
-        // Navigate to reset password screen
-        router.replace("/auth/ResetPassword" as any);
-      }, 1000);
+        setShowSuccessModal(true);
+      }, 800);
     } catch (err: any) {
       setIsSubmitting(false);
       setErrorMsg("Invalid or expired OTP code. Please try again.");
+    }
+  };
+
+  const handleSuccessContinue = async () => {
+    setShowSuccessModal(false);
+    if (firstName && lastName) {
+      const fullName = `${firstName} ${lastName}`;
+      await signUp(
+        fullName,
+        email || "user@example.com",
+        password || "password123",
+      );
+    } else {
+      router.replace("/auth/ResetPassword" as any);
     }
   };
 
@@ -122,7 +152,9 @@ export default function OTPScreen() {
                 One-time Pin
               </Text>
               <Text className="text-md text-[#000000] text-left">
-                Enter Verification Code
+                {email
+                  ? `Enter Verification Code sent to ${email}`
+                  : "Enter Verification Code"}
               </Text>
             </View>
 
@@ -189,6 +221,44 @@ export default function OTPScreen() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      {/* Verification Success Modal */}
+      <Modal
+        visible={showSuccessModal}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleSuccessContinue}
+      >
+        <View className="flex-1 bg-black/60 items-center justify-center px-6">
+          <View className="w-full max-w-[340px] bg-white rounded-3xl p-6 items-center shadow-xl">
+            {/* Green Badge Icon */}
+            <View className="w-16 h-16 rounded-full bg-[#E8F5E9] items-center justify-center mb-4">
+              <Ionicons name="checkmark-circle" size={48} color="#2E7D32" />
+            </View>
+
+            {/* Title */}
+            <Text className="text-2xl font-bold text-gray-900 text-center mb-2">
+              Verification Successful
+            </Text>
+
+            {/* Description Message */}
+            <Text className="text-sm text-gray-600 text-center mb-6 leading-5">
+              Your verification code has been confirmed successfully.
+            </Text>
+
+            {/* Continue Button */}
+            <TouchableOpacity
+              onPress={handleSuccessContinue}
+              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center active:opacity-90 shadow-sm"
+              activeOpacity={0.8}
+            >
+              <Text className="text-white text-base font-bold">
+                Continue
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
     </ImageBackground>
   );
 }

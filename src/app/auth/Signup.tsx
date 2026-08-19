@@ -1,5 +1,9 @@
 import { useAuth } from "@/hooks/use-auth";
-import { validateEmail, validatePassword } from "@/utils/validation";
+import {
+  validateEmail,
+  validatePassword,
+  validatePhoneNumber,
+} from "@/utils/validation";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useState } from "react";
@@ -30,6 +34,7 @@ export default function SignUpScreen() {
   const [firstName, setFirstName] = useState("");
   const [lastName, setLastName] = useState("");
   const [username, setUsername] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [gender, setGender] = useState("");
   const [showGenderDropdown, setShowGenderDropdown] = useState(false);
 
@@ -42,6 +47,7 @@ export default function SignUpScreen() {
   const [firstNameError, setFirstNameError] = useState("");
   const [lastNameError, setLastNameError] = useState("");
   const [usernameError, setUsernameError] = useState("");
+  const [phoneNumberError, setPhoneNumberError] = useState("");
   const [genderError, setGenderError] = useState("");
   const [emailError, setEmailError] = useState("");
   const [passwordError, setPasswordError] = useState("");
@@ -71,6 +77,14 @@ export default function SignUpScreen() {
       hasError = true;
     } else {
       setUsernameError("");
+    }
+
+    const phoneVal = validatePhoneNumber(phoneNumber);
+    if (!phoneVal.isValid) {
+      setPhoneNumberError(phoneVal.error || "");
+      hasError = true;
+    } else {
+      setPhoneNumberError("");
     }
 
     if (!gender) {
@@ -105,14 +119,19 @@ export default function SignUpScreen() {
 
     if (hasError) return;
 
-    try {
-      const fullName = `${firstName.trim()} ${lastName.trim()}`;
-      await signUp(fullName, email, password);
-    } catch (err: any) {
-      setGeneralError(
-        err?.message || "Failed to create account. Please try again.",
-      );
-    }
+    // Redirect to OTP verification screen
+    router.push({
+      pathname: "/auth/Otp",
+      params: {
+        email: email.trim(),
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        username: username.trim(),
+        phoneNumber: phoneNumber.trim(),
+        password,
+        gender,
+      },
+    } as any);
   };
 
   return (
@@ -226,6 +245,29 @@ export default function SignUpScreen() {
               ) : null}
             </View>
 
+            {/* Phone Number Field */}
+            <View className="w-full mb-4">
+              <RNTextInput
+                className={`w-full h-12 bg-white/95 border ${
+                  phoneNumberError ? "border-[#FF3B30]" : "border-gray-300"
+                } rounded-xl px-4 text-base text-gray-900`}
+                placeholder="Phone Number"
+                placeholderTextColor="#888888"
+                value={phoneNumber}
+                onChangeText={(text: string) => {
+                  setPhoneNumber(text);
+                  if (phoneNumberError) setPhoneNumberError("");
+                }}
+                keyboardType="phone-pad"
+                autoCapitalize="none"
+              />
+              {phoneNumberError ? (
+                <Text className="text-[#FF3B30] text-xs mt-1 font-medium">
+                  {phoneNumberError}
+                </Text>
+              ) : null}
+            </View>
+
             {/* Gender Dropdown Field */}
             <View className="w-full mb-4 z-30 relative">
               <TouchableOpacity
@@ -290,7 +332,7 @@ export default function SignUpScreen() {
                 className={`w-full h-12 bg-white/95 border ${
                   emailError ? "border-[#FF3B30]" : "border-gray-300"
                 } rounded-xl px-4 text-base text-gray-900`}
-                placeholder="Emailaddress"
+                placeholder="Email address"
                 placeholderTextColor="#888888"
                 value={email}
                 onChangeText={(text: string) => {

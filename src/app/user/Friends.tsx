@@ -129,10 +129,7 @@ export default function Friends() {
               top: 155,
               right: 20,
               zIndex: 50,
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 4 },
-              shadowOpacity: 0.15,
-              shadowRadius: 10,
+              boxShadow: "0 4px 10px rgba(0, 0, 0, 0.15)",
               elevation: 10,
             }}
             className="bg-white p-4 rounded-2xl border border-gray-200 w-64"

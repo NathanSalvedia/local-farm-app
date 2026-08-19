@@ -141,23 +141,24 @@ export default function People() {
             return (
               <View
                 key={item.id}
-                className="bg-[#F3F4F6] rounded-2xl p-4 mb-3.5 flex-row items-start justify-between"
+                className="py-3.5 border-b border-gray-100 flex-row items-start justify-between"
               >
-                <View className="h-16 w-16 rounded-full bg-gray-400 items-center justify-center mr-3.5 overflow-hidden">
-                  <Ionicons name="person" size={42} color="#FFFFFF" />
+                {/* Circular Avatar */}
+                <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-300 overflow-hidden">
+                  <Ionicons name="person" size={30} color="#6B7280" />
                 </View>
 
-                {/* Card Main Info & Action Buttons */}
+                {/* Main Info & Action Buttons */}
                 <View className="flex-1">
                   <View className="flex-row justify-between items-start">
                     <View className="flex-1 pr-2">
-                      <Text className="font-bold text-gray-900 text-lg leading-6 mb-0.5">
+                      <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
                         {item.name}
                       </Text>
-                      <View className="flex-row items-center mb-3">
+                      <View className="flex-row items-center mb-2.5">
                         <Ionicons
                           name="people"
-                          size={14}
+                          size={13}
                           color="#6B7280"
                           style={{ marginRight: 4 }}
                         />
@@ -168,32 +169,35 @@ export default function People() {
                     </View>
 
                     {/* Time Received */}
-                    <Text className="text-[#72AF5B] font-medium text-sm">
+                    <Text className="text-[#72AF5B] font-medium text-xs">
                       {item.timeAgo}
                     </Text>
                   </View>
 
                   {/* Card Bottom Buttons */}
                   {state === "confirmed" ? (
-                    <View className="bg-gray-100 border border-[#72AF5B] py-2 rounded-xl items-center">
-                      <Text className="text-[#000000] font-semibold text-sm">
+                    <View className="bg-white border border-[#72AF5B] py-2 rounded-xl items-center">
+                      <Text className="text-[#72AF5B] font-bold text-xs">
                         Request Confirmed
                       </Text>
                     </View>
                   ) : state === "declined" ? (
-                    <View className="bg-gray-100 border border-[#D90000] py-2 rounded-xl items-center">
-                      <Text className="text-[#D90000] font-semibold text-sm">
+                    <View className="bg-white border border-[#E63946] py-2 rounded-xl items-center">
+                      <Text className="text-[#E63946] font-semibold text-xs">
                         Request Removed
                       </Text>
                     </View>
                   ) : (
-                    <View className="flex-row items-center">
+                    <View className="flex-row items-center gap-2">
                       {/* Confirm Button */}
                       <TouchableOpacity
                         onPress={() => handleConfirm(item.id)}
-                        className="flex-1 bg-[#72AF5B] py-2.5 rounded-xl items-center justify-center mr-2 active:opacity-80"
+                        className="flex-1 bg-[#72AF5B] py-2.5 rounded-xl items-center justify-center active:bg-[#62974e] shadow-2xs"
+                        activeOpacity={0.8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Confirm friend request"
                       >
-                        <Text className="text-white font-bold text-sm">
+                        <Text className="text-white font-bold text-xs sm:text-sm">
                           Confirm
                         </Text>
                       </TouchableOpacity>
@@ -201,9 +205,12 @@ export default function People() {
                       {/* Decline Button */}
                       <TouchableOpacity
                         onPress={() => handleDecline(item.id)}
-                        className="flex-1 bg-[#E5E7EB] py-2.5 rounded-xl items-center justify-center active:opacity-80"
+                        className="flex-1 bg-[#E5E7EB] py-2.5 rounded-xl items-center justify-center active:bg-gray-300"
+                        activeOpacity={0.8}
+                        accessibilityRole="button"
+                        accessibilityLabel="Decline friend request"
                       >
-                        <Text className="text-gray-700 font-semibold text-sm">
+                        <Text className="text-gray-700 font-semibold text-xs sm:text-sm">
                           Decline
                         </Text>
                       </TouchableOpacity>

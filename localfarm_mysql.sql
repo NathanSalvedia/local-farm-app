@@ -179,7 +179,52 @@ CREATE TABLE IF NOT EXISTS `saved_posts` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- ------------------------------------------------------------------------------
--- 12. Initial Sample Seed Data (Password: admin123 / farmer123)
+-- 12. Table structure for table `stories` (24-hour disappearing stories)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `stories` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `user_id` INT NOT NULL,
+  `media_type` ENUM('image', 'video', 'text') NOT NULL DEFAULT 'image',
+  `media_url` LONGTEXT DEFAULT NULL,
+  `text_content` TEXT DEFAULT NULL,
+  `background_color` VARCHAR(30) DEFAULT '#1e293b',
+  `music_title` VARCHAR(150) DEFAULT NULL,
+  `privacy` ENUM('Public', 'Friends', 'Only me') NOT NULL DEFAULT 'Public',
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  `expires_at` TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL 24 HOUR),
+  FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+  INDEX `idx_stories_user_expires` (`user_id`, `expires_at`),
+  INDEX `idx_stories_expires` (`expires_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------------------------
+-- 13. Table structure for table `story_views` (Story view receipts)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `story_views` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `story_id` INT NOT NULL,
+  `viewer_id` INT NOT NULL,
+  `viewed_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (`story_id`) REFERENCES `stories`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`viewer_id`) REFERENCES `users`(`id`) ON DELETE CASCADE,
+  UNIQUE KEY `unique_story_view` (`story_id`, `viewer_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------------------------
+-- 14. Table structure for table `story_reactions` (Quick reactions on stories)
+-- ------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS `story_reactions` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `story_id` INT NOT NULL,
+  `user_id` INT NOT NULL,
+  `reaction_type` VARCHAR(50) NOT NULL DEFAULT 'like',
+  `created_at` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (`story_id`) REFERENCES `stories`(`id`) ON DELETE CASCADE,
+  FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ------------------------------------------------------------------------------
+-- 15. Initial Sample Seed Data (Password: admin123 / farmer123)
 -- ------------------------------------------------------------------------------
 INSERT INTO `users` (`first_name`, `last_name`, `full_name`, `username`, `email`, `password`, `phone_number`, `gender`, `role`)
 VALUES

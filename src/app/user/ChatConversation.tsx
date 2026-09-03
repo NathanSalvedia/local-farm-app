@@ -11,6 +11,8 @@ import {
   ActivityIndicator,
   Image,
   KeyboardAvoidingView,
+  Linking,
+  Modal,
   Platform,
   SafeAreaView,
   ScrollView,
@@ -43,6 +45,64 @@ export default function ChatConversation() {
   const [inputText, setInputText] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [showAttachmentMenu, setShowAttachmentMenu] = useState(false);
+  const [activeCall, setActiveCall] = useState<{
+    isOpen: boolean;
+    isVideo: boolean;
+    roomName: string;
+    roomUrl: string;
+  }>({
+    isOpen: false,
+    isVideo: false,
+    roomName: "",
+    roomUrl: "",
+  });
+
+  const handleStartCall = async (isVideo: boolean) => {
+    const sanitize = (str: string) => str.replace(/[^a-zA-Z0-9]/g, "");
+    const myName = sanitize(user?.username || user?.fullName || `user_${user?.id || "1"}`);
+    const peerName = sanitize(otherUserName || `peer_${params.userId || "2"}`);
+    const roomName = `LocalFarm_${[myName, peerName].sort().join("_")}`;
+
+    const displayName = encodeURIComponent(user?.fullName || user?.username || "Local Farmer");
+    const roomUrl = isVideo
+      ? `https://meet.jit.si/${roomName}#config.startWithVideoMuted=false&config.prejoinPageEnabled=false&userInfo.displayName="${displayName}"`
+      : `https://meet.jit.si/${roomName}#config.startWithVideoMuted=true&config.startWithAudioMuted=false&config.prejoinPageEnabled=false&userInfo.displayName="${displayName}"`;
+
+    setActiveCall({
+      isOpen: true,
+      isVideo,
+      roomName,
+      roomUrl,
+    });
+
+    // Send call invite message in chat so the other user can join immediately
+    try {
+      await sendMessageApi({
+        receiverId: params.userId,
+        conversationId: conversationId || undefined,
+        messageText: isVideo
+          ? `📹 Started a Video Call on Jitsi Meet. Tap to join: https://meet.jit.si/${roomName}`
+          : `📞 Started a Voice Call on Jitsi Meet. Tap to join: https://meet.jit.si/${roomName}`,
+      });
+      fetchMessages();
+    } catch (e) {}
+  };
+
+  const handleJoinCallFromUrl = (url: string, isVideo: boolean) => {
+    const match = url.match(/https:\/\/meet\.jit\.si\/([a-zA-Z0-9_-]+)/);
+    const roomName = match ? match[1] : "LocalFarm_Room";
+    const displayName = encodeURIComponent(user?.fullName || user?.username || "Local Farmer");
+    const roomUrl = isVideo
+      ? `https://meet.jit.si/${roomName}#config.startWithVideoMuted=false&config.prejoinPageEnabled=false&userInfo.displayName="${displayName}"`
+      : `https://meet.jit.si/${roomName}#config.startWithVideoMuted=true&config.startWithAudioMuted=false&config.prejoinPageEnabled=false&userInfo.displayName="${displayName}"`;
+
+    setActiveCall({
+      isOpen: true,
+      isVideo,
+      roomName,
+      roomUrl,
+    });
+  };
 
   const scrollViewRef = useRef<ScrollView>(null);
 
@@ -192,6 +252,7 @@ export default function ChatConversation() {
           {/* Right Section: Call, Video, Info Icons */}
           <View className="flex-row items-center gap-3.5">
             <TouchableOpacity
+              onPress={() => handleStartCall(false)}
               className="p-1 active:opacity-70"
               accessibilityRole="button"
               accessibilityLabel="Voice Call"
@@ -200,6 +261,7 @@ export default function ChatConversation() {
             </TouchableOpacity>
 
             <TouchableOpacity
+              onPress={() => handleStartCall(true)}
               className="p-1 active:opacity-70"
               accessibilityRole="button"
               accessibilityLabel="Video Call"
@@ -294,7 +356,7 @@ export default function ChatConversation() {
                       </View>
                     )}
 
-                    {/* Message Bubble or Image */}
+                    {/* Message Bubble or Image or Call Card */}
                     {item.type === "image" && item.imageUrl ? (
                       <View className="w-48 h-36 rounded-2xl bg-gray-200 mb-1 items-center justify-center overflow-hidden border border-gray-200">
                         <Image
@@ -303,6 +365,66 @@ export default function ChatConversation() {
                           resizeMode="cover"
                         />
                       </View>
+                    ) : item.text?.includes("meet.jit.si") ? (
+                      (() => {
+                        const isVideoCall = item.text.toLowerCase().includes("video");
+                        const match = item.text.match(/(https:\/\/meet\.jit\.si\/[^\s]+)/);
+                        const callUrl = match ? match[0] : "";
+
+                        return (
+                          <View
+                            className={`p-3 rounded-2xl max-w-[82%] border shadow-xs ${
+                              isUser
+                                ? "bg-[#5D9649] border-[#4D823A]"
+                                : "bg-white border-gray-200"
+                            }`}
+                          >
+                            <View className="flex-row items-center mb-2">
+                              <View className="w-8 h-8 rounded-full bg-white/90 items-center justify-center mr-2 shadow-2xs">
+                                <Ionicons
+                                  name={isVideoCall ? "videocam" : "call"}
+                                  size={16}
+                                  color="#72AF5B"
+                                />
+                              </View>
+                              <View className="flex-1">
+                                <Text
+                                  className={`font-bold text-xs ${
+                                    isUser ? "text-white" : "text-gray-900"
+                                  }`}
+                                >
+                                  {isVideoCall ? "Video Call Invite" : "Voice Call Invite"}
+                                </Text>
+                                <Text
+                                  className={`text-[10px] ${
+                                    isUser ? "text-green-100" : "text-gray-500"
+                                  }`}
+                                >
+                                  Jitsi Meet Live Call
+                                </Text>
+                              </View>
+                            </View>
+
+                            <TouchableOpacity
+                              onPress={() =>
+                                callUrl && handleJoinCallFromUrl(callUrl, isVideoCall)
+                              }
+                              className="bg-white py-2 px-3 rounded-xl flex-row items-center justify-center border border-gray-200 active:bg-gray-50 shadow-2xs"
+                              activeOpacity={0.85}
+                            >
+                              <Ionicons
+                                name={isVideoCall ? "videocam" : "call"}
+                                size={14}
+                                color="#72AF5B"
+                                style={{ marginRight: 6 }}
+                              />
+                              <Text className="text-[#72AF5B] font-bold text-xs">
+                                Join Call Now
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        );
+                      })()
                     ) : (
                       <View
                         className={`px-4 py-2.5 max-w-[76%] ${
@@ -445,6 +567,155 @@ export default function ChatConversation() {
           </TouchableOpacity>
         </View>
       </KeyboardAvoidingView>
+
+      {/* Jitsi Meet Live Call Modal */}
+      <Modal
+        visible={activeCall.isOpen}
+        animationType="slide"
+        onRequestClose={() => setActiveCall((prev) => ({ ...prev, isOpen: false }))}
+        transparent={false}
+      >
+        <SafeAreaView className="flex-1 bg-gray-900" style={{ flex: 1, backgroundColor: "#111827" }}>
+          {/* Call Header */}
+          <View className="flex-row items-center justify-between px-4 py-3 bg-gray-900 border-b border-gray-800 z-20">
+            <View className="flex-row items-center flex-1 pr-2">
+              <TouchableOpacity
+                onPress={() => setActiveCall((prev) => ({ ...prev, isOpen: false }))}
+                className="p-1 -ml-1 mr-3"
+                accessibilityLabel="Minimize call"
+              >
+                <Ionicons name="chevron-down" size={26} color="#FFFFFF" />
+              </TouchableOpacity>
+
+              <View className="w-9 h-9 rounded-full bg-gray-800 items-center justify-center overflow-hidden mr-2.5 border border-gray-700">
+                {otherUserAvatar ? (
+                  <Image
+                    source={{ uri: otherUserAvatar }}
+                    className="w-full h-full"
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Ionicons name="person" size={20} color="#9CA3AF" />
+                )}
+              </View>
+
+              <View className="flex-1">
+                <Text
+                  className="text-white font-bold text-base"
+                  numberOfLines={1}
+                >
+                  {otherUserName}
+                </Text>
+                <View className="flex-row items-center mt-0.5">
+                  <View className="w-2 h-2 rounded-full bg-green-500 mr-1.5" />
+                  <Text className="text-xs text-green-400 font-medium">
+                    {activeCall.isVideo ? "Jitsi Video Call" : "Jitsi Voice Call"}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Header Actions: Browser & End Call */}
+            <View className="flex-row items-center gap-2">
+              <TouchableOpacity
+                onPress={() => Linking.openURL(activeCall.roomUrl)}
+                className="bg-gray-800 px-3 py-1.5 rounded-lg flex-row items-center border border-gray-700 active:bg-gray-700"
+                accessibilityLabel="Open in full browser / Jitsi app"
+              >
+                <Ionicons
+                  name="open-outline"
+                  size={15}
+                  color="#FFFFFF"
+                  style={{ marginRight: 4 }}
+                />
+                <Text className="text-white text-xs font-semibold">Browser</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => setActiveCall((prev) => ({ ...prev, isOpen: false }))}
+                className="w-9 h-9 rounded-full bg-red-600 items-center justify-center active:bg-red-700"
+                accessibilityLabel="End call"
+              >
+                <Ionicons
+                  name="call"
+                  size={18}
+                  color="#FFFFFF"
+                  style={{ transform: [{ rotate: "135deg" }] }}
+                />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Call Content Area */}
+          <View className="flex-1 bg-gray-950 items-center justify-center relative" style={{ flex: 1 }}>
+            {Platform.OS === "web" ? (
+              <iframe
+                src={activeCall.roomUrl}
+                allow="camera; microphone; fullscreen; display-capture; autoplay"
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  border: "none",
+                  backgroundColor: "#030712",
+                }}
+              />
+            ) : (
+              <View className="items-center justify-center p-6">
+                <View className="w-28 h-28 rounded-full bg-gray-800 items-center justify-center border-4 border-[#72AF5B] mb-4 overflow-hidden shadow-lg">
+                  {otherUserAvatar ? (
+                    <Image
+                      source={{ uri: otherUserAvatar }}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Ionicons name="person" size={56} color="#9CA3AF" />
+                  )}
+                </View>
+
+                <Text className="text-white text-xl font-bold mb-1">
+                  {otherUserName}
+                </Text>
+                <Text className="text-gray-400 text-sm mb-6">
+                  {activeCall.isVideo
+                    ? "Video Call in progress..."
+                    : "Voice Call in progress..."}
+                </Text>
+
+                <TouchableOpacity
+                  onPress={() => Linking.openURL(activeCall.roomUrl)}
+                  className="bg-[#72AF5B] px-6 py-3 rounded-full flex-row items-center active:bg-[#5E9C4E] shadow-md mb-3"
+                >
+                  <Ionicons
+                    name={activeCall.isVideo ? "videocam" : "call"}
+                    size={20}
+                    color="#FFFFFF"
+                    style={{ marginRight: 8 }}
+                  />
+                  <Text className="text-white font-bold text-sm">
+                    Open Jitsi Meet Room
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  onPress={() => setActiveCall((prev) => ({ ...prev, isOpen: false }))}
+                  className="bg-red-600 px-6 py-3 rounded-full flex-row items-center active:bg-red-700 shadow-md"
+                >
+                  <Ionicons
+                    name="call"
+                    size={20}
+                    color="#FFFFFF"
+                    style={{ transform: [{ rotate: "135deg" }], marginRight: 8 }}
+                  />
+                  <Text className="text-white font-bold text-sm">
+                    End Call
+                  </Text>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </SafeAreaView>
+      </Modal>
     </SafeAreaView>
   );
 }

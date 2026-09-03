@@ -1,17 +1,41 @@
 import { useAuth } from "@/hooks/use-auth";
+import { getBadgeCountsApi } from "@/services/notification-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Image, Text, TouchableOpacity, View } from "react-native";
-import { INITIAL_NOTIFICATIONS, NotificationModal } from "./NotificationModal";
+import { NotificationModal } from "./NotificationModal";
 
 const UserHeader = () => {
   const router = useRouter();
   const { user } = useAuth();
   const [isNotifOpen, setNotifOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(
-    INITIAL_NOTIFICATIONS.filter((n) => n.isUnread).length,
-  );
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadBadgeCounts = async () => {
+      try {
+        const counts = await getBadgeCountsApi();
+        if (isMounted) {
+          setUnreadCount(counts.unreadNotificationsCount || 0);
+        }
+      } catch {
+        // Ignored
+      }
+    };
+
+    void loadBadgeCounts();
+    const interval = setInterval(() => {
+      void loadBadgeCounts();
+    }, 5000);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   return (
     <View className="flex-row justify-between items-center px-4 py-3 bg-white border-b border-gray-100 z-30">

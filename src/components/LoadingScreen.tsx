@@ -25,7 +25,7 @@ export function LoadingScreen(): React.JSX.Element {
       -1,
       false,
     );
-  }, []);
+  }, [dist]);
 
   const dashStyle = useAnimatedStyle(() => {
     "worklet";

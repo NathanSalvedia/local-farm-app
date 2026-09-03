@@ -182,9 +182,7 @@ export default function Chats() {
                     <Ionicons name="person" size={28} color="#9CA3AF" />
                   )}
                 </View>
-                <View className="absolute -bottom-0.5 -right-0.5 bg-[#72AF5B] w-5 h-5 rounded-full items-center justify-center border-2 border-white">
-                  <Ionicons name="add" size={14} color="#FFFFFF" />
-                </View>
+                <View className="absolute bottom-0 right-0 bg-green-500 w-3.5 h-3.5 rounded-full border-2 border-white" />
               </View>
               <Text className="text-xs font-semibold text-gray-800 mt-1.5">
                 Me

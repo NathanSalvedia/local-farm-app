@@ -129,7 +129,7 @@ export function UserTabBar({
             }
             if (route.name === "community" || route.name === "People" || route.name === "Friends") {
               try {
-                router.push("/user/People");
+                router.push("/user/Friends");
                 return;
               } catch {}
             }
@@ -299,7 +299,7 @@ export default function Navigation(props?: NavigationProps) {
       }
     } else if (tabKey === "community") {
       try {
-        router.push("/user/People");
+        router.push("/user/Friends");
       } catch (e) {
         console.warn(e);
       }

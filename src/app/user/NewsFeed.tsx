@@ -13,7 +13,17 @@ import {
   toggleSavePostApi,
   updatePostApi,
 } from "@/services/post-service";
+import {
+  createStoryApi,
+  deleteStoryApi,
+  getStoriesApi,
+  markStoryViewedApi,
+  StoryItem,
+  updateStoryPrivacyApi,
+  UserStory,
+} from "@/services/story-service";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -36,22 +46,6 @@ import {
 import CreatePostModal from "../../components/CreatePostModal";
 import BottomNavBar from "../../components/Navigation";
 import UserHeader from "../../components/UserHeader";
-
-interface StoryItem {
-  id: string;
-  imageUrl: string;
-  content?: string;
-  isSeen: boolean;
-  timeAgo?: string;
-}
-
-interface UserStory {
-  userId: string;
-  userName: string;
-  userAvatar?: string;
-  color: string;
-  stories: StoryItem[];
-}
 
 interface Post {
   id: string;
@@ -110,249 +104,11 @@ const DEFAULT_BOOKMARK_COLLECTIONS: BookmarkCollection[] = [
   { id: "saved", name: "Saved Items", icon: "bookmark" },
 ];
 
-const mockUserStories: UserStory[] = [
-  {
-    userId: "u1",
-    userName: "Paulbert",
-    userAvatar: "https://i.pravatar.cc/150?img=11",
-    color: "#72AF5B",
-    stories: [
-      {
-        id: "s1_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1542838132-92c53300491e?w=800&q=80",
-        content: "Fresh harvest from our organic farm today! 🌿🍅",
-        isSeen: false,
-        timeAgo: "1h ago",
-      },
-      {
-        id: "s1_2",
-        imageUrl:
-          "https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=800&q=80",
-        content: "Organizing new seed packs for wholesale orders 🥕",
-        isSeen: false,
-        timeAgo: "30m ago",
-      },
-    ],
-  },
-  {
-    userId: "u2",
-    userName: "Pitos",
-    userAvatar: "https://i.pravatar.cc/150?img=33",
-    color: "#3B82F6",
-    stories: [
-      {
-        id: "s2_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?w=800&q=80",
-        content: "New batch of hydroponic lettuce ready for order! 🥬",
-        isSeen: false,
-        timeAgo: "2h ago",
-      },
-      {
-        id: "s2_2",
-        imageUrl:
-          "https://images.unsplash.com/photo-1500651230702-0e2d8a49d4ad?w=800&q=80",
-        content: "Nutrient water levels checked! 🌱",
-        isSeen: true,
-        timeAgo: "4h ago",
-      },
-    ],
-  },
-  {
-    userId: "u3",
-    userName: "Cleo",
-    userAvatar: "https://i.pravatar.cc/150?img=44",
-    color: "#EC4899",
-    stories: [
-      {
-        id: "s3_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1508746829417-e6f548d8d6ed?w=800&q=80",
-        content: "Sunflowers blooming in full color! 🌻✨",
-        isSeen: false,
-        timeAgo: "3h ago",
-      },
-    ],
-  },
-  {
-    userId: "u4",
-    userName: "Maria",
-    userAvatar: "https://i.pravatar.cc/150?img=47",
-    color: "#F59E0B",
-    stories: [
-      {
-        id: "s4_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1550828520-4cb496926fc9?w=800&q=80",
-        content: "Fresh dragon fruits & mangoes picked this morning! 🐉🍎",
-        isSeen: true,
-        timeAgo: "6h ago",
-      },
-    ],
-  },
-  {
-    userId: "u5",
-    userName: "Juan",
-    userAvatar: "https://i.pravatar.cc/150?img=52",
-    color: "#8B5CF6",
-    stories: [
-      {
-        id: "s5_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1560493676-04071c5f467b?w=800&q=80",
-        content: "Organic compost available for local gardens 🌱",
-        isSeen: false,
-        timeAgo: "45m ago",
-      },
-    ],
-  },
-  {
-    userId: "u6",
-    userName: "Elena",
-    userAvatar: "https://i.pravatar.cc/150?img=26",
-    color: "#10B981",
-    stories: [
-      {
-        id: "s6_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1598511726623-d2e9996892f0?w=800&q=80",
-        content: "Sweet corn harvest is live! 🌽🌽",
-        isSeen: false,
-        timeAgo: "5h ago",
-      },
-    ],
-  },
-  {
-    userId: "u7",
-    userName: "Carlos",
-    userAvatar: "https://i.pravatar.cc/150?img=60",
-    color: "#EF4444",
-    stories: [
-      {
-        id: "s7_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1587049352846-4a222e784d38?w=800&q=80",
-        content: "Farm-fresh strawberry baskets 🍓🍓",
-        isSeen: true,
-        timeAgo: "8h ago",
-      },
-    ],
-  },
-  {
-    userId: "u8",
-    userName: "Sophia",
-    userAvatar: "https://i.pravatar.cc/150?img=9",
-    color: "#6366F1",
-    stories: [
-      {
-        id: "s8_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1516253593875-bd7ba052fbc5?w=800&q=80",
-        content: "Join our weekend urban farming workshop! 🧑‍🌾",
-        isSeen: false,
-        timeAgo: "2h ago",
-      },
-    ],
-  },
-];
-
-const MOCK_GALLERY_IMAGES = [
-  "https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&q=80",
-  "https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=400&q=80",
-  "https://images.unsplash.com/photo-1500937386664-56d1dfef3854?w=400&q=80",
-  "https://images.unsplash.com/photo-1597362925123-77861d3fbac7?w=400&q=80",
-  "https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=400&q=80",
-  "https://images.unsplash.com/photo-1615485290382-441e4d049cb5?w=400&q=80",
-  "https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?w=400&q=80",
-  "https://images.unsplash.com/photo-1560493676-04071c5f467b?w=400&q=80",
-  "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&q=80",
-  "https://images.unsplash.com/photo-1516253593875-bd7ba052fbc5?w=400&q=80",
-  "https://images.unsplash.com/photo-1574943320219-553eb213f72d?w=400&q=80",
-  "https://images.unsplash.com/photo-1587049352846-4a222e784d38?w=400&q=80",
-  "https://images.unsplash.com/photo-1528825871115-3581a5387919?w=400&q=80",
-  "https://images.unsplash.com/photo-1550828520-4cb496926fc9?w=400&q=80",
-  "https://images.unsplash.com/photo-1567306226416-28f0efdc88ce?w=400&q=80",
-  "https://images.unsplash.com/photo-1590779033100-9f60a05a013d?w=400&q=80",
-  "https://images.unsplash.com/photo-1598170845058-32b9d6a5da37?w=400&q=80",
-  "https://images.unsplash.com/photo-1508746829417-e6f548d8d6ed?w=400&q=80",
-  "https://images.unsplash.com/photo-1500651230702-0e2d8a49d4ad?w=400&q=80",
-  "https://images.unsplash.com/photo-1557844352-761f2565b576?w=400&q=80",
-  "https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?w=400&q=80",
-  "https://images.unsplash.com/photo-1598511726623-d2e9996892f0?w=400&q=80",
-  "https://images.unsplash.com/photo-1519999482648-25049ddd37b1?w=400&q=80",
-  "https://images.unsplash.com/photo-1576045057995-568f588f82fb?w=400&q=80",
-  "https://images.unsplash.com/photo-1563729784474-d77dbb933a9e?w=400&q=80",
-  "https://images.unsplash.com/photo-1573246123716-6b1782bfc499?w=400&q=80",
-  "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80",
-  "https://images.unsplash.com/photo-1589927986089-35812388d1f4?w=400&q=80",
-  "https://images.unsplash.com/photo-1533038590840-1cde6e668a91?w=400&q=80",
-  "https://images.unsplash.com/photo-1526344966-89049886b28d?w=400&q=80",
-];
-
-const POSTS: Post[] = [
-  {
-    id: "1",
-    authorName: "Paulbert Landicho",
-    authorRole: "Wholesaler",
-    avatarUri: "https://i.pravatar.cc/150?img=11",
-    location: "Iligan City, Philippines",
-    timeAgo: "2h ago",
-    content:
-      "Mga suki! Naa tay presko ug tam-is nga apple karon.🍎 Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/apple.jpg"),
-    likes: 142,
-    comments: 22,
-    shares: 55,
-  },
-  {
-    id: "2",
-    authorName: "Nez Uy",
-    authorRole: "Temprary",
-    avatarUri: "https://i.pravatar.cc/150?img=5",
-    location: "Iligan City, Philippines",
-    timeAgo: "4h ago",
-    content:
-      "Mga suki! Naa tay presko nga durian karon. Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/durian.jpg"),
-    likes: 289,
-    comments: 41,
-    shares: 18,
-  },
-  {
-    id: "3",
-    authorName: "Juan Dela Cruz",
-    authorRole: "Wholesaler",
-    avatarUri: "https://i.pravatar.cc/150?img=8",
-    location: "Iligan City, Philippines",
-    timeAgo: "6h ago",
-    content:
-      "Mga suki! Naa tay presko ug tam-is nga mga orange karon. 🍊 Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/orange.jpg"),
-    likes: 310,
-    comments: 34,
-    shares: 62,
-  },
-  {
-    id: "4",
-    authorName: "Kent Zorel Elnas",
-    authorRole: "field",
-    avatarUri: "https://i.pravatar.cc/150?img=9",
-    location: "Iligan City, Philippines",
-    timeAgo: "1d ago",
-    content:
-      "Mga suki! Naa tay presko ug tam-is nga mga pineapple karon. 🍍 Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/pineapple.jpg"),
-    likes: 524,
-    comments: 89,
-    shares: 104,
-  },
-];
-
 const STORY_DURATION = 4000;
 
 export default function NewsFeed() {
   const { user } = useAuth();
+  const [userStories, setUserStories] = useState<UserStory[]>([]);
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeSubStoryIndex, setActiveSubStoryIndex] = useState<number>(0);
   const [isStoryModalVisible, setStoryModalVisible] = useState(false);
@@ -362,6 +118,14 @@ export default function NewsFeed() {
   const [selectedStoryImage, setSelectedStoryImage] = useState<string | null>(
     null,
   );
+  const [storyMediaType, setStoryMediaType] = useState<
+    "image" | "video" | "text"
+  >("image");
+  const [deviceGalleryPhotos, setDeviceGalleryPhotos] = useState<string[]>([]);
+  const [storyTextContent, setStoryTextContent] = useState<string>("");
+  const [storyBgColor, setStoryBgColor] = useState<string>("#1e293b");
+  const [isEditingTextOverlay, setIsEditingTextOverlay] = useState<boolean>(false);
+  const [isPostingStory, setIsPostingStory] = useState<boolean>(false);
   const [storyPrivacy, setStoryPrivacy] = useState<"Public" | "Friends" | "Only me">(
     "Public",
   );
@@ -417,6 +181,15 @@ export default function NewsFeed() {
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
   const [isRefreshingPosts, setIsRefreshingPosts] = useState(false);
 
+  const fetchStories = async () => {
+    try {
+      const data = await getStoriesApi();
+      setUserStories(data || []);
+    } catch (err) {
+      console.warn("Failed to fetch stories from API:", err);
+    }
+  };
+
   const fetchFeedPosts = async () => {
     try {
       const data = await getPostsApi();
@@ -431,7 +204,174 @@ export default function NewsFeed() {
 
   useEffect(() => {
     fetchFeedPosts();
+    fetchStories();
   }, []);
+
+  // Pick camera photo/video for story (25-second limit for videos)
+  const handlePickCamera = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== "granted") {
+        showToast("Camera permission is required to snap a photo or video", "error");
+        return;
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images", "videos"],
+        allowsEditing: true,
+        videoMaxDuration: 25,
+        quality: 0.8,
+        base64: true,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        const isVideo = asset.type === "video";
+
+        // Validate 25-second maximum limit
+        if (isVideo && asset.duration) {
+          const durationSec =
+            asset.duration > 100 ? asset.duration / 1000 : asset.duration;
+          if (durationSec > 25.5) {
+            showToast("Video exceeds the 25-second story limit", "warning");
+            return;
+          }
+        }
+
+        const mediaUri =
+          asset.base64 && !isVideo
+            ? `data:image/jpeg;base64,${asset.base64}`
+            : asset.uri;
+
+        setStoryMediaType(isVideo ? "video" : "image");
+        setSelectedStoryImage(mediaUri);
+        setDeviceGalleryPhotos((prev) => [
+          mediaUri,
+          ...prev.filter((p) => p !== mediaUri),
+        ]);
+        setStoryStep("EDIT_STORY");
+      }
+    } catch (e: any) {
+      showToast(e.message || "Failed to open camera", "error");
+    }
+  };
+
+  // Pick phone gallery photo/video for story (25-second limit for videos)
+  const handlePickGallery = async () => {
+    try {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        showToast("Gallery permission is required to select photos/videos", "error");
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images", "videos"],
+        allowsEditing: true,
+        videoMaxDuration: 25,
+        quality: 0.8,
+        base64: true,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        const isVideo = asset.type === "video";
+
+        // Validate 25-second maximum limit
+        if (isVideo && asset.duration) {
+          const durationSec =
+            asset.duration > 100 ? asset.duration / 1000 : asset.duration;
+          if (durationSec > 25.5) {
+            showToast("Video exceeds the 25-second story limit", "warning");
+            return;
+          }
+        }
+
+        const mediaUri =
+          asset.base64 && !isVideo
+            ? `data:image/jpeg;base64,${asset.base64}`
+            : asset.uri;
+
+        setStoryMediaType(isVideo ? "video" : "image");
+        setSelectedStoryImage(mediaUri);
+        setDeviceGalleryPhotos((prev) => [
+          mediaUri,
+          ...prev.filter((p) => p !== mediaUri),
+        ]);
+        setStoryStep("EDIT_STORY");
+      }
+    } catch (e: any) {
+      showToast(e.message || "Failed to open phone gallery", "error");
+    }
+  };
+
+  // Text Story creation
+  const handleSelectTextStory = () => {
+    setStoryMediaType("text");
+    setSelectedStoryImage(null);
+    setStoryTextContent("");
+    setIsEditingTextOverlay(true);
+    setStoryStep("EDIT_STORY");
+  };
+
+  // Share & Publish Story Function
+  const handleShareStory = async () => {
+    if (!selectedStoryImage && !storyTextContent.trim()) {
+      showToast("Please choose a photo/video or write something for your story", "warning");
+      return;
+    }
+
+    try {
+      setIsPostingStory(true);
+      const newStory = await createStoryApi({
+        mediaType: selectedStoryImage ? storyMediaType : "text",
+        mediaUrl: selectedStoryImage || undefined,
+        textContent: storyTextContent.trim() || undefined,
+        backgroundColor: storyBgColor,
+        privacy: storyPrivacy,
+      });
+
+      showToast("Story shared successfully!", "success");
+      setStoryModalVisible(false);
+      setSelectedStoryImage(null);
+      setStoryTextContent("");
+      setIsEditingTextOverlay(false);
+      setStoryStep("SELECT_MEDIA");
+      await fetchStories();
+    } catch (err: any) {
+      showToast(err.message || "Failed to share story", "error");
+    } finally {
+      setIsPostingStory(false);
+    }
+  };
+
+  const handleDeleteStory = async (storyId: string) => {
+    try {
+      await deleteStoryApi(storyId);
+      showToast("Story deleted successfully", "success");
+      setActiveStoryIndex(null);
+      setActiveSubStoryIndex(0);
+      await fetchStories();
+    } catch (err: any) {
+      showToast(err.message || "Failed to delete story", "error");
+    }
+  };
+
+  const handleUpdateStoryPrivacy = async (
+    storyId: string,
+    currentPrivacy?: string
+  ) => {
+    const nextPrivacy: "Public" | "Friends" | "Only me" =
+      currentPrivacy === "Public"
+        ? "Friends"
+        : currentPrivacy === "Friends"
+        ? "Only me"
+        : "Public";
+
+    try {
+      await updateStoryPrivacyApi(storyId, nextPrivacy);
+      showToast(`Privacy changed to ${nextPrivacy}`, "success");
+      await fetchStories();
+    } catch (err: any) {
+      showToast(err.message || "Failed to update story privacy", "error");
+    }
+  };
 
   const handleNewPostCreated = (newPost: PostItem) => {
     setPosts((prev) => [newPost, ...prev]);
@@ -774,7 +714,7 @@ export default function NewsFeed() {
     if (activeSubStoryIndex > 0) {
       setActiveSubStoryIndex((prev) => prev - 1);
     } else if (activeStoryIndex > 0) {
-      const prevUserStories = mockUserStories[activeStoryIndex - 1].stories;
+      const prevUserStories = userStories[activeStoryIndex - 1].stories;
       setActiveStoryIndex(activeStoryIndex - 1);
       setActiveSubStoryIndex(prevUserStories.length - 1);
     }
@@ -782,10 +722,10 @@ export default function NewsFeed() {
 
   const handleNextStory = () => {
     if (activeStoryIndex === null) return;
-    const currentUser = mockUserStories[activeStoryIndex];
+    const currentUser = userStories[activeStoryIndex];
     if (activeSubStoryIndex < currentUser.stories.length - 1) {
       setActiveSubStoryIndex((prev) => prev + 1);
-    } else if (activeStoryIndex < mockUserStories.length - 1) {
+    } else if (activeStoryIndex < userStories.length - 1) {
       setActiveStoryIndex(activeStoryIndex + 1);
       setActiveSubStoryIndex(0);
     } else {
@@ -824,6 +764,23 @@ export default function NewsFeed() {
   useEffect(() => {
     if (activeStoryIndex === null) return;
 
+    // Record view if not yet viewed
+    const currentStory = userStories[activeStoryIndex]?.stories?.[activeSubStoryIndex];
+    if (currentStory?.id && !currentStory.isSeen) {
+      markStoryViewedApi(currentStory.id).catch(() => {});
+      setUserStories((prev) =>
+        prev.map((u, uIdx) => {
+          if (uIdx !== activeStoryIndex) return u;
+          return {
+            ...u,
+            stories: u.stories.map((s, sIdx) =>
+              sIdx === activeSubStoryIndex ? { ...s, isSeen: true } : s
+            ),
+          };
+        })
+      );
+    }
+
     progressAnim.setValue(0);
     cardScaleAnim.setValue(0.92);
     cardOpacityAnim.setValue(0);
@@ -858,7 +815,7 @@ export default function NewsFeed() {
   }, [activeStoryIndex, activeSubStoryIndex]);
 
   const currentStoryUser =
-    activeStoryIndex !== null ? mockUserStories[activeStoryIndex] : null;
+    activeStoryIndex !== null ? userStories[activeStoryIndex] : null;
   const currentSubStory =
     currentStoryUser && currentStoryUser.stories[activeSubStoryIndex]
       ? currentStoryUser.stories[activeSubStoryIndex]
@@ -892,6 +849,7 @@ export default function NewsFeed() {
                 onRefresh={() => {
                   setIsRefreshingPosts(true);
                   fetchFeedPosts();
+                  fetchStories();
                 }}
                 colors={["#72AF5B"]}
                 tintColor="#72AF5B"
@@ -913,79 +871,144 @@ export default function NewsFeed() {
                 scrollEventThrottle={16}
                 className="px-4"
               >
-                {/* Item 1: "Your story" (The Trigger) */}
-                <View className="items-center mr-4 ml-4">
-                  <TouchableOpacity
-                    onPress={() => {
-                      setStoryStep("SELECT_MEDIA");
-                      setStoryModalVisible(true);
-                    }}
-                    activeOpacity={0.8}
-                    className="items-center"
-                  >
-                    {/* Avatar Container */}
-                    <View className="relative">
-                      <View className="w-16 h-16 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-200">
-                        {user?.avatarUrl ? (
-                          <Image
-                            source={{ uri: user.avatarUrl }}
-                            style={{ width: "100%", height: "100%" }}
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <Ionicons name="person" size={32} color="#9CA3AF" />
-                        )}
-                      </View>
-                      {/* The '+' Badge */}
-                      <View className="absolute bottom-0 right-0 bg-blue-500 w-5 h-5 rounded-full items-center justify-center border-2 border-white shadow-xs">
-                        <Ionicons name="add" size={14} color="#FFFFFF" />
-                      </View>
-                    </View>
-                    <Text className="text-xs font-medium text-gray-700 mt-1">
-                      Your story
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Items 2+: Other Users' Stories (Grouped per User) */}
-                {mockUserStories.map((userStory, index) => {
-                  const hasUnseen = userStory.stories.some((s) => !s.isSeen);
+                {/* Item 1: "Your story" (Views own stories or adds new one) */}
+                {(() => {
+                  const currentUserStory = userStories.find(
+                    (s) => s.isCurrentUser || s.userId === String(user?.id)
+                  );
+                  const hasUserStory = Boolean(
+                    currentUserStory && currentUserStory.stories.length > 0
+                  );
+                  const currentUserIdx = userStories.findIndex(
+                    (s) => s.isCurrentUser || s.userId === String(user?.id)
+                  );
 
                   return (
-                    <View key={userStory.userId} className="items-center mr-4">
-                      <TouchableOpacity
-                        onPress={() => {
-                          setActiveStoryIndex(index);
-                          setActiveSubStoryIndex(0);
-                        }}
-                        activeOpacity={0.8}
-                        className="items-center"
-                      >
-                        {/* Avatar with unseen story colored border (#72AF5B) */}
-                        <View
-                          className={`w-16 h-16 rounded-full p-[2px] items-center justify-center bg-white ${
-                            hasUnseen
-                              ? "border-2 border-[#72AF5B]"
-                              : "border border-gray-300"
-                          }`}
-                          style={
-                            hasUnseen ? { borderColor: "#72AF5B" } : undefined
-                          }
+                    <View className="items-center mr-4 ml-4">
+                      <View className="relative items-center">
+                        <TouchableOpacity
+                          onPress={() => {
+                            if (hasUserStory && currentUserIdx >= 0) {
+                              // View logged-in user's own active story
+                              setActiveStoryIndex(currentUserIdx);
+                              setActiveSubStoryIndex(0);
+                            } else {
+                              // Create a new story if none exists
+                              setStoryStep("SELECT_MEDIA");
+                              setStoryModalVisible(true);
+                            }
+                          }}
+                          activeOpacity={0.8}
+                          className="items-center"
                         >
-                          <View className="w-full h-full rounded-full bg-gray-200 items-center justify-center">
-                            <Ionicons name="person" size={28} color="#6B7280" />
+                          {/* Avatar Container with active story ring (#72AF5B) */}
+                          <View
+                            className={`w-16 h-16 rounded-full p-[2px] items-center justify-center bg-white ${
+                              hasUserStory
+                                ? "border-2 border-[#72AF5B]"
+                                : "border border-gray-300"
+                            }`}
+                          >
+                            <View className="w-full h-full rounded-full bg-gray-200 items-center justify-center overflow-hidden">
+                              {user?.avatarUrl ? (
+                                <Image
+                                  source={{ uri: user.avatarUrl }}
+                                  style={{ width: "100%", height: "100%" }}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <Ionicons name="person" size={30} color="#9CA3AF" />
+                              )}
+                            </View>
                           </View>
-                        </View>
-                        <Text
-                          className="text-xs font-medium text-gray-700 mt-1 truncate w-16 text-center"
-                          numberOfLines={1}
+                        </TouchableOpacity>
+
+                        {/* The '+' Badge (Always taps to create/add new story) */}
+                        <TouchableOpacity
+                          onPress={() => {
+                            setStoryStep("SELECT_MEDIA");
+                            setStoryModalVisible(true);
+                          }}
+                          activeOpacity={0.8}
+                          className="absolute bottom-5 right-0 bg-blue-500 w-5 h-5 rounded-full items-center justify-center border-2 border-white shadow-xs z-10"
+                          accessibilityLabel="Add to your story"
                         >
-                          {userStory.userName}
+                          <Ionicons name="add" size={14} color="#FFFFFF" />
+                        </TouchableOpacity>
+
+                        <Text className="text-xs font-medium text-gray-700 mt-1">
+                          Your story
                         </Text>
-                      </TouchableOpacity>
+                      </View>
                     </View>
                   );
-                })}
+                })()}
+
+                {/* Items 2+: OTHER Users' Stories Only (No duplicates of you) */}
+                {userStories
+                  .filter(
+                    (userStory) =>
+                      !userStory.isCurrentUser &&
+                      userStory.userId !== String(user?.id)
+                  )
+                  .map((userStory) => {
+                    const actualIndex = userStories.findIndex(
+                      (s) => s.userId === userStory.userId
+                    );
+                    const hasUnseen = userStory.stories.some((s) => !s.isSeen);
+
+                    return (
+                      <View
+                        key={userStory.userId}
+                        className="items-center mr-4"
+                      >
+                        <TouchableOpacity
+                          onPress={() => {
+                            setActiveStoryIndex(
+                              actualIndex >= 0 ? actualIndex : 0
+                            );
+                            setActiveSubStoryIndex(0);
+                          }}
+                          activeOpacity={0.8}
+                          className="items-center"
+                        >
+                          {/* Avatar with unseen story colored border (#72AF5B) */}
+                          <View
+                            className={`w-16 h-16 rounded-full p-[2px] items-center justify-center bg-white ${
+                              hasUnseen
+                                ? "border-2 border-[#72AF5B]"
+                                : "border border-gray-300"
+                            }`}
+                            style={
+                              hasUnseen ? { borderColor: "#72AF5B" } : undefined
+                            }
+                          >
+                            {userStory.userAvatar ? (
+                              <Image
+                                source={{ uri: userStory.userAvatar }}
+                                className="w-full h-full rounded-full"
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <View className="w-full h-full rounded-full bg-gray-200 items-center justify-center">
+                                <Ionicons
+                                  name="person"
+                                  size={28}
+                                  color="#6B7280"
+                                />
+                              </View>
+                            )}
+                          </View>
+                          <Text
+                            className="text-xs font-medium text-gray-700 mt-1 truncate w-16 text-center"
+                            numberOfLines={1}
+                          >
+                            {userStory.userName}
+                          </Text>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
               </ScrollView>
             </View>
 
@@ -1027,7 +1050,7 @@ export default function NewsFeed() {
                 return (
                   <View
                     key={post.id}
-                    className={`bg-white mx-2 mb-4 rounded-xl shadow-sm border border-gray-100 relative ${
+                    className={`bg-white mx-3.5 mb-4 rounded-2xl shadow-xs border border-gray-100 relative ${
                       isCardElevated ? "z-50" : "z-0"
                     }`}
                     style={{
@@ -1096,7 +1119,7 @@ export default function NewsFeed() {
                       </View>
                     )}
 
-                    <View className="p-4">
+                    <View className="p-3.5">
                       {/* Shared Post Header Banner */}
                       {post.isShared && post.originalPost && (
                         <View className="flex-row items-center mb-2.5 px-0.5">
@@ -1110,36 +1133,45 @@ export default function NewsFeed() {
                         </View>
                       )}
 
-                      {/* Post Header */}
+                      {/* Post Header (Uniform with Stories Profile Ring) */}
                       <View className="flex-row justify-between items-start mb-3">
-                        <View className="flex-row items-center">
-                          <View className="h-10 w-10 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
-                            {post.avatarUri ? (
-                              <Image
-                                source={{ uri: post.avatarUri }}
-                                style={{ width: "100%", height: "100%" }}
-                                resizeMode="cover"
-                              />
-                            ) : (
-                              <Ionicons name="person" size={20} color="#72AF5B" />
-                            )}
+                        <View className="flex-row items-center flex-1">
+                          {/* Profile Avatar with Story-style Green Ring */}
+                          <View className="w-12 h-12 rounded-full p-[2px] items-center justify-center bg-white border-2 border-[#72AF5B] mr-3 shadow-xs">
+                            <View className="w-full h-full rounded-full bg-gray-100 items-center justify-center overflow-hidden">
+                              {post.avatarUri ? (
+                                <Image
+                                  source={{ uri: post.avatarUri }}
+                                  style={{ width: "100%", height: "100%" }}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <Ionicons name="person" size={22} color="#9CA3AF" />
+                              )}
+                            </View>
                           </View>
-                          <View>
-                            <View className="flex-row items-center">
-                              <Text className="font-bold text-gray-900 mr-2 text-base">
+
+                          <View className="flex-1 justify-center">
+                            <View className="flex-row items-center flex-wrap gap-1.5">
+                              <Text className="font-bold text-gray-900 text-base">
                                 {post.authorName}
                               </Text>
-                              <Text className="text-green-600 text-xs font-bold bg-green-50 px-1.5 py-0.5 rounded">
-                                {post.authorRole}
-                              </Text>
+                              {post.authorRole ? (
+                                <View className="bg-[#EAF4E6] border border-[#CDE5C4] px-2 py-0.5 rounded-full">
+                                  <Text className="text-[#487E34] text-xs font-bold capitalize">
+                                    {post.authorRole}
+                                  </Text>
+                                </View>
+                              ) : null}
                             </View>
+
                             <View className="flex-row items-center mt-0.5">
                               <Ionicons
                                 name="location"
                                 size={12}
                                 color="#72AF5B"
                               />
-                              <Text className="text-xs text-gray-500 ml-1 mr-2">
+                              <Text className="text-xs text-gray-500 ml-1 mr-1.5 font-medium">
                                 {post.location} • {post.timeAgo}
                               </Text>
                               <Ionicons
@@ -1929,33 +1961,93 @@ export default function NewsFeed() {
 
               {/* User Header Story */}
               <View className="flex-row items-center justify-between w-full">
-                <View className="flex-row items-center">
+                <View className="flex-row items-center flex-1 mr-2">
                   <View
                     className="h-10 w-10 rounded-full border-2 items-center justify-center bg-gray-800 mr-3"
                     style={{ borderColor: "#72AF5B" }}
                   >
-                    <Ionicons name="person" size={20} color="#9CA3AF" />
+                    {currentStoryUser.userAvatar ? (
+                      <Image
+                        source={{ uri: currentStoryUser.userAvatar }}
+                        className="w-full h-full rounded-full"
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={20} color="#9CA3AF" />
+                    )}
                   </View>
                   <View>
                     <Text className="text-white font-bold text-base">
                       {currentStoryUser.userName}
                     </Text>
-                    {currentSubStory.timeAgo && (
-                      <Text className="text-white/80 text-xs">
-                        {currentSubStory.timeAgo}
-                      </Text>
-                    )}
+                    <View className="flex-row items-center gap-2 mt-0.5">
+                      {currentSubStory.timeAgo && (
+                        <Text className="text-white/80 text-xs">
+                          {currentSubStory.timeAgo}
+                        </Text>
+                      )}
+                      {currentSubStory.privacy && (
+                        <Text className="text-white/70 text-[11px] bg-white/20 px-1.5 py-0.5 rounded">
+                          {currentSubStory.privacy}
+                        </Text>
+                      )}
+                    </View>
                   </View>
                 </View>
 
-                <TouchableOpacity
-                  onPress={() => setActiveStoryIndex(null)}
-                  className="w-10 h-10 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
-                  accessibilityRole="button"
-                  accessibilityLabel="Close story viewer"
-                >
-                  <Ionicons name="close" size={24} color="white" />
-                </TouchableOpacity>
+                {/* Right Header Actions */}
+                <View className="flex-row items-center gap-2">
+                  {/* If user's own story: allow changing privacy & deleting */}
+                  {(currentStoryUser.isCurrentUser || currentStoryUser.userId === String(user?.id)) && currentSubStory?.id && (
+                    <>
+                      {/* Privacy toggle */}
+                      <TouchableOpacity
+                        onPress={() =>
+                          handleUpdateStoryPrivacy(
+                            currentSubStory.id,
+                            currentSubStory.privacy
+                          )
+                        }
+                        className="bg-black/50 px-2.5 py-1.5 rounded-full flex-row items-center active:bg-black/70 border border-white/20"
+                        accessibilityLabel="Change story privacy"
+                      >
+                        <Ionicons
+                          name={
+                            currentSubStory.privacy === "Public"
+                              ? "globe-outline"
+                              : currentSubStory.privacy === "Friends"
+                              ? "people-outline"
+                              : "lock-closed-outline"
+                          }
+                          size={14}
+                          color="#72AF5B"
+                        />
+                        <Text className="text-white text-xs ml-1 font-semibold">
+                          {currentSubStory.privacy || "Public"}
+                        </Text>
+                      </TouchableOpacity>
+
+                      {/* Delete Story Button */}
+                      <TouchableOpacity
+                        onPress={() => handleDeleteStory(currentSubStory.id)}
+                        className="w-9 h-9 rounded-full bg-red-500/80 items-center justify-center active:bg-red-600"
+                        accessibilityLabel="Delete story"
+                      >
+                        <Ionicons name="trash-outline" size={18} color="white" />
+                      </TouchableOpacity>
+                    </>
+                  )}
+
+                  {/* Close button */}
+                  <TouchableOpacity
+                    onPress={() => setActiveStoryIndex(null)}
+                    className="w-9 h-9 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
+                    accessibilityRole="button"
+                    accessibilityLabel="Close story viewer"
+                  >
+                    <Ionicons name="close" size={22} color="white" />
+                  </TouchableOpacity>
+                </View>
               </View>
             </View>
 
@@ -2041,14 +2133,14 @@ export default function NewsFeed() {
                 className="flex-row items-center bg-black/40 px-3 py-1.5 rounded-full"
               >
                 <Text className="text-white text-xs mr-1 font-medium">
-                  {activeStoryIndex === mockUserStories.length - 1 &&
+                  {activeStoryIndex === userStories.length - 1 &&
                   activeSubStoryIndex === currentStoryUser.stories.length - 1
                     ? "Close"
                     : "Next"}
                 </Text>
                 <Ionicons
                   name={
-                    activeStoryIndex === mockUserStories.length - 1 &&
+                    activeStoryIndex === userStories.length - 1 &&
                     activeSubStoryIndex === currentStoryUser.stories.length - 1
                       ? "close"
                       : "arrow-forward"
@@ -2078,7 +2170,7 @@ export default function NewsFeed() {
         }}
       >
         {storyStep === "SELECT_MEDIA" ? (
-          /* Step 1: Full-Screen Gallery Picker */
+          /* Step 1: Full-Screen Gallery Picker (Screen 1) */
           <SafeAreaView className="flex-1 bg-white px-2">
             {/* Header */}
             <View className="flex-row justify-between items-center px-3 pt-2 mb-4">
@@ -2099,11 +2191,7 @@ export default function NewsFeed() {
             <View className="flex-row gap-3 px-3 mb-5">
               {/* Option 1: Text */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Create text story selected");
-                  setSelectedStoryImage(null);
-                  setStoryStep("EDIT_STORY");
-                }}
+                onPress={handleSelectTextStory}
                 className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
                 activeOpacity={0.7}
               >
@@ -2117,11 +2205,7 @@ export default function NewsFeed() {
 
               {/* Option 2: Camera */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Create camera story selected");
-                  setSelectedStoryImage(MOCK_GALLERY_IMAGES[0]);
-                  setStoryStep("EDIT_STORY");
-                }}
+                onPress={handlePickCamera}
                 className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
                 activeOpacity={0.7}
               >
@@ -2133,11 +2217,7 @@ export default function NewsFeed() {
 
               {/* Option 3: Music */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Create music story selected");
-                  setSelectedStoryImage(MOCK_GALLERY_IMAGES[1]);
-                  setStoryStep("EDIT_STORY");
-                }}
+                onPress={handlePickGallery}
                 className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
                 activeOpacity={0.7}
               >
@@ -2158,9 +2238,14 @@ export default function NewsFeed() {
                 <Text className="text-base font-bold text-gray-900">
                   Gallery
                 </Text>
-                <TouchableOpacity activeOpacity={0.7}>
-                  <Text className="text-sm font-semibold text-green-600">
-                    Select Multiple
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={handlePickGallery}
+                  className="flex-row items-center gap-1 bg-green-50 px-3 py-1.5 rounded-full"
+                >
+                  <Ionicons name="images" size={15} color="#72AF5B" />
+                  <Text className="text-xs font-bold text-[#72AF5B]">
+                    Choose from Phone
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -2171,15 +2256,35 @@ export default function NewsFeed() {
                 className="flex-1"
                 contentContainerStyle={{ paddingBottom: 32 }}
               >
+                {/* Action Tile: Open Phone Gallery Banner */}
+                <TouchableOpacity
+                  onPress={handlePickGallery}
+                  className="w-full h-28 rounded-2xl mb-4 bg-green-50/80 border-2 border-dashed border-[#72AF5B] flex-row items-center justify-center px-4 active:bg-green-100"
+                  activeOpacity={0.7}
+                >
+                  <View className="w-14 h-14 rounded-full bg-[#72AF5B]/15 items-center justify-center mr-4">
+                    <Ionicons name="images" size={28} color="#72AF5B" />
+                  </View>
+                  <View>
+                    <Text className="text-base font-bold text-gray-900">
+                      Open Phone Gallery
+                    </Text>
+                    <Text className="text-xs text-gray-500 mt-0.5 font-medium">
+                      Browse and select photos from your device
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
                 <View className="flex-row flex-wrap justify-between px-1">
-                  {MOCK_GALLERY_IMAGES.map((imgUri, index) => (
+                  {/* Dynamically Selected / Captured Photos */}
+                  {deviceGalleryPhotos.map((imgUri, index) => (
                     <TouchableOpacity
                       key={index}
                       onPress={() => {
                         setSelectedStoryImage(imgUri);
                         setStoryStep("EDIT_STORY");
                       }}
-                      className="w-[32%] aspect-square rounded-md mb-2 bg-gray-300 overflow-hidden active:opacity-80 relative"
+                      className="w-[32%] aspect-square rounded-xl mb-2.5 bg-gray-200 overflow-hidden active:opacity-80 relative border border-gray-200 shadow-xs"
                       activeOpacity={0.8}
                     >
                       <Image
@@ -2190,6 +2295,15 @@ export default function NewsFeed() {
                     </TouchableOpacity>
                   ))}
                 </View>
+
+                {deviceGalleryPhotos.length === 0 && (
+                  <View className="items-center justify-center py-6 px-4 bg-gray-50 rounded-2xl mt-1 mx-1 border border-gray-100">
+                    <Ionicons name="sparkles-outline" size={24} color="#72AF5B" />
+                    <Text className="text-xs text-gray-500 font-medium text-center mt-2 leading-4">
+                      Tap the banner above to browse your phone's photo library or use the Camera button at the top!
+                    </Text>
+                  </View>
+                )}
               </ScrollView>
             </View>
           </SafeAreaView>
@@ -2286,9 +2400,9 @@ export default function NewsFeed() {
             </View>
           </View>
         ) : (
-          /* Step 2: Full Screen Edit Story View */
+          /* Step 2: Full Screen Edit Story View (Screen 2) */
           <View className="flex-1 bg-black relative">
-            {/* Main Media */}
+            {/* Main Media or Color Background */}
             {selectedStoryImage ? (
               <Image
                 source={{ uri: selectedStoryImage }}
@@ -2296,15 +2410,32 @@ export default function NewsFeed() {
                 resizeMode="cover"
               />
             ) : (
-              <View className="flex-1 w-full bg-[#1e293b] items-center justify-center p-8">
-                <Text className="text-white text-2xl font-bold text-center">
-                  Start typing your story... ✍️
-                </Text>
-              </View>
+              <View
+                className="flex-1 w-full items-center justify-center p-6"
+                style={{ backgroundColor: storyBgColor }}
+              />
             )}
 
+            {/* Centered Story Text Overlay */}
+            <View
+              className="absolute inset-0 items-center justify-center px-6 z-10"
+              pointerEvents="box-none"
+            >
+              <View className="w-full max-w-sm bg-black/40 rounded-2xl p-4 border border-white/20">
+                <TextInput
+                  value={storyTextContent}
+                  onChangeText={setStoryTextContent}
+                  placeholder="Type your story caption..."
+                  placeholderTextColor="#9ca3af"
+                  multiline
+                  className="text-white text-lg font-semibold text-center"
+                  style={{ maxHeight: 150 }}
+                />
+              </View>
+            </View>
+
             {/* Top Controls (Absolute) */}
-            <View className="absolute top-6 left-4 right-4 flex-row justify-between items-center z-10">
+            <View className="absolute top-8 left-4 right-4 flex-row justify-between items-center z-20">
               {/* Left: Back Arrow */}
               <TouchableOpacity
                 onPress={() => setStoryStep("SELECT_MEDIA")}
@@ -2313,45 +2444,73 @@ export default function NewsFeed() {
                 accessibilityRole="button"
                 accessibilityLabel="Back to gallery"
               >
-                <Ionicons name="arrow-back" size={28} color="white" />
+                <Ionicons name="arrow-back" size={24} color="white" />
               </TouchableOpacity>
 
               {/* Right: Edit Icons */}
-              <View className="flex-row items-center gap-4">
+              <View className="flex-row items-center gap-3">
+                {/* Text Tool */}
                 <TouchableOpacity
-                  onPress={() => console.log("Text tool clicked")}
+                  onPress={() => {
+                    setIsEditingTextOverlay(!isEditingTextOverlay);
+                    if (!storyTextContent) {
+                      setStoryTextContent("Farm fresh today! 🌾");
+                    }
+                  }}
                   className="w-10 h-10 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
                   activeOpacity={0.7}
                 >
-                  <Text className="text-white text-lg font-bold font-serif">
+                  <Text className="text-white text-base font-bold font-serif">
                     Aa
                   </Text>
                 </TouchableOpacity>
 
+                {/* Stickers / Emoji Tool */}
                 <TouchableOpacity
-                  onPress={() => console.log("Stickers clicked")}
+                  onPress={() => {
+                    const emojis = ["🌾", "🍅", "🌱", "🌽", "🚜", "🌻", "🍓"];
+                    const randomEmoji =
+                      emojis[Math.floor(Math.random() * emojis.length)];
+                    setStoryTextContent((prev) => `${prev} ${randomEmoji}`.trim());
+                  }}
                   className="w-10 h-10 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="happy-outline" size={24} color="white" />
+                  <Ionicons name="happy-outline" size={22} color="white" />
                 </TouchableOpacity>
 
+                {/* Background Color Palette / Draw */}
                 <TouchableOpacity
-                  onPress={() => console.log("Draw clicked")}
+                  onPress={() => {
+                    const colors = [
+                      "#1e293b",
+                      "#15803d",
+                      "#b45309",
+                      "#1d4ed8",
+                      "#be185d",
+                      "#7e22ce",
+                    ];
+                    const nextColor =
+                      colors[(colors.indexOf(storyBgColor) + 1) % colors.length];
+                    setStoryBgColor(nextColor);
+                  }}
                   className="w-10 h-10 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
                   activeOpacity={0.7}
                 >
-                  <Ionicons name="pencil-outline" size={24} color="white" />
+                  <Ionicons name="pencil-outline" size={22} color="white" />
                 </TouchableOpacity>
 
+                {/* Music Tool */}
                 <TouchableOpacity
-                  onPress={() => console.log("Music tool clicked")}
+                  onPress={() => {
+                    showToast("Farm Acoustic soundtrack attached 🎵", "info");
+                  }}
                   className="w-10 h-10 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
                   activeOpacity={0.7}
                 >
                   <Ionicons
                     name="musical-notes-outline"
-                    size={24}
+                    size={22}
                     color="white"
                   />
                 </TouchableOpacity>
@@ -2359,7 +2518,7 @@ export default function NewsFeed() {
             </View>
 
             {/* Bottom Controls (Absolute) */}
-            <View className="absolute bottom-8 left-4 right-4 flex-row justify-between items-center z-10">
+            <View className="absolute bottom-8 left-4 right-4 flex-row justify-between items-center z-20">
               {/* Left: Who can see your story / Privacy button */}
               <TouchableOpacity
                 onPress={() => setStoryStep("PRIVACY_SETTINGS")}
@@ -2397,21 +2556,23 @@ export default function NewsFeed() {
 
               {/* Right: Primary Share Button */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Story Shared with privacy:", storyPrivacy);
-                  setStoryModalVisible(false);
-                  setSelectedStoryImage(null);
-                  setStoryStep("SELECT_MEDIA");
-                }}
+                onPress={handleShareStory}
+                disabled={isPostingStory}
                 className="bg-blue-500 px-6 py-3 rounded-full flex-row items-center active:bg-blue-600 shadow-lg"
                 activeOpacity={0.8}
                 accessibilityRole="button"
                 accessibilityLabel="Share story"
               >
-                <Text className="text-white font-bold text-base mr-2">
-                  Share
-                </Text>
-                <Ionicons name="arrow-forward" size={18} color="white" />
+                {isPostingStory ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Text className="text-white font-bold text-base mr-2">
+                      Share
+                    </Text>
+                    <Ionicons name="arrow-forward" size={18} color="white" />
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           </View>

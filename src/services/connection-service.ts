@@ -78,6 +78,24 @@ export async function getSuggestionsApi(): Promise<SuggestionUserItem[]> {
   return res.suggestions || [];
 }
 
+export interface ActiveUserItem {
+  id: string; // user_id
+  name: string;
+  username?: string;
+  avatarUrl?: string;
+  isActive: boolean;
+  isConnected: boolean;
+  status: "none" | "pending" | "accepted" | "declined";
+  mutualFriends?: string;
+}
+
+export async function getActiveUsersApi(): Promise<{ activeUsers: ActiveUserItem[]; count: number }> {
+  const res = await apiFetch<{ activeUsers: ActiveUserItem[]; count: number }>(
+    "/connections/active"
+  );
+  return { activeUsers: res.activeUsers || [], count: res.count || 0 };
+}
+
 export async function getSentRequestsApi(): Promise<SentRequestItem[]> {
   const res = await apiFetch<{ sentRequests: SentRequestItem[]; count: number }>(
     "/connections/sent"

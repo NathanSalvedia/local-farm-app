@@ -224,6 +224,71 @@ async function initDB() {
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
 
+    // 14. Create stories table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS \`stories\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NOT NULL,
+        \`media_type\` ENUM('image', 'video', 'text') NOT NULL DEFAULT 'image',
+        \`media_url\` LONGTEXT DEFAULT NULL,
+        \`text_content\` TEXT DEFAULT NULL,
+        \`background_color\` VARCHAR(30) DEFAULT '#1e293b',
+        \`music_title\` VARCHAR(150) DEFAULT NULL,
+        \`privacy\` ENUM('Public', 'Friends', 'Only me') NOT NULL DEFAULT 'Public',
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        \`expires_at\` TIMESTAMP DEFAULT (CURRENT_TIMESTAMP + INTERVAL 24 HOUR),
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE,
+        INDEX \`idx_stories_user_expires\` (\`user_id\`, \`expires_at\`),
+        INDEX \`idx_stories_expires\` (\`expires_at\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    // 15. Create story_views table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS \`story_views\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`story_id\` INT NOT NULL,
+        \`viewer_id\` INT NOT NULL,
+        \`viewed_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (\`story_id\`) REFERENCES \`stories\`(\`id\`) ON DELETE CASCADE,
+        FOREIGN KEY (\`viewer_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE,
+        UNIQUE KEY \`unique_story_view\` (\`story_id\`, \`viewer_id\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    // 16. Create story_reactions table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS \`story_reactions\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`story_id\` INT NOT NULL,
+        \`user_id\` INT NOT NULL,
+        \`reaction_type\` VARCHAR(50) NOT NULL DEFAULT 'like',
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (\`story_id\`) REFERENCES \`stories\`(\`id\`) ON DELETE CASCADE,
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
+    // 17. Create notifications table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS \`notifications\` (
+        \`id\` INT AUTO_INCREMENT PRIMARY KEY,
+        \`user_id\` INT NOT NULL,
+        \`actor_id\` INT DEFAULT NULL,
+        \`type\` VARCHAR(50) NOT NULL DEFAULT 'system',
+        \`title\` VARCHAR(255) DEFAULT NULL,
+        \`content\` TEXT NOT NULL,
+        \`entity_name\` VARCHAR(255) DEFAULT NULL,
+        \`target_id\` INT DEFAULT NULL,
+        \`is_read\` TINYINT(1) NOT NULL DEFAULT 0,
+        \`created_at\` TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (\`user_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE,
+        FOREIGN KEY (\`actor_id\`) REFERENCES \`users\`(\`id\`) ON DELETE SET NULL,
+        INDEX \`idx_notif_user_read\` (\`user_id\`, \`is_read\`),
+        INDEX \`idx_notif_user_created\` (\`user_id\`, \`created_at\`)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+    `);
+
     console.log(`[MySQL] Connected successfully to database: ${dbConfig.database} on ${dbConfig.host}:${dbConfig.port}`);
   } catch (err) {
     console.error("[MySQL] Connection error:", err.message);

@@ -1,7 +1,17 @@
+import { useAuth } from "@/hooks/use-auth";
+import {
+  ActiveChatUser,
+  ConversationItem,
+  getActiveChatUsersApi,
+  getConversationsApi,
+} from "@/services/chat-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
+  Image,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   Text,
@@ -13,365 +23,314 @@ import {
 import ChatSidebarModal from "../../components/ChatSidebarModal";
 import BottomNavBar from "../../components/Navigation";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface ActiveUser {
-  id: string;
-  name: string;
-  isOnline?: boolean;
-  isSelf?: boolean;
-}
-
-interface ChatItem {
-  id: string;
-  name: string;
-  snippet: string;
-  time: string;
-  unread?: number;
-  status?: "read" | "delivered" | "draft" | null;
-  isDraft?: boolean;
-  online?: boolean;
-}
-
-// ─── Mock Data ────────────────────────────────────────────────────────────────
-
-const ACTIVE_USERS: ActiveUser[] = [
-  { id: "1", name: "Me", isSelf: true, isOnline: true },
-  { id: "2", name: "Apyao", isOnline: true },
-  { id: "3", name: "Olie", isOnline: true },
-  { id: "4", name: "Jonne", isOnline: true },
-  { id: "5", name: "Leo", isOnline: true },
-  { id: "6", name: "Kelra", isOnline: true },
-  { id: "7", name: "Mark", isOnline: true },
-  { id: "8", name: "Fritz", isOnline: true },
-  { id: "9", name: "Romarch", isOnline: true },
-  { id: "10", name: "Nathan", isOnline: true },
-  { id: "11", name: "Cleo", isOnline: true },
-  { id: "12", name: "Geneleen", isOnline: true },
-  { id: "13", name: "Princess", isOnline: true },
-  { id: "14", name: "Manny", isOnline: true },
-];
-
-const MOCK_CHATS: ChatItem[] = [
-  {
-    id: "1",
-    name: "Mark Paul Cosido",
-    snippet: "Tara na",
-    time: "3:08PM",
-    unread: 3,
-    online: true,
-  },
-  {
-    id: "2",
-    name: "Kyle Saguban",
-    snippet: "You: Asa ka boss?",
-    time: "12:30PM",
-    status: "read",
-    online: true,
-  },
-  {
-    id: "3",
-    name: "Kentoy",
-    snippet: "Thank you",
-    time: "9:00 AM",
-    unread: 2,
-    online: true,
-  },
-  {
-    id: "4",
-    name: "Mark Angelo Orit",
-    snippet: "Draft: Tagpila?",
-    time: "2:00 AM",
-    isDraft: true,
-    status: null,
-  },
-  {
-    id: "5",
-    name: "Aaron Bayanban",
-    snippet: "You: Sige bai",
-    time: "Yesterday",
-    status: "delivered",
-  },
-  {
-    id: "6",
-    name: "Rhena Hightower",
-    snippet: "You: Libang pako",
-    time: "May 8",
-    status: "read",
-  },
-  {
-    id: "7",
-    name: "Aegon Targaryan",
-    snippet: "Okay",
-    time: "May 5",
-    unread: 1,
-  },
-  {
-    id: "8",
-    name: "Rheynera Targaryan",
-    snippet: "Sige",
-    time: "May 1",
-    unread: 1,
-  },
-  {
-    id: "9",
-    name: "Paul Salas",
-    snippet: "...",
-    time: "May 1",
-    status: null,
-  },
-];
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function ActiveUserItem({ user }: { user: ActiveUser }) {
-  return (
-    <TouchableOpacity
-      className="items-center mr-4 active:opacity-80"
-      activeOpacity={0.8}
-    >
-      <View className="relative mb-1.5">
-        {/* Big Avatar Circle */}
-        <View className="w-18 h-18 rounded-full bg-gray-200 border-2 border-white items-center justify-center overflow-hidden shadow-2xs">
-          <Ionicons name="person" size={36} color="#9CA3AF" />
-        </View>
-
-        {/* Online / Story Badge */}
-        {user.isSelf ? (
-          <View className="absolute bottom-0 right-0 w-5 h-5 rounded-full bg-[#72AF5B] items-center justify-center border-2 border-white">
-            <Ionicons name="add" size={13} color="#FFFFFF" />
-          </View>
-        ) : user.isOnline ? (
-          <View className="absolute bottom-0.5 right-0.5 w-4.5 h-4.5 rounded-full bg-[#22C55E] border-2 border-white" />
-        ) : null}
-      </View>
-
-      <Text
-        className={`text-xs ${
-          user.isSelf ? "font-semibold" : "font-normal"
-        } text-center max-w-[72px]`}
-        style={{ color: "#343a40" }}
-        numberOfLines={1}
-      >
-        {user.name}
-      </Text>
-    </TouchableOpacity>
-  );
-}
-
-function ChatStatusBadge({ chat }: { chat: ChatItem }) {
-  if (chat.unread && chat.unread > 0) {
-    return (
-      <View className="min-w-5 h-5 px-1.5 rounded-full bg-[#EF4444] items-center justify-center shadow-2xs">
-        <Text className="text-white text-[11px] font-bold text-center leading-tight">
-          {chat.unread}
-        </Text>
-      </View>
-    );
-  }
-
-  if (chat.status === "read") {
-    return <Ionicons name="checkmark-done" size={16} color="#9CA3AF" />;
-  }
-
-  if (chat.status === "delivered") {
-    return <Text className="text-xs text-gray-400 font-medium">Delivered</Text>;
-  }
-
-  return null;
-}
-
-function ChatListItem({ chat }: { chat: ChatItem }) {
-  const router = useRouter();
-  const isUnread = !!chat.unread && chat.unread > 0;
-
-  const renderSnippet = () => {
-    if (chat.isDraft) {
-      const parts = chat.snippet.split(": ");
-      const prefix = parts[0];
-      const rest = parts.slice(1).join(": ");
-      return (
-        <Text className="text-sm text-gray-500" numberOfLines={1}>
-          <Text className="text-red-500 font-semibold">{prefix}: </Text>
-          {rest}
-        </Text>
-      );
-    }
-
-    return (
-      <Text
-        className={`text-sm ${
-          isUnread ? "font-bold text-gray-900" : "font-normal text-gray-500"
-        }`}
-        numberOfLines={1}
-      >
-        {chat.snippet}
-      </Text>
-    );
-  };
-
-  return (
-    <TouchableOpacity
-      onPress={() => {
-        try {
-          router.push("/user/ChatConversation" as any);
-        } catch (e) {
-          console.warn("Navigation error", e);
-        }
-      }}
-      className="flex-row items-center px-5 py-3 border-b border-gray-50 active:bg-gray-50"
-      activeOpacity={0.7}
-    >
-      {/* Big Avatar with Online indicator */}
-      <View className="relative mr-4">
-        <View className="w-15 h-15 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-100 shadow-2xs">
-          <Ionicons name="person" size={32} color="#9CA3AF" />
-        </View>
-        {chat.online && (
-          <View className="absolute bottom-0 right-0 w-4 h-4 rounded-full bg-[#22C55E] border-2 border-white" />
-        )}
-      </View>
-
-      {/* Main Info */}
-      <View className="flex-1 pr-2 justify-center">
-        <Text
-          className={`text-base leading-tight mb-1 ${
-            isUnread ? "font-semibold" : "font-semibold"
-          }`}
-          style={{ color: "#343a40" }}
-          numberOfLines={1}
-        >
-          {chat.name}
-        </Text>
-        {renderSnippet()}
-      </View>
-
-      {/* Time & Status / Badge */}
-      <View className="items-end justify-center min-w-[56px] flex-shrink-0">
-        <Text
-          className={`text-xs mb-1 ${
-            isUnread
-              ? "font-semibold text-[#EF4444]"
-              : "font-normal text-gray-400"
-          }`}
-        >
-          {chat.time}
-        </Text>
-        <View className="h-5 items-center justify-center">
-          <ChatStatusBadge chat={chat} />
-        </View>
-      </View>
-    </TouchableOpacity>
-  );
-}
-
-// ─── Main Screen ──────────────────────────────────────────────────────────────
-
 export default function Chats() {
+  const router = useRouter();
+  const { user } = useAuth();
+
   const [searchQuery, setSearchQuery] = useState("");
   const [isSidebarVisible, setSidebarVisible] = useState(false);
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [activeUsers, setActiveUsers] = useState<ActiveChatUser[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const filteredChats = MOCK_CHATS.filter(
-    (chat) =>
-      chat.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      chat.snippet.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  const fetchChatsData = async (isPull = false) => {
+    if (isPull) setIsRefreshing(true);
+    else setIsLoading(true);
+
+    try {
+      const [convsData, usersData] = await Promise.all([
+        getConversationsApi(),
+        getActiveChatUsersApi(),
+      ]);
+      setConversations(convsData);
+      setActiveUsers(usersData);
+    } catch (err) {
+      console.warn("Error fetching chat data:", err);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchChatsData();
+  }, []);
+
+  const handleOpenConversation = (chat: ConversationItem) => {
+    router.push({
+      pathname: "/user/ChatConversation",
+      params: {
+        conversationId: chat.id,
+        userId: chat.otherUserId,
+        name: chat.name,
+        avatarUrl: chat.avatarUrl || "",
+        online: "true",
+      },
+    } as any);
+  };
+
+  const handleOpenUserChat = (activeUser: ActiveChatUser) => {
+    router.push({
+      pathname: "/user/ChatConversation",
+      params: {
+        userId: activeUser.id,
+        name: activeUser.fullName || activeUser.name,
+        avatarUrl: activeUser.avatarUrl || "",
+        online: "true",
+      },
+    } as any);
+  };
+
+  const filteredConversations = conversations.filter((chat) => {
+    const q = searchQuery.toLowerCase();
+    return (
+      chat.name.toLowerCase().includes(q) ||
+      (chat.username && chat.username.toLowerCase().includes(q)) ||
+      chat.snippet.toLowerCase().includes(q)
+    );
+  });
 
   return (
     <SafeAreaView
       className="flex-1 bg-white relative h-full"
-      style={{ flex: 1, position: "relative", minHeight: "100%" }}
+      style={{ flex: 1, position: "relative", minHeight: "100%", overflow: "hidden" }}
     >
-      {/* 1. Header */}
-      <View className="flex-row items-center justify-between px-5 pt-4 pb-2">
-        <Text className="text-3xl font-bold text-gray-900 tracking-tight">
-          Chats
-        </Text>
+      {/* 1. Header Section */}
+      <View className="flex-row justify-between items-center px-5 pt-4 pb-2 bg-white">
+        <Text className="text-3xl font-bold text-gray-900">Chats</Text>
         <TouchableOpacity
-          className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
-          activeOpacity={0.7}
+          onPress={() => router.push("/user/People" as any)}
+          className="p-1 active:opacity-70"
+          accessibilityRole="button"
+          accessibilityLabel="New message"
         >
-          <Ionicons name="create-outline" size={22} color="#374151" />
+          <Ionicons name="create-outline" size={26} color="#374151" />
         </TouchableOpacity>
       </View>
 
-      {/*  Search Bar */}
-      <View className="flex-row items-center px-5 py-2.5 gap-2.5 mb-1">
+      {/* 2. Search Bar */}
+      <View className="flex-row items-center px-5 py-3 gap-3">
         <TouchableOpacity
           onPress={() => setSidebarVisible(true)}
-          className="w-11 h-11 rounded-2xl items-center justify-center"
-          activeOpacity={0.7}
+          className="p-1 active:opacity-70"
           accessibilityRole="button"
-          accessibilityLabel="Open menu"
+          accessibilityLabel="Open chat sidebar menu"
         >
-          <Ionicons name="menu-outline" size={24} color="#374151" />
+          <Ionicons name="menu-outline" size={28} color="#374151" />
         </TouchableOpacity>
 
-        {/* Search Input Box */}
+        {/* Search Input */}
         <View className="flex-1 flex-row items-center bg-gray-100 rounded-full px-4 h-11 border border-gray-100">
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
             placeholder="Search..."
             placeholderTextColor="#9CA3AF"
-            className="flex-1 text-base text-gray-800 pr-2 h-full"
+            className="flex-1 text-base text-gray-800 pr-2 h-full font-medium"
+            autoCapitalize="none"
           />
           {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery("")}>
+            <TouchableOpacity
+              onPress={() => setSearchQuery("")}
+              className="p-1 mr-1"
+            >
               <Ionicons name="close-circle" size={18} color="#9CA3AF" />
             </TouchableOpacity>
-          ) : (
-            <Ionicons name="search-outline" size={20} color="#9CA3AF" />
-          )}
+          ) : null}
+          <Ionicons name="search-outline" size={20} color="#9CA3AF" />
         </View>
       </View>
 
-      {/*  Active Users */}
-      <View style={{ flexGrow: 0, flexShrink: 0 }}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          className="px-5 py-2"
-          contentContainerStyle={{ paddingRight: 24, alignItems: "center" }}
-          style={{ flexGrow: 0 }}
-        >
-          {ACTIVE_USERS.map((user) => (
-            <ActiveUserItem key={user.id} user={user} />
-          ))}
-        </ScrollView>
-      </View>
-
-      {/*  Messages Vertical List */}
+      {/* Main Content Area */}
       <ScrollView
         className="flex-1 bg-white"
         showsVerticalScrollIndicator={false}
+        bounces={false}
+        overScrollMode="never"
+        alwaysBounceVertical={false}
+        alwaysBounceHorizontal={false}
+        directionalLockEnabled={true}
         contentContainerStyle={{ paddingBottom: 110 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => fetchChatsData(true)}
+            colors={["#72AF5B"]}
+            tintColor="#72AF5B"
+          />
+        }
       >
-        {filteredChats.length > 0 ? (
-          filteredChats.map((chat) => (
-            <ChatListItem key={chat.id} chat={chat} />
-          ))
+        {/* 3. Active Users Horizontal Carousel */}
+        <View className="py-2 border-b border-gray-50">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            className="px-5"
+          >
+            {/* Self "Me (+)" Item */}
+            <View className="items-center mr-4">
+              <View className="relative">
+                <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center border border-gray-200 overflow-hidden">
+                  {user?.avatarUrl ? (
+                    <Image
+                      source={{ uri: user.avatarUrl }}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Ionicons name="person" size={28} color="#9CA3AF" />
+                  )}
+                </View>
+                <View className="absolute -bottom-0.5 -right-0.5 bg-[#72AF5B] w-5 h-5 rounded-full items-center justify-center border-2 border-white">
+                  <Ionicons name="add" size={14} color="#FFFFFF" />
+                </View>
+              </View>
+              <Text className="text-xs font-semibold text-gray-800 mt-1.5">
+                Me
+              </Text>
+            </View>
+
+            {/* Other Active Users */}
+            {activeUsers.map((activeUser) => (
+              <TouchableOpacity
+                key={activeUser.id}
+                onPress={() => handleOpenUserChat(activeUser)}
+                className="items-center mr-4"
+                activeOpacity={0.8}
+              >
+                <View className="relative">
+                  <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center border border-gray-200 overflow-hidden">
+                    {activeUser.avatarUrl ? (
+                      <Image
+                        source={{ uri: activeUser.avatarUrl }}
+                        className="w-full h-full"
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={28} color="#9CA3AF" />
+                    )}
+                  </View>
+                  {activeUser.isOnline && (
+                    <View className="absolute bottom-0 right-0 bg-green-500 w-3.5 h-3.5 rounded-full border-2 border-white" />
+                  )}
+                </View>
+                <Text
+                  numberOfLines={1}
+                  className="text-xs font-medium text-gray-700 mt-1.5 max-w-[60px] text-center"
+                >
+                  {activeUser.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+
+        {/* 4. Conversations List */}
+        {isLoading ? (
+          <View className="py-16 items-center justify-center">
+            <ActivityIndicator size="large" color="#72AF5B" />
+            <Text className="text-sm text-gray-500 mt-2 font-medium">
+              Loading chats...
+            </Text>
+          </View>
+        ) : filteredConversations.length === 0 ? (
+          <View className="py-16 items-center justify-center px-6">
+            <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
+              <Ionicons name="chatbubbles-outline" size={32} color="#9CA3AF" />
+            </View>
+            <Text className="text-base font-bold text-gray-800 mb-1">
+              No Conversations Yet
+            </Text>
+            <Text className="text-xs text-gray-500 text-center">
+              Tap on an active user above or search for farmers to start chatting.
+            </Text>
+          </View>
         ) : (
-          <View className="items-center justify-center py-16 px-5">
-            <Ionicons name="chatbubbles-outline" size={48} color="#D1D5DB" />
-            <Text className="text-gray-500 font-semibold text-base mt-3">
-              No conversations found
-            </Text>
-            <Text className="text-gray-400 text-xs mt-1 text-center">
-              Try searching with a different name or message
-            </Text>
+          <View className="px-5 pt-1">
+            {filteredConversations.map((chat) => (
+              <TouchableOpacity
+                key={chat.id}
+                onPress={() => handleOpenConversation(chat)}
+                className="py-3.5 border-b border-gray-100 flex-row items-center justify-between active:bg-gray-50 rounded-xl px-1"
+                activeOpacity={0.7}
+              >
+                {/* Left: Avatar with Online Indicator */}
+                <View className="relative mr-3.5">
+                  <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center border border-gray-200 overflow-hidden">
+                    {chat.avatarUrl ? (
+                      <Image
+                        source={{ uri: chat.avatarUrl }}
+                        className="w-full h-full"
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={28} color="#6B7280" />
+                    )}
+                  </View>
+                  {chat.online && (
+                    <View className="absolute bottom-0 right-0 bg-green-500 w-3.5 h-3.5 rounded-full border-2 border-white" />
+                  )}
+                </View>
+
+                {/* Middle: Name & Last Message Snippet */}
+                <View className="flex-1 pr-2">
+                  <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
+                    {chat.name}
+                  </Text>
+                  <Text
+                    numberOfLines={1}
+                    className={`text-sm ${
+                      chat.unread > 0
+                        ? "font-bold text-gray-900"
+                        : "text-gray-500 font-normal"
+                    }`}
+                  >
+                    {chat.snippet || "Start a conversation"}
+                  </Text>
+                </View>
+
+                {/* Right: Time & Status / Badge */}
+                <View className="items-end justify-center gap-1.5 min-w-[50px]">
+                  <Text
+                    className={`text-xs ${
+                      chat.unread > 0
+                        ? "text-red-500 font-bold"
+                        : "text-gray-400 font-medium"
+                    }`}
+                  >
+                    {chat.time}
+                  </Text>
+
+                  {chat.unread > 0 ? (
+                    <View className="bg-red-500 rounded-full h-5 min-w-[20px] px-1.5 items-center justify-center">
+                      <Text className="text-white text-[11px] font-bold">
+                        {chat.unread > 9 ? "9+" : chat.unread}
+                      </Text>
+                    </View>
+                  ) : (
+                    <Ionicons
+                      name="checkmark-done"
+                      size={16}
+                      color="#9CA3AF"
+                    />
+                  )}
+                </View>
+              </TouchableOpacity>
+            ))}
           </View>
         )}
       </ScrollView>
 
-      {/* Chat Sidebar Drawer */}
+      {/* 5. Chat Sidebar Modal Component */}
       <ChatSidebarModal
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
+        activeItem="Messages"
       />
 
-      {/* Bottom Navigation Bar */}
-      <BottomNavBar showFab={false} activeTabName="chat" />
+      {/* 6. Bottom Navigation Component */}
+      <BottomNavBar activeTab="Chat" showFab={false} />
     </SafeAreaView>
   );
 }

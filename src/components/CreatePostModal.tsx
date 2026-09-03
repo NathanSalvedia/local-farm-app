@@ -1,6 +1,10 @@
+import { useToast } from "@/context/toast-context";
+import { useAuth } from "@/hooks/use-auth";
+import { createPostApi, PostItem } from "@/services/post-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import {
+  ActivityIndicator,
   Image,
   Modal,
   Pressable,
@@ -16,14 +20,7 @@ import LeafletMap from "./LeafletMap";
 export interface CreatePostModalProps {
   isVisible: boolean;
   onClose: () => void;
-  onPost?: (postData: {
-    content: string;
-    category: string;
-    privacy: string;
-    taggedUserIds?: string[];
-    photos?: string[];
-    location?: string | null;
-  }) => void;
+  onPost?: (post: PostItem) => void;
 }
 
 type ViewMode =
@@ -108,6 +105,7 @@ export default function CreatePostModal({
   onClose,
   onPost,
 }: CreatePostModalProps) {
+  const { user } = useAuth();
   const [activeView, setActiveView] = useState<ViewMode>("POST_FORM");
   const [privacySetting, setPrivacySetting] = useState<PrivacyType>("Public");
   const [isDefaultAudience, setIsDefaultAudience] = useState(false);
@@ -126,22 +124,40 @@ export default function CreatePostModal({
     onClose();
   };
 
-  const handlePostSubmit = () => {
-    if (onPost) {
-      onPost({
-        content,
+  const { showToast } = useToast();
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const handlePostSubmit = async () => {
+    const trimmedContent = content.trim();
+    if (!trimmedContent && selectedPhotos.length === 0) {
+      showToast("Please enter some text or select a photo.", "info");
+      return;
+    }
+
+    setIsSubmitting(true);
+    try {
+      const newPost = await createPostApi({
+        content: trimmedContent,
         category: selectedCategory,
         privacy: privacySetting,
-        taggedUserIds,
-        photos: selectedPhotos,
         location: selectedLocation,
+        photos: selectedPhotos,
       });
+
+      showToast("Post shared to community!", "success");
+      if (onPost) {
+        onPost(newPost);
+      }
+      setContent("");
+      setTaggedUserIds([]);
+      setSelectedPhotos([]);
+      setSelectedLocation(null);
+      handleClose();
+    } catch (err: any) {
+      showToast(err?.message || "Failed to create post.", "error");
+    } finally {
+      setIsSubmitting(false);
     }
-    setContent("");
-    setTaggedUserIds([]);
-    setSelectedPhotos([]);
-    setSelectedLocation(null);
-    handleClose();
   };
 
   const toggleTagUser = (userId: string) => {
@@ -191,9 +207,7 @@ export default function CreatePostModal({
       onRequestClose={handleClose}
     >
       {activeView === "POST_FORM" ? (
-        /* ========================================================= */
-        /* 1. POST FORM VIEW (Bottom Sheet)                          */
-        /* ========================================================= */
+        /* 1. POST FORM VIEW (Bottom Sheet) */
         <Pressable
           onPress={handleClose}
           className="flex-1 bg-transparent justify-end"
@@ -217,23 +231,36 @@ export default function CreatePostModal({
               {/* Post Button */}
               <TouchableOpacity
                 onPress={handlePostSubmit}
-                className="bg-[#72AF5B] px-4 py-1.5 rounded-full active:opacity-80"
+                disabled={isSubmitting}
+                className="bg-[#72AF5B] px-4 py-1.5 rounded-full active:opacity-80 flex-row items-center justify-center min-w-[60px]"
               >
-                <Text className="text-white font-medium text-sm">Post</Text>
+                {isSubmitting ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text className="text-white font-medium text-sm">Post</Text>
+                )}
               </TouchableOpacity>
             </View>
 
             {/* User Profile & Settings */}
             <View className="flex-row items-center mb-4">
               {/* Avatar */}
-              <View className="bg-gray-300 h-12 w-12 rounded-full items-center justify-center mr-3 overflow-hidden">
-                <Ionicons name="person" size={28} color="#FFFFFF" />
+              <View className="bg-gray-200 h-12 w-12 rounded-full items-center justify-center mr-3 overflow-hidden border border-gray-200">
+                {user?.avatarUrl ? (
+                  <Image
+                    source={{ uri: user.avatarUrl }}
+                    style={{ width: "100%", height: "100%" }}
+                    resizeMode="cover"
+                  />
+                ) : (
+                  <Ionicons name="person" size={24} color="#9CA3AF" />
+                )}
               </View>
 
               {/* Info Stack */}
               <View className="flex-1">
                 <Text className="font-bold text-base text-gray-900">
-                  Juan Dela Cruz
+                  {user?.name || user?.fullName || user?.username || "Local Farmer"}
                 </Text>
 
                 <View className="flex-row items-center gap-1.5 mt-1">
@@ -430,9 +457,7 @@ export default function CreatePostModal({
           </Pressable>
         </Pressable>
       ) : activeView === "PRIVACY" ? (
-        /* ========================================================= */
-        /* 2. WHO CAN SEE POST ? (PRIVACY) VIEW                      */
-        /* ========================================================= */
+        /* 2. WHO CAN SEE POST ? (PRIVACY) VIEW */
         <View className="flex-1 bg-white justify-between px-5 pt-3 pb-3 h-full">
           {/* Top Content */}
           <View>
@@ -512,9 +537,7 @@ export default function CreatePostModal({
           </View>
         </View>
       ) : activeView === "LIVE_PERMISSION" ? (
-        /* ========================================================= */
-        /* 3. GO LIVE CAMERA ACCESS PERMISSION VIEW                  */
-        /* ========================================================= */
+        /* 3. GO LIVE CAMERA ACCESS PERMISSION VIEW */
         <View className="flex-1 bg-white justify-between px-5 pt-3 pb-3 h-full">
           <ScrollView
             showsVerticalScrollIndicator={false}
@@ -601,7 +624,7 @@ export default function CreatePostModal({
                   </View>
                   <View className="flex-1">
                     <Text className="text-sm font-bold text-gray-900">
-                      You're in Control
+                      {"You're in Control"}
                     </Text>
                     <Text className="text-xs text-gray-500 mt-0.5">
                       You can change or revoke camera access anytime in
@@ -640,9 +663,7 @@ export default function CreatePostModal({
           </ScrollView>
         </View>
       ) : activeView === "TAG_PEOPLE" ? (
-        /* ========================================================= */
-        /* 4. TAG AND COLLABORATE VIEW                               */
-        /* ========================================================= */
+        /* 4. TAG AND COLLABORATE VIEW */
         <View className="flex-1 bg-gray-50 h-full w-full relative">
           {/* Header Section */}
           <View className="flex-row items-center pt-3 pb-3 px-5 bg-gray-50">
@@ -764,9 +785,7 @@ export default function CreatePostModal({
           </View>
         </View>
       ) : activeView === "PHOTO_GALLERY" ? (
-        /* ========================================================= */
-        /* 5. MULTI-PHOTO GALLERY VIEW                               */
-        /* ========================================================= */
+        /* 5. MULTI-PHOTO GALLERY VIEW */
         <View className="flex-1 bg-white h-full w-full relative">
           {/* Header Section */}
           <View className="flex-row justify-between items-center pt-3 pb-3 px-5 bg-white border-b border-gray-100">
@@ -891,9 +910,7 @@ export default function CreatePostModal({
           )}
         </View>
       ) : activeView === "CAMERA" ? (
-        /* ========================================================= */
-        /* 6. CAMERA SCREEN VIEW                                     */
-        /* ========================================================= */
+        /* 6. CAMERA SCREEN VIEW */
         <View className="flex-1 bg-black h-full w-full justify-between relative">
           {/* Top Controls Bar */}
           <View className="flex-row justify-between items-center pt-5 pb-3 px-5 z-20 absolute top-0 w-full bg-black/30">
@@ -986,9 +1003,7 @@ export default function CreatePostModal({
           </View>
         </View>
       ) : (
-        /* ========================================================= */
-        /* 7. ADD LOCATION VIEW (Leaflet Map)                        */
-        /* ========================================================= */
+        /* 7. ADD LOCATION VIEW (Leaflet Map) */
         <View className="flex-1 bg-white h-full w-full relative">
           {/* Header Section */}
           <View className="flex-row items-center pt-3 pb-3 px-5 bg-white z-10 border-b border-gray-100">

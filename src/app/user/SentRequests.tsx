@@ -1,6 +1,15 @@
-import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { useToast } from "@/context/toast-context";
 import {
+  cancelFriendRequestApi,
+  getSentRequestsApi,
+  SentRequestItem,
+} from "@/services/connection-service";
+import { Ionicons } from "@expo/vector-icons";
+import React, { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Image,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   Text,
@@ -12,86 +21,88 @@ import {
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
 
-interface SentRequestItem {
-  id: string;
-  name: string;
-  friendsCount: string;
-  timeAgo: string;
-}
-
-const MOCK_SENT_REQUESTS: SentRequestItem[] = [
-  {
-    id: "1",
-    name: "Marie",
-    friendsCount: "1.6k friends",
-    timeAgo: "1hr",
-  },
-  {
-    id: "2",
-    name: "Kint Salvedia",
-    friendsCount: "50 mutual friends",
-    timeAgo: "5hrs",
-  },
-  {
-    id: "3",
-    name: "Moscov Tri",
-    friendsCount: "12 mutual friends",
-    timeAgo: "1d",
-  },
-  {
-    id: "4",
-    name: "Killua Jay",
-    friendsCount: "250 mutual friends",
-    timeAgo: "4d",
-  },
-  {
-    id: "5",
-    name: "Zilong Too",
-    friendsCount: "1 mutual friend",
-    timeAgo: "1w",
-  },
-  {
-    id: "6",
-    name: "Alucard Light",
-    friendsCount: "89 mutual friends",
-    timeAgo: "2w",
-  },
-];
-
 export default function SentRequests() {
+  const { showToast } = useToast();
   const [isSidebarVisible, setSidebarVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [cancelledIds, setCancelledIds] = useState<Record<string, boolean>>({});
+  const [sentRequests, setSentRequests] = useState<SentRequestItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [cancellingIds, setCancellingIds] = useState<Record<string, boolean>>({});
 
-  const handleCancelRequest = (id: string) => {
-    setCancelledIds((prev) => ({ ...prev, [id]: true }));
+  const fetchSentRequests = async (isPull = false) => {
+    if (isPull) setIsRefreshing(true);
+    else setIsLoading(true);
+
+    try {
+      const data = await getSentRequestsApi();
+      setSentRequests(data);
+    } catch (err) {
+      console.warn("Failed to fetch sent requests:", err);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
   };
 
-  const filteredRequests = MOCK_SENT_REQUESTS.filter((item) =>
-    item.name.toLowerCase().includes(searchQuery.toLowerCase()),
+  useEffect(() => {
+    fetchSentRequests();
+  }, []);
+
+  const handleCancelRequest = async (item: SentRequestItem) => {
+    setCancellingIds((prev) => ({ ...prev, [item.id]: true }));
+    try {
+      await cancelFriendRequestApi(item.userId, item.id);
+      setSentRequests((prev) => prev.filter((r) => r.id !== item.id));
+      showToast("Friend request canceled.", "info");
+    } catch (err: any) {
+      showToast(err?.message || "Failed to cancel request.", "error");
+    } finally {
+      setCancellingIds((prev) => ({ ...prev, [item.id]: false }));
+    }
+  };
+
+  const filteredRequests = sentRequests.filter((item) =>
+    item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (item.username && item.username.toLowerCase().includes(searchQuery.toLowerCase()))
   );
 
   return (
     <SafeAreaView
       className="flex-1 bg-white relative h-full"
-      style={{ flex: 1, position: "relative", minHeight: "100%" }}
+      style={{ flex: 1, position: "relative", minHeight: "100%", overflow: "hidden" }}
     >
       {/* Main Scrollable Content */}
       <ScrollView
         className="flex-1 bg-white"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        bounces={false}
+        overScrollMode="never"
+        alwaysBounceVertical={false}
+        alwaysBounceHorizontal={false}
+        directionalLockEnabled={true}
+        contentContainerStyle={{ paddingBottom: 110 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => fetchSentRequests(true)}
+            colors={["#72AF5B"]}
+            tintColor="#72AF5B"
+          />
+        }
       >
-        {/*  Header Section */}
+        {/* Header Section */}
         <View className="px-5 pt-4 pb-2">
           <Text className="text-3xl font-bold text-gray-900">Connection</Text>
         </View>
 
-        {/* 2. Search Bar */}
+        {/* Search Bar */}
         <View className="flex-row items-center px-5 py-3 gap-3 mb-1">
           <TouchableOpacity
             onPress={() => setSidebarVisible(true)}
             className="p-1 active:opacity-70"
+            accessibilityRole="button"
+            accessibilityLabel="Open sidebar menu"
           >
             <Ionicons name="person-add-outline" size={26} color="#374151" />
           </TouchableOpacity>
@@ -101,15 +112,16 @@ export default function SentRequests() {
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
-              placeholder="Search..."
+              placeholder="Search sent requests..."
               placeholderTextColor="#9CA3AF"
-              className="flex-1 text-base text-gray-800 pr-2 h-full"
+              className="flex-1 text-base text-gray-800 pr-2 h-full font-medium"
+              autoCapitalize="none"
             />
             <Ionicons name="search-outline" size={20} color="#9CA3AF" />
           </View>
         </View>
 
-        {/*  Sub-Header */}
+        {/* Sub-Header */}
         <View className="flex-row items-center px-5 py-2 mb-2">
           <Text className="text-lg font-semibold text-gray-900">
             Sent Request <Text className="text-gray-400">·</Text>{" "}
@@ -119,72 +131,107 @@ export default function SentRequests() {
           </Text>
         </View>
 
-        {/* Sent Request List */}
-        <View className="px-5">
-          {filteredRequests.map((item) => {
-            const isCancelled = cancelledIds[item.id];
-            if (isCancelled) return null;
+        {/* Loading State */}
+        {isLoading ? (
+          <View className="py-16 items-center justify-center">
+            <ActivityIndicator size="large" color="#72AF5B" />
+            <Text className="text-sm text-gray-500 mt-2 font-medium">
+              Loading sent requests...
+            </Text>
+          </View>
+        ) : filteredRequests.length === 0 ? (
+          <View className="py-16 items-center justify-center px-6">
+            <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
+              <Ionicons name="paper-plane-outline" size={32} color="#9CA3AF" />
+            </View>
+            <Text className="text-base font-bold text-gray-800 mb-1">
+              No Sent Requests
+            </Text>
+            <Text className="text-xs text-gray-500 text-center">
+              You have not sent any pending friend requests.
+            </Text>
+          </View>
+        ) : (
+          /* Sent Request List */
+          <View className="px-5">
+            {filteredRequests.map((item) => {
+              const isCancelling = cancellingIds[item.id];
 
-            return (
-              <View
-                key={item.id}
-                className="py-3.5 border-b border-gray-100 flex-row items-start justify-between"
-              >
-                {/* Circular Avatar */}
-                <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-300 overflow-hidden">
-                  <Ionicons name="person" size={30} color="#6B7280" />
-                </View>
-
-                {/* Main Info */}
-                <View className="flex-1">
-                  <View className="flex-row justify-between items-start">
-                    <View className="flex-1 pr-2">
-                      <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
-                        {item.name}
-                      </Text>
-                      <View className="flex-row items-center mb-2.5">
-                        <Ionicons
-                          name="people"
-                          size={13}
-                          color="#6B7280"
-                          style={{ marginRight: 4 }}
-                        />
-                        <Text className="text-gray-500 text-xs font-medium">
-                          {item.friendsCount}
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Time Sent */}
-                    <Text className="text-[#72AF5B] font-medium text-xs">
-                      {item.timeAgo}
-                    </Text>
+              return (
+                <View
+                  key={item.id}
+                  className="py-3.5 border-b border-gray-100 flex-row items-start justify-between"
+                >
+                  {/* Circular Avatar */}
+                  <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-200 overflow-hidden">
+                    {item.avatarUrl ? (
+                      <Image
+                        source={{ uri: item.avatarUrl }}
+                        className="w-full h-full"
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={28} color="#6B7280" />
+                    )}
                   </View>
 
-                  {/* Cancel Request Button */}
-                  <TouchableOpacity
-                    onPress={() => handleCancelRequest(item.id)}
-                    className="w-full bg-gray-50 border border-[#72AF5B] py-2.5 rounded-xl items-center justify-center active:bg-gray-300"
-                    activeOpacity={0.8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Cancel sent request"
-                  >
-                    <Text className="text-[#72AF5B] font-semibold text-xs sm:text-sm">
-                      Cancel Request
-                    </Text>
-                  </TouchableOpacity>
+                  {/* Main Info */}
+                  <View className="flex-1">
+                    <View className="flex-row justify-between items-start">
+                      <View className="flex-1 pr-2">
+                        <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
+                          {item.name}
+                        </Text>
+                        <View className="flex-row items-center mb-2.5">
+                          <Ionicons
+                            name="people"
+                            size={13}
+                            color="#6B7280"
+                            style={{ marginRight: 4 }}
+                          />
+                          <Text className="text-gray-500 text-xs font-medium">
+                            {item.friendsCount || "Local Farm member"}
+                          </Text>
+                        </View>
+                      </View>
+
+                      {/* Time Sent */}
+                      <Text className="text-[#72AF5B] font-medium text-xs">
+                        {item.timeAgo || "Recently"}
+                      </Text>
+                    </View>
+
+                    {/* Cancel Request Button */}
+                    <TouchableOpacity
+                      onPress={() => handleCancelRequest(item)}
+                      disabled={isCancelling}
+                      className="w-full bg-gray-50 border border-gray-300 py-2.5 rounded-xl items-center justify-center active:bg-gray-200"
+                      activeOpacity={0.8}
+                      accessibilityRole="button"
+                      accessibilityLabel="Cancel sent request"
+                    >
+                      {isCancelling ? (
+                        <ActivityIndicator size="small" color="#6B7280" />
+                      ) : (
+                        <Text className="text-gray-700 font-semibold text-xs sm:text-sm">
+                          Cancel Request
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
                 </View>
-              </View>
-            );
-          })}
-        </View>
+              );
+            })}
+          </View>
+        )}
       </ScrollView>
+
       <SidebarMenu
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeTab="Sent Request"
       />
-      <BottomNavBar showFab={false} />
+      <BottomNavBar activeTab="Connection" showFab={false} />
     </SafeAreaView>
   );
 }

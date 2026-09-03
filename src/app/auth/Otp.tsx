@@ -1,4 +1,4 @@
-import { useAuth } from "@/hooks/use-auth";
+import { verifyOtpApi, resetPasswordForEmailApi } from "@/services/auth-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useRef, useState } from "react";
@@ -22,7 +22,6 @@ const BG_IMAGE = require("../../../assets/images/background-blur.png");
 export default function OTPScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { signUp } = useAuth();
   const params = useLocalSearchParams<{
     email?: string;
     firstName?: string;
@@ -33,10 +32,6 @@ export default function OTPScreen() {
   }>();
 
   const email = params.email || "";
-  const firstName = params.firstName || "";
-  const lastName = params.lastName || "";
-  const phoneNumber = params.phoneNumber || "";
-  const password = params.password || "";
 
   const [otp, setOtp] = useState<string[]>(["", "", "", "", "", ""]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -95,71 +90,78 @@ export default function OTPScreen() {
     setIsSubmitting(true);
 
     try {
-      setTimeout(() => {
-        setIsSubmitting(false);
-        setShowSuccessModal(true);
-      }, 800);
+      await verifyOtpApi(email.trim(), fullOtp);
+      setIsSubmitting(false);
+      setShowSuccessModal(true);
     } catch (err: any) {
       setIsSubmitting(false);
-      setErrorMsg("Invalid or expired OTP code. Please try again.");
+      setErrorMsg(err?.message || "Invalid or expired OTP code. Please try again.");
     }
   };
 
   const handleSuccessContinue = async () => {
     setShowSuccessModal(false);
-    if (firstName && lastName) {
-      const fullName = `${firstName} ${lastName}`;
-      await signUp(
-        fullName,
-        email || "user@example.com",
-        password || "password123",
-      );
-    } else {
-      router.replace("/auth/ResetPassword" as any);
-    }
+    router.replace("/user/NewsFeed" as any);
   };
 
-  const handleResendCode = () => {
-    setResendSent(true);
-    setTimeout(() => setResendSent(false), 5000);
+  const handleResendCode = async () => {
+    if (!email) return;
+    try {
+      await resetPasswordForEmailApi(email.trim());
+      setResendSent(true);
+      setTimeout(() => setResendSent(false), 5000);
+    } catch (err: any) {
+      setErrorMsg(err?.message || "Failed to resend verification code.");
+    }
   };
 
   return (
     <ImageBackground source={BG_IMAGE} className="flex-1" resizeMode="cover">
-      {/* Top Left Back Arrow Button */}
-      <TouchableOpacity
-        className="absolute left-4 z-30 p-2 rounded-full "
-        style={{ top: Math.max(insets.top + 8, 16) }}
-        onPress={() => router.back()}
+      {/* Top Header Bar */}
+      <View
+        className="w-full px-4 z-20"
+        style={{ paddingTop: Math.max(insets.top + 8, 16) }}
       >
-        <Ionicons name="arrow-back-outline" size={28} color="#848484" />
-      </TouchableOpacity>
+        <TouchableOpacity
+          className="p-2 self-start rounded-full active:opacity-70"
+          onPress={() => router.back()}
+          activeOpacity={0.7}
+        >
+          <Ionicons name="arrow-back-outline" size={26} color="#4B5563" />
+        </TouchableOpacity>
+      </View>
 
       <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
         className="flex-1"
       >
         <ScrollView
           className="flex-1"
-          contentContainerClassName="flex-grow justify-center items-center px-5 pb-8 pt-16"
+          contentContainerClassName="flex-grow justify-center items-center px-5"
+          contentContainerStyle={{
+            paddingBottom: Math.max(insets.bottom + 16, 24),
+          }}
+          bounces={false}
+          overScrollMode="never"
+          showsVerticalScrollIndicator={false}
           keyboardShouldPersistTaps="handled"
         >
-          {/* Form Wrapper (Vertically Centered, No Container Box, No LF2 or Logo2) */}
+          {/* Form Wrapper */}
           <View className="w-full max-w-[380px]">
             {/* Header Block */}
             <View className="items-start mb-6 w-full">
-              <Text className="text-5xl font-extrabold text-[#000000] text-left mb-1">
+              <Text className="text-3xl font-extrabold text-neutral-900 text-left mb-1 tracking-tight">
                 One-time Pin
               </Text>
-              <Text className="text-md text-[#000000] text-left">
+              <Text className="text-sm text-neutral-600 text-left">
                 {email
-                  ? `Enter Verification Code sent to ${email}`
-                  : "Enter Verification Code"}
+                  ? `Enter verification code sent to ${email}`
+                  : "Enter verification code"}
               </Text>
             </View>
 
             {errorMsg ? (
-              <View className="bg-[#FFEBEA] p-3 rounded-xl mb-4 w-full border border-[#FF3B30]">
+              <View className="bg-[#FFEBEA] p-3.5 rounded-2xl mb-5 w-full border border-[#FF3B30]/30">
                 <Text className="text-[#FF3B30] text-sm text-center font-medium">
                   {errorMsg}
                 </Text>
@@ -167,8 +169,8 @@ export default function OTPScreen() {
             ) : null}
 
             {resendSent ? (
-              <View className="bg-[#E8F5E9] p-3 rounded-xl mb-4 w-full border border-[#2E7D32]">
-                <Text className="text-[#2E7D32] text-sm text-center font-medium">
+              <View className="bg-[#E8F5E9] p-3.5 rounded-2xl mb-5 w-full border border-[#72AF5B]/30">
+                <Text className="text-[#72AF5B] text-sm text-center font-medium">
                   A new OTP code has been sent to your email!
                 </Text>
               </View>
@@ -182,13 +184,13 @@ export default function OTPScreen() {
                   ref={(el) => {
                     inputRefs.current[index] = el;
                   }}
-                  className={`w-12 h-14 bg-white/95 border ${
+                  className={`w-[48px] h-[54px] bg-white/95 border ${
                     digit
-                      ? "border-[#2E7D32]"
+                      ? "border-[#72AF5B]"
                       : errorMsg
-                        ? "border-[#FF3B30]"
-                        : "border-gray-300"
-                  } rounded-xl text-center text-2xl font-bold text-gray-900 shadow-sm`}
+                        ? "border-[#FF3B30] bg-[#FFF8F8]"
+                        : "border-gray-200"
+                  } rounded-2xl text-center text-2xl font-bold text-gray-900 shadow-sm`}
                   keyboardType="number-pad"
                   maxLength={6}
                   value={digit}
@@ -201,19 +203,20 @@ export default function OTPScreen() {
 
             {/* Verify Button */}
             <TouchableOpacity
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center shadow-sm active:opacity-90 mb-4"
+              className="w-full h-[52px] bg-[#72AF5B] rounded-2xl items-center justify-center shadow-md shadow-[#72AF5B]/30 active:opacity-90 mb-5"
               onPress={handleVerify}
               disabled={isSubmitting}
+              activeOpacity={0.85}
             >
-              <Text className="text-white text-base font-bold">
-                Verify Code
+              <Text className="text-white text-base font-bold tracking-wide">
+                {isSubmitting ? "Verifying..." : "Verify Code"}
               </Text>
             </TouchableOpacity>
 
             {/* Resend Code Link */}
-            <View className="flex-row justify-center items-center">
-              <TouchableOpacity onPress={handleResendCode}>
-                <Text className="text-md  text-[#2E7D32] underline">
+            <View className="flex-row justify-center items-center py-2">
+              <TouchableOpacity onPress={handleResendCode} activeOpacity={0.7}>
+                <Text className="text-sm font-semibold text-[#72AF5B]">
                   Resend Verification Code
                 </Text>
               </TouchableOpacity>
@@ -233,7 +236,7 @@ export default function OTPScreen() {
           <View className="w-full max-w-[340px] bg-white rounded-3xl p-6 items-center shadow-xl">
             {/* Green Badge Icon */}
             <View className="w-16 h-16 rounded-full bg-[#E8F5E9] items-center justify-center mb-4">
-              <Ionicons name="checkmark-circle" size={48} color="#2E7D32" />
+              <Ionicons name="checkmark-circle" size={48} color="#72AF5B" />
             </View>
 
             {/* Title */}
@@ -249,8 +252,8 @@ export default function OTPScreen() {
             {/* Continue Button */}
             <TouchableOpacity
               onPress={handleSuccessContinue}
-              className="w-full h-12 bg-[#2E7D32] rounded-xl items-center justify-center active:opacity-90 shadow-sm"
-              activeOpacity={0.8}
+              className="w-full h-[50px] bg-[#72AF5B] rounded-2xl items-center justify-center active:opacity-90 shadow-sm"
+              activeOpacity={0.85}
             >
               <Text className="text-white text-base font-bold">
                 Continue

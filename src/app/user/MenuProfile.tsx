@@ -1,6 +1,9 @@
+import { useAuth } from "@/hooks/use-auth";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import {
+  Alert,
+  Image,
   SafeAreaView,
   ScrollView,
   Text,
@@ -12,6 +15,7 @@ import Navigation from "../../components/Navigation";
 
 export default function MenuProfile() {
   const router = useRouter();
+  const { user, signOut } = useAuth();
 
   const handleBack = () => {
     try {
@@ -22,6 +26,22 @@ export default function MenuProfile() {
       }
     } catch {
       router.push("/user/NewsFeed" as any);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut();
+    } catch {
+      router.replace("/auth/Login" as any);
+    }
+  };
+
+  const handleSwitchAccount = async () => {
+    try {
+      await signOut();
+    } catch {
+      router.replace("/auth/Login" as any);
     }
   };
 
@@ -60,16 +80,26 @@ export default function MenuProfile() {
           accessibilityLabel="Show profile"
         >
           <View className="flex-row items-center gap-3 flex-1 pr-2">
-            {/* Circular gray placeholder avatar */}
-            <View className="w-14 h-14 rounded-full bg-gray-300 items-center justify-center overflow-hidden border border-gray-200">
-              <Ionicons name="person" size={32} color="#FFFFFF" />
+            {/* Avatar */}
+            <View className="w-14 h-14 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-200">
+              {user?.avatarUrl ? (
+                <Image
+                  source={{ uri: user.avatarUrl }}
+                  style={{ width: "100%", height: "100%" }}
+                  resizeMode="cover"
+                />
+              ) : (
+                <Ionicons name="person" size={28} color="#9CA3AF" />
+              )}
             </View>
 
             <View className="flex-1">
-              <Text className="text-base font-medium text-gray-900 leading-tight">
-                Juan Dela Cruz
+              <Text className="text-base font-bold text-gray-900 leading-tight">
+                {user?.name || user?.username || "Local Farmer"}
               </Text>
-              <Text className="text-sm text-gray-600 mt-0.5">Show profile</Text>
+              <Text className="text-sm text-gray-500 mt-0.5">
+                {user?.email || "Show profile"}
+              </Text>
             </View>
           </View>
 
@@ -95,6 +125,7 @@ export default function MenuProfile() {
 
           {/* Item 2: Security */}
           <TouchableOpacity
+            onPress={() => router.push("/user/Security" as any)}
             className="flex-row items-center px-4 py-3 gap-4 border-b border-gray-50 active:bg-gray-50"
             activeOpacity={0.7}
           >
@@ -102,7 +133,17 @@ export default function MenuProfile() {
             <Text className="text-base text-gray-900 flex-1">Security</Text>
           </TouchableOpacity>
 
-          {/* Item 3: Darkmode */}
+          {/* Item 3: Saved */}
+          <TouchableOpacity
+            onPress={() => router.push("/user/SavedPosts" as any)}
+            className="flex-row items-center px-4 py-3 gap-4 border-b border-gray-50 active:bg-gray-50"
+            activeOpacity={0.7}
+          >
+            <Ionicons name="bookmark-outline" size={24} color="#000000" />
+            <Text className="text-base text-gray-900 flex-1">Saved</Text>
+          </TouchableOpacity>
+
+          {/* Item 4: Darkmode */}
           <TouchableOpacity
             className="flex-row items-center px-4 py-3 gap-4 active:bg-gray-50"
             activeOpacity={0.7}
@@ -147,6 +188,7 @@ export default function MenuProfile() {
           <TouchableOpacity
             className="w-full bg-[#77af5c] rounded-xl py-3.5 items-center justify-center active:bg-[#689d50] shadow-sm"
             activeOpacity={0.8}
+            onPress={handleSwitchAccount}
             accessibilityRole="button"
             accessibilityLabel="Switch account"
           >
@@ -159,6 +201,7 @@ export default function MenuProfile() {
           <TouchableOpacity
             className="w-full bg-[#a3a3a3] rounded-xl py-3.5 items-center justify-center active:bg-[#8e8e8e] shadow-sm"
             activeOpacity={0.8}
+            onPress={handleLogout}
             accessibilityRole="button"
             accessibilityLabel="Logout"
           >

@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   Modal,
   SafeAreaView,
@@ -40,16 +40,11 @@ export default function ChatSidebarModal({
   onSelectItem,
 }: ChatSidebarModalProps) {
   const router = useRouter();
-  const [activeItem, setActiveItem] = useState("Messages");
-
-  useEffect(() => {
-    if (controlledActiveItem) {
-      setActiveItem(controlledActiveItem);
-    }
-  }, [controlledActiveItem]);
+  const [internalActiveItem, setInternalActiveItem] = useState("Messages");
+  const activeItem = controlledActiveItem ?? internalActiveItem;
 
   const handleSelectItem = (item: string) => {
-    setActiveItem(item);
+    setInternalActiveItem(item);
     if (onSelectItem) {
       onSelectItem(item);
     }
@@ -72,14 +67,14 @@ export default function ChatSidebarModal({
       animationType="fade"
       onRequestClose={onClose}
     >
-      {/* ── Backdrop ──────────────────────────────────────────────────────── */}
+      {/* Backdrop */}
       <TouchableWithoutFeedback onPress={onClose}>
         <View className="flex-1 bg-black/30">
-          {/* ── Sidebar Container ─────────────────────────────────────────── */}
+          {/* Sidebar Container */}
           <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
             <View className="absolute left-0 top-0 bottom-0 w-4/5 max-w-[320px] bg-white shadow-2xl flex-col">
               <SafeAreaView className="flex-1">
-                {/* ── Header Section (Placed at Top Corners) ───────────────── */}
+                {/* Header Section (Placed at Top Corners) */}
                 <View className="flex-row justify-between items-center px-5 pt-4 pb-3 mb-2">
                   <Text className="text-2xl font-semibold text-black">
                     Chats
@@ -94,7 +89,7 @@ export default function ChatSidebarModal({
                   </TouchableOpacity>
                 </View>
 
-                {/* ── Menu Items List ─────────────────────────────────────── */}
+                {/* Menu Items List */}
                 <View className="px-3 flex-col">
                   {MENU_ITEMS.map((item) => {
                     const isActive = activeItem === item;

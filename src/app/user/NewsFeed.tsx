@@ -1,12 +1,29 @@
+import { useToast } from "@/context/toast-context";
+import { useAuth } from "@/hooks/use-auth";
+import {
+  addPostCommentApi,
+  CommentItem,
+  deletePostApi,
+  getPostCommentsApi,
+  getPostsApi,
+  PostItem,
+  sharePostApi,
+  toggleLikeCommentApi,
+  toggleLikePostApi,
+  toggleSavePostApi,
+  updatePostApi,
+} from "@/services/post-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
   Easing,
   Image,
   Modal,
   PanResponder,
   Pressable,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   Switch,
@@ -48,16 +65,6 @@ interface Post {
   likes: number;
   comments: number;
   shares: number;
-}
-
-interface CommentItem {
-  id: string;
-  authorName: string;
-  avatarUri?: string;
-  timeAgo: string;
-  content: string;
-  likes: number;
-  parentId?: string | null;
 }
 
 type ReactionType = "like" | "heart" | "care" | "wow";
@@ -342,62 +349,10 @@ const POSTS: Post[] = [
   },
 ];
 
-const COMMENTS: CommentItem[] = [
-  {
-    id: "1",
-    authorName: "Nathan Salvedia",
-    avatarUri: "https://i.pravatar.cc/150?img=12",
-    timeAgo: "1hr ago",
-    content:
-      "These look incredible Maria! What soil amendment did you use? I struggled with blossom end rot this year.",
-    likes: 34,
-    parentId: null,
-  },
-  {
-    id: "1_1",
-    authorName: "Paulbert Landicho",
-    avatarUri: "https://i.pravatar.cc/150?img=11",
-    timeAgo: "45m ago",
-    content:
-      "@Nathan Salvedia Added crushed eggshells and calcium nitrate during vegetative stage! Worked wonders.",
-    likes: 12,
-    parentId: "1",
-  },
-  {
-    id: "1_2",
-    authorName: "Juan Dela Cruz",
-    avatarUri: "https://i.pravatar.cc/150?img=8",
-    timeAgo: "20m ago",
-    content:
-      "@Nathan Salvedia Make sure also to keep regular watering schedule to avoid calcium deficiency.",
-    likes: 8,
-    parentId: "1",
-  },
-  {
-    id: "2",
-    authorName: "Cleo Manabilang",
-    avatarUri: "https://i.pravatar.cc/150?img=9",
-    timeAgo: "9hrs ago",
-    content:
-      "Beautiful harvest! We switched to compost tea weekly and the tomatoes practically grew themselves.",
-    likes: 81,
-    parentId: null,
-  },
-  {
-    id: "3",
-    authorName: "Kent Zorel Elnas",
-    avatarUri: "https://i.pravatar.cc/150?img=14",
-    timeAgo: "3hrs ago",
-    content:
-      "Heirloom varieties are so worth the extra care. Do you have seeds available to sell?",
-    likes: 11,
-    parentId: null,
-  },
-];
-
 const STORY_DURATION = 4000;
 
 export default function NewsFeed() {
+  const { user } = useAuth();
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeSubStoryIndex, setActiveSubStoryIndex] = useState<number>(0);
   const [isStoryModalVisible, setStoryModalVisible] = useState(false);
@@ -453,10 +408,52 @@ export default function NewsFeed() {
   const [expandedReplyCommentIds, setExpandedReplyCommentIds] = useState<
     Record<string, boolean>
   >({});
+  const { showToast } = useToast();
+  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>({});
+  const [loadingComments, setLoadingComments] = useState<Record<string, boolean>>({});
+  const [submittingComments, setSubmittingComments] = useState<Record<string, boolean>>({});
 
-  const handleQuickLike = (postId: string) => {
+  const [posts, setPosts] = useState<PostItem[]>([]);
+  const [isLoadingPosts, setIsLoadingPosts] = useState(true);
+  const [isRefreshingPosts, setIsRefreshingPosts] = useState(false);
+
+  const fetchFeedPosts = async () => {
+    try {
+      const data = await getPostsApi();
+      setPosts(data);
+    } catch (err) {
+      console.warn("Failed to fetch posts:", err);
+    } finally {
+      setIsLoadingPosts(false);
+      setIsRefreshingPosts(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchFeedPosts();
+  }, []);
+
+  const handleNewPostCreated = (newPost: PostItem) => {
+    setPosts((prev) => [newPost, ...prev]);
+  };
+
+  const handleQuickLike = async (postId: string) => {
     if (activeReactionPostId) setActiveReactionPostId(null);
     if (activeSharePostId) setActiveSharePostId(null);
+
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p.id === postId) {
+          const wasLiked = p.isLiked || selectedReactions[postId] === "like";
+          return {
+            ...p,
+            isLiked: !wasLiked,
+            likes: wasLiked ? Math.max(0, p.likes - 1) : p.likes + 1,
+          };
+        }
+        return p;
+      })
+    );
 
     setSelectedReactions((prev) => {
       const current = prev[postId];
@@ -465,6 +462,17 @@ export default function NewsFeed() {
         [postId]: current ? null : "like",
       };
     });
+
+    try {
+      const res = await toggleLikePostApi(postId);
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId ? { ...p, isLiked: res.isLiked, likes: res.likesCount } : p
+        )
+      );
+    } catch (err) {
+      console.warn("Error toggling like:", err);
+    }
   };
 
   const handleSelectReaction = (postId: string, reaction: ReactionType) => {
@@ -480,12 +488,254 @@ export default function NewsFeed() {
     setActiveSharePostId((prev) => (prev === postId ? null : postId));
   };
 
-  const handleShareOptionClick = (postId: string, optionId: string) => {
-    console.log(`Post ${postId} shared via option: ${optionId}`);
+  const handleShareOptionClick = async (postId: string, optionId: string) => {
     setActiveSharePostId(null);
+    try {
+      const res = await sharePostApi(postId, optionId);
+      setPosts((prev) => {
+        const updated = prev.map((p) =>
+          p.id === postId ? { ...p, shares: res.sharesCount } : p
+        );
+        if (res.sharedPost) {
+          return [res.sharedPost, ...updated];
+        }
+        return updated;
+      });
+      showToast(
+        optionId === "public"
+          ? "Post shared to your feed!"
+          : `Post shared! (${optionId})`,
+        "success"
+      );
+    } catch (err: any) {
+      showToast(err?.message || "Failed to share post.", "error");
+    }
   };
 
-  const handleCreateCollection = () => {
+  const toggleExpandComments = async (postId: string) => {
+    if (activeReactionPostId) setActiveReactionPostId(null);
+    if (activeSharePostId) setActiveSharePostId(null);
+
+    if (expandedPostId === postId) {
+      setExpandedPostId(null);
+      return;
+    }
+
+    setExpandedPostId(postId);
+
+    if (!postComments[postId]) {
+      setLoadingComments((prev) => ({ ...prev, [postId]: true }));
+      try {
+        const data = await getPostCommentsApi(postId);
+        setPostComments((prev) => ({ ...prev, [postId]: data }));
+      } catch (err) {
+        console.warn("Failed to load comments:", err);
+      } finally {
+        setLoadingComments((prev) => ({ ...prev, [postId]: false }));
+      }
+    }
+  };
+
+  const handleAddComment = async (postId: string) => {
+    const text = (commentInputs[postId] || "").trim();
+    if (!text || submittingComments[postId]) return;
+
+    setSubmittingComments((prev) => ({ ...prev, [postId]: true }));
+    setCommentInputs((prev) => ({ ...prev, [postId]: "" }));
+    const currentReply = replyingTo;
+    setReplyingTo(null);
+
+    try {
+      const newComment = await addPostCommentApi(
+        postId,
+        text,
+        currentReply?.commentId || null
+      );
+
+      setPostComments((prev) => ({
+        ...prev,
+        [postId]: [...(prev[postId] || []), newComment],
+      }));
+
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId ? { ...p, comments: p.comments + 1 } : p
+        )
+      );
+
+      showToast("Comment posted!", "success");
+    } catch (err: any) {
+      showToast(err?.message || "Failed to post comment.", "error");
+    } finally {
+      setSubmittingComments((prev) => ({ ...prev, [postId]: false }));
+    }
+  };
+
+  const handleToggleCommentLike = async (postId: string, commentId: string) => {
+    if (activeReactionCommentId) setActiveReactionCommentId(null);
+
+    // Optimistic toggle
+    setPostComments((prev) => ({
+      ...prev,
+      [postId]: (prev[postId] || []).map((c) => {
+        if (c.id === commentId) {
+          const wasLiked = c.isLiked || Boolean(commentReactions[commentId]);
+          return {
+            ...c,
+            isLiked: !wasLiked,
+            likes: wasLiked ? Math.max(0, c.likes - 1) : c.likes + 1,
+          };
+        }
+        return c;
+      }),
+    }));
+
+    setCommentReactions((prev) => ({
+      ...prev,
+      [commentId]: prev[commentId] ? null : "heart",
+    }));
+
+    try {
+      const res = await toggleLikeCommentApi(commentId);
+      setPostComments((prev) => ({
+        ...prev,
+        [postId]: (prev[postId] || []).map((c) =>
+          c.id === commentId
+            ? { ...c, isLiked: res.isLiked, likes: res.likesCount }
+            : c
+        ),
+      }));
+    } catch (err) {
+      console.warn("Failed to toggle comment like:", err);
+    }
+  };
+
+  // Post Options Menu & Edit / Delete / Privacy Modals
+  const [selectedPostForMenu, setSelectedPostForMenu] = useState<PostItem | null>(null);
+  const [isPostMenuVisible, setIsPostMenuVisible] = useState(false);
+
+  // Edit Modal State
+  const [isEditModalVisible, setIsEditModalVisible] = useState(false);
+  const [editPostContent, setEditPostContent] = useState("");
+  const [editPostCategory, setEditPostCategory] = useState("General");
+  const [editPostPrivacy, setEditPostPrivacy] = useState("Public");
+  const [isUpdatingPost, setIsUpdatingPost] = useState(false);
+
+  // Quick Privacy Modal State
+  const [isPrivacyModalVisible, setIsPrivacyModalVisible] = useState(false);
+
+  // Delete Confirm Modal State
+  const [isDeleteConfirmVisible, setIsDeleteConfirmVisible] = useState(false);
+  const [isDeletingPost, setIsDeletingPost] = useState(false);
+
+  const isPostOwner = (post: PostItem | null) => {
+    if (!post) return false;
+    return Number(post.userId) === Number(user?.id) || user?.role === "admin";
+  };
+
+  const handleOpenPostMenu = (post: PostItem) => {
+    setSelectedPostForMenu(post);
+    setIsPostMenuVisible(true);
+  };
+
+  const handleOpenEditModal = () => {
+    if (!selectedPostForMenu) return;
+    setEditPostContent(selectedPostForMenu.content || "");
+    setEditPostCategory(selectedPostForMenu.category || "General");
+    setEditPostPrivacy(selectedPostForMenu.privacy || "Public");
+    setIsPostMenuVisible(false);
+    setIsEditModalVisible(true);
+  };
+
+  const handleSaveEditPost = async () => {
+    if (!selectedPostForMenu) return;
+    setIsUpdatingPost(true);
+    try {
+      const res = await updatePostApi(selectedPostForMenu.id, {
+        content: editPostContent,
+        category: editPostCategory,
+        privacy: editPostPrivacy,
+      });
+
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === selectedPostForMenu.id
+            ? {
+                ...p,
+                content: res.post.content,
+                category: res.post.category,
+                privacy: res.post.privacy,
+                authorRole: res.post.category,
+              }
+            : p
+        )
+      );
+
+      showToast("Post updated successfully!", "success");
+      setIsEditModalVisible(false);
+      setSelectedPostForMenu(null);
+    } catch (err: any) {
+      showToast(err?.message || "Failed to update post.", "error");
+    } finally {
+      setIsUpdatingPost(false);
+    }
+  };
+
+  const handleQuickChangePrivacy = async (privacy: string) => {
+    if (!selectedPostForMenu) return;
+    try {
+      const res = await updatePostApi(selectedPostForMenu.id, {
+        privacy,
+      });
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === selectedPostForMenu.id
+            ? { ...p, privacy: res.post.privacy }
+            : p
+        )
+      );
+      showToast(`Privacy changed to ${privacy}!`, "success");
+      setIsPrivacyModalVisible(false);
+      setIsPostMenuVisible(false);
+      setSelectedPostForMenu(null);
+    } catch (err: any) {
+      showToast(err?.message || "Failed to change privacy.", "error");
+    }
+  };
+
+  const handleDeletePost = async () => {
+    if (!selectedPostForMenu) return;
+    setIsDeletingPost(true);
+    try {
+      await deletePostApi(selectedPostForMenu.id);
+      setPosts((prev) => prev.filter((p) => p.id !== selectedPostForMenu.id));
+      showToast("Post deleted successfully!", "success");
+      setIsDeleteConfirmVisible(false);
+      setSelectedPostForMenu(null);
+    } catch (err: any) {
+      showToast(err?.message || "Failed to delete post.", "error");
+    } finally {
+      setIsDeletingPost(false);
+    }
+  };
+
+  const handleToggleSavePost = async (postId: string, collectionName: string = "All Saved") => {
+    try {
+      const res = await toggleSavePostApi(postId, collectionName);
+      setPosts((prev) =>
+        prev.map((p) => (p.id === postId ? { ...p, isSaved: res.isSaved } : p))
+      );
+      setBookmarkedPosts((prev) => ({
+        ...prev,
+        [postId]: res.isSaved ? collectionName : "",
+      }));
+      showToast(res.message, "success");
+    } catch (err: any) {
+      showToast(err?.message || "Failed to save post.", "error");
+    }
+  };
+
+  const handleCreateCollection = async () => {
     const trimmed = newCollectionName.trim();
     if (!trimmed) return;
 
@@ -499,48 +749,12 @@ export default function NewsFeed() {
     setBookmarkCollections((prev) => [...prev, newCol]);
 
     if (bookmarkPostId) {
-      setBookmarkedPosts((prev) => ({
-        ...prev,
-        [bookmarkPostId]: newId,
-      }));
+      await handleToggleSavePost(bookmarkPostId, trimmed);
     }
 
     setNewCollectionName("");
     setNewCollectionModalVisible(false);
     setBookmarkPostId(null);
-  };
-
-  const toggleCommentLike = (commentId: string) => {
-    if (activeReactionCommentId) setActiveReactionCommentId(null);
-    setCommentReactions((prev) => {
-      const current = prev[commentId];
-      return {
-        ...prev,
-        [commentId]: current ? null : "heart",
-      };
-    });
-  };
-
-  const handleQuickCommentReaction = (commentId: string) => {
-    if (activeReactionCommentId) setActiveReactionCommentId(null);
-    setCommentReactions((prev) => {
-      const current = prev[commentId];
-      return {
-        ...prev,
-        [commentId]: current ? null : "heart",
-      };
-    });
-  };
-
-  const handleSelectCommentReaction = (
-    commentId: string,
-    reaction: ReactionType,
-  ) => {
-    setCommentReactions((prev) => ({
-      ...prev,
-      [commentId]: prev[commentId] === reaction ? null : reaction,
-    }));
-    setActiveReactionCommentId(null);
   };
 
   const toggleRepliesVisibility = (commentId: string) => {
@@ -672,6 +886,17 @@ export default function NewsFeed() {
             showsVerticalScrollIndicator={false}
             contentContainerStyle={{ paddingBottom: 120 }}
             keyboardShouldPersistTaps="handled"
+            refreshControl={
+              <RefreshControl
+                refreshing={isRefreshingPosts}
+                onRefresh={() => {
+                  setIsRefreshingPosts(true);
+                  fetchFeedPosts();
+                }}
+                colors={["#72AF5B"]}
+                tintColor="#72AF5B"
+              />
+            }
             onScrollBeginDrag={() => {
               if (activeReactionPostId) setActiveReactionPostId(null);
               if (activeSharePostId) setActiveSharePostId(null);
@@ -700,11 +925,19 @@ export default function NewsFeed() {
                   >
                     {/* Avatar Container */}
                     <View className="relative">
-                      <View className="w-16 h-16 rounded-full bg-gray-300 items-center justify-center">
-                        <Ionicons name="person" size={32} color="#6B7280" />
+                      <View className="w-16 h-16 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-200">
+                        {user?.avatarUrl ? (
+                          <Image
+                            source={{ uri: user.avatarUrl }}
+                            style={{ width: "100%", height: "100%" }}
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Ionicons name="person" size={32} color="#9CA3AF" />
+                        )}
                       </View>
                       {/* The '+' Badge */}
-                      <View className="absolute bottom-0 right-0 bg-blue-500 w-5 h-5 rounded-full items-center justify-center border-2 border-white">
+                      <View className="absolute bottom-0 right-0 bg-blue-500 w-5 h-5 rounded-full items-center justify-center border-2 border-white shadow-xs">
                         <Ionicons name="add" size={14} color="#FFFFFF" />
                       </View>
                     </View>
@@ -758,7 +991,27 @@ export default function NewsFeed() {
 
             {/* Feed Posts Section */}
             <View className="pb-24 pt-2">
-              {POSTS.map((post) => {
+              {isLoadingPosts ? (
+                <View className="py-16 items-center justify-center">
+                  <ActivityIndicator size="large" color="#72AF5B" />
+                  <Text className="text-xs text-gray-500 mt-2 font-medium">
+                    Loading farming community feed...
+                  </Text>
+                </View>
+              ) : posts.length === 0 ? (
+                <View className="py-16 items-center justify-center px-6">
+                  <View className="w-16 h-16 rounded-full bg-green-50 items-center justify-center mb-3">
+                    <Ionicons name="newspaper-outline" size={32} color="#72AF5B" />
+                  </View>
+                  <Text className="text-base font-bold text-gray-800 mb-1">
+                    No posts yet
+                  </Text>
+                  <Text className="text-xs text-gray-400 text-center">
+                    Be the first to share an update with your farming community!
+                  </Text>
+                </View>
+              ) : (
+                posts.map((post) => {
                 const isExpanded = expandedPostId === post.id;
                 const isReactionMenuOpen = activeReactionPostId === post.id;
                 const isShareMenuOpen = activeSharePostId === post.id;
@@ -769,7 +1022,7 @@ export default function NewsFeed() {
                   (r) => r.type === currentReaction,
                 );
 
-                const isBookmarked = !!bookmarkedPosts[post.id];
+                const isBookmarked = Boolean(post.isSaved || bookmarkedPosts[post.id]);
 
                 return (
                   <View
@@ -844,11 +1097,32 @@ export default function NewsFeed() {
                     )}
 
                     <View className="p-4">
+                      {/* Shared Post Header Banner */}
+                      {post.isShared && post.originalPost && (
+                        <View className="flex-row items-center mb-2.5 px-0.5">
+                          <Ionicons name="arrow-redo" size={15} color="#72AF5B" />
+                          <Text className="text-xs text-gray-500 font-medium ml-1.5">
+                            <Text className="font-bold text-gray-900">
+                              {post.authorName}
+                            </Text>{" "}
+                            shared a post
+                          </Text>
+                        </View>
+                      )}
+
                       {/* Post Header */}
                       <View className="flex-row justify-between items-start mb-3">
                         <View className="flex-row items-center">
-                          <View className="h-10 w-10 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3">
-                            <Ionicons name="person" size={20} color="#72AF5B" />
+                          <View className="h-10 w-10 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
+                            {post.avatarUri ? (
+                              <Image
+                                source={{ uri: post.avatarUri }}
+                                style={{ width: "100%", height: "100%" }}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <Ionicons name="person" size={20} color="#72AF5B" />
+                            )}
                           </View>
                           <View>
                             <View className="flex-row items-center">
@@ -865,13 +1139,29 @@ export default function NewsFeed() {
                                 size={12}
                                 color="#72AF5B"
                               />
-                              <Text className="text-xs text-gray-500 ml-1">
+                              <Text className="text-xs text-gray-500 ml-1 mr-2">
                                 {post.location} • {post.timeAgo}
                               </Text>
+                              <Ionicons
+                                name={
+                                  post.privacy === "Friends"
+                                    ? "people-outline"
+                                    : post.privacy === "Only me"
+                                    ? "lock-closed-outline"
+                                    : "globe-outline"
+                                }
+                                size={12}
+                                color="#9ca3af"
+                              />
                             </View>
                           </View>
                         </View>
-                        <TouchableOpacity className="p-1">
+                        <TouchableOpacity
+                          onPress={() => handleOpenPostMenu(post)}
+                          className="p-1.5 active:opacity-60"
+                          accessibilityRole="button"
+                          accessibilityLabel="Post options"
+                        >
                           <Ionicons
                             name="ellipsis-horizontal"
                             size={20}
@@ -880,23 +1170,94 @@ export default function NewsFeed() {
                         </TouchableOpacity>
                       </View>
 
-                      {/* Post Content */}
-                      <Text className="text-gray-800 text-sm mb-3 leading-5">
-                        {post.content}
-                      </Text>
+                      {/* Post Content (Sharer's caption or post content) */}
+                      {!!post.content && (
+                        <Text className="text-gray-800 text-sm mb-3 leading-5">
+                          {post.content}
+                        </Text>
+                      )}
 
-                      {/* Post Image */}
-                      {post.imageSource && (
-                        <Image
-                          source={post.imageSource}
-                          className="w-full rounded-lg mb-4 bg-gray-100"
-                          style={{
-                            width: "100%",
-                            height: 224,
-                            borderRadius: 8,
-                          }}
-                          resizeMode="cover"
-                        />
+                      {/* Shared Post: Embedded Original Post Card */}
+                      {post.isShared && post.originalPost ? (
+                        <View className="border border-gray-200 rounded-xl p-3 bg-gray-50/80 mb-3">
+                          {/* Original Author Info */}
+                          <View className="flex-row items-center mb-2">
+                            <View className="h-8 w-8 rounded-full border border-gray-300 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
+                              {post.originalPost.avatarUri ? (
+                                <Image
+                                  source={{ uri: post.originalPost.avatarUri }}
+                                  style={{ width: "100%", height: "100%" }}
+                                  resizeMode="cover"
+                                />
+                              ) : (
+                                <Ionicons
+                                  name="person"
+                                  size={16}
+                                  color="#6b7280"
+                                />
+                              )}
+                            </View>
+                            <View>
+                              <View className="flex-row items-center">
+                                <Text className="font-bold text-gray-900 text-sm mr-1.5">
+                                  {post.originalPost.authorName}
+                                </Text>
+                                <Text className="text-gray-500 text-[10px] font-semibold bg-gray-200 px-1.5 py-0.5 rounded">
+                                  {post.originalPost.authorRole}
+                                </Text>
+                              </View>
+                              <Text className="text-[11px] text-gray-400 mt-0.5">
+                                {post.originalPost.location} • {post.originalPost.timeAgo}
+                              </Text>
+                            </View>
+                          </View>
+
+                          {/* Original Content Text */}
+                          {!!post.originalPost.content && (
+                            <Text className="text-gray-700 text-sm mb-2 leading-5">
+                              {post.originalPost.content}
+                            </Text>
+                          )}
+
+                          {/* Original Image */}
+                          {post.originalPost.imageUrl ? (
+                            <Image
+                              source={{ uri: post.originalPost.imageUrl }}
+                              className="w-full rounded-lg bg-gray-100"
+                              style={{
+                                width: "100%",
+                                height: 180,
+                                borderRadius: 8,
+                              }}
+                              resizeMode="cover"
+                            />
+                          ) : null}
+                        </View>
+                      ) : (
+                        /* Standard Post Image */
+                        post.imageUrl ? (
+                          <Image
+                            source={{ uri: post.imageUrl }}
+                            className="w-full rounded-lg mb-4 bg-gray-100"
+                            style={{
+                              width: "100%",
+                              height: 224,
+                              borderRadius: 8,
+                            }}
+                            resizeMode="cover"
+                          />
+                        ) : (post as any).imageSource ? (
+                          <Image
+                            source={(post as any).imageSource}
+                            className="w-full rounded-lg mb-4 bg-gray-100"
+                            style={{
+                              width: "100%",
+                              height: 224,
+                              borderRadius: 8,
+                            }}
+                            resizeMode="cover"
+                          />
+                        ) : null
                       )}
 
                       {/* Post Interaction Bar */}
@@ -925,7 +1286,18 @@ export default function NewsFeed() {
                                   }}
                                 >
                                   {currentReactionConfig?.label} (
-                                  {post.likes + 1})
+                                  {post.likes})
+                                </Text>
+                              </>
+                            ) : post.isLiked ? (
+                              <>
+                                <Ionicons
+                                  name="heart"
+                                  size={24}
+                                  color="#EF4444"
+                                />
+                                <Text className="font-bold text-sm text-[#EF4444]">
+                                  {post.likes}
                                 </Text>
                               </>
                             ) : (
@@ -944,12 +1316,7 @@ export default function NewsFeed() {
 
                           {/* Comment Toggle Button */}
                           <TouchableOpacity
-                            onPress={() => {
-                              if (activeReactionPostId)
-                                setActiveReactionPostId(null);
-                              if (activeSharePostId) setActiveSharePostId(null);
-                              setExpandedPostId(isExpanded ? null : post.id);
-                            }}
+                            onPress={() => toggleExpandComments(post.id)}
                             className="flex-row items-center gap-1.5 active:opacity-70"
                           >
                             <Ionicons
@@ -994,8 +1361,9 @@ export default function NewsFeed() {
 
                         {/* Bookmark / Save Button Trigger */}
                         <TouchableOpacity
-                          onPress={() => setBookmarkPostId(post.id)}
-                          className="active:opacity-70"
+                          onPress={() => handleToggleSavePost(post.id)}
+                          onLongPress={() => setBookmarkPostId(post.id)}
+                          className="active:opacity-70 p-0.5"
                           accessibilityRole="button"
                           accessibilityLabel="Save post"
                         >
@@ -1015,212 +1383,165 @@ export default function NewsFeed() {
                       <View className="bg-gray-50 border-t border-gray-200 p-4 rounded-b-xl">
                         {/* Header */}
                         <Text className="text-sm font-semibold text-gray-900 mb-4">
-                          22 Comments
+                          {(postComments[post.id] || []).length}{" "}
+                          {(postComments[post.id] || []).length === 1
+                            ? "Comment"
+                            : "Comments"}
                         </Text>
 
-                        {/* Individual Comment & Nested Reply Layout */}
-                        {COMMENTS.filter((c) => !c.parentId).map(
-                          (rootComment) => {
-                            const childReplies = COMMENTS.filter(
-                              (c) => c.parentId === rootComment.id,
-                            );
-                            const areRepliesExpanded =
-                              !!expandedReplyCommentIds[rootComment.id];
+                        {loadingComments[post.id] ? (
+                          <View className="py-6 items-center justify-center">
+                            <ActivityIndicator size="small" color="#72AF5B" />
+                            <Text className="text-xs text-gray-400 mt-2">
+                              Loading comments...
+                            </Text>
+                          </View>
+                        ) : (postComments[post.id] || []).length === 0 ? (
+                          <View className="py-4 items-center justify-center">
+                            <Text className="text-xs text-gray-400">
+                              No comments yet. Be the first to share your thoughts!
+                            </Text>
+                          </View>
+                        ) : (
+                          (postComments[post.id] || [])
+                            .filter((c) => !c.parentId)
+                            .map((rootComment) => {
+                              const childReplies = (
+                                postComments[post.id] || []
+                              ).filter((c) => c.parentId === rootComment.id);
+                              const areRepliesExpanded =
+                                !!expandedReplyCommentIds[rootComment.id];
 
-                            const renderCommentItem = (
-                              comment: CommentItem,
-                              isReply: boolean,
-                            ) => {
-                              const currentCommentReaction =
-                                commentReactions[comment.id];
-                              const currentCommentReactionConfig =
-                                REACTIONS.find(
-                                  (r) => r.type === currentCommentReaction,
-                                );
-                              const hasCommentReaction =
-                                !!currentCommentReaction;
-                              const commentLikesCount =
-                                comment.likes + (hasCommentReaction ? 1 : 0);
-                              const isReactionOpen =
-                                activeReactionCommentId === comment.id;
+                              const renderCommentItem = (
+                                comment: CommentItem,
+                                isReply: boolean,
+                              ) => {
+                                const currentCommentReaction =
+                                  commentReactions[comment.id];
+                                const hasCommentReaction =
+                                  Boolean(currentCommentReaction) ||
+                                  comment.isLiked;
+                                const commentLikesCount = comment.likes;
 
-                              return (
-                                <View
-                                  key={comment.id}
-                                  className={`flex-row items-start mb-3.5 relative ${
-                                    isReply
-                                      ? "ml-12 pl-3 border-l-2 border-gray-200"
-                                      : ""
-                                  }`}
-                                >
-                                  {/* Floating Comment/Reply Reaction Popover */}
-                                  {isReactionOpen && (
+                                return (
+                                  <View
+                                    key={comment.id}
+                                    className={`flex-row items-start mb-3.5 relative ${
+                                      isReply
+                                        ? "ml-12 pl-3 border-l-2 border-gray-200"
+                                        : ""
+                                    }`}
+                                  >
+                                    {/* Left Column (Avatar) */}
                                     <View
-                                      className="absolute -top-10 left-6 z-50 bg-white rounded-full px-3.5 py-1.5 flex-row items-center gap-3 shadow-lg border border-gray-100"
-                                      style={{
-                                        elevation: 10,
-                                        boxShadow:
-                                          "0 3px 6px rgba(0, 0, 0, 0.2)",
-                                      }}
+                                      className={`${
+                                        isReply ? "h-7 w-7" : "h-8 w-8"
+                                      } rounded-full mr-3 bg-gray-300 items-center justify-center overflow-hidden`}
                                     >
-                                      {REACTIONS.map((r) => (
+                                      {comment.avatarUri ? (
+                                        <Image
+                                          source={{ uri: comment.avatarUri }}
+                                          style={{
+                                            width: "100%",
+                                            height: "100%",
+                                          }}
+                                          resizeMode="cover"
+                                        />
+                                      ) : (
+                                        <Ionicons
+                                          name="person"
+                                          size={isReply ? 14 : 16}
+                                          color="#FFFFFF"
+                                        />
+                                      )}
+                                    </View>
+
+                                    {/* Right Column */}
+                                    <View className="flex-1">
+                                      {/* Author Row */}
+                                      <View className="flex-row justify-between items-center mb-1">
+                                        <Text
+                                          className={`${
+                                            isReply ? "text-xs" : "text-sm"
+                                          } font-bold text-gray-800`}
+                                        >
+                                          {comment.authorName}
+                                        </Text>
+                                        <Text className="text-xs text-gray-400">
+                                          {comment.timeAgo}
+                                        </Text>
+                                      </View>
+
+                                      {/* Comment Text */}
+                                      <Text className="text-sm text-gray-700 leading-5 mb-1">
+                                        {comment.content}
+                                      </Text>
+
+                                      {/* Interaction Bar */}
+                                      <View className="flex-row items-center gap-4 mt-1">
+                                        {/* Like / Heart Button Trigger */}
                                         <TouchableOpacity
-                                          key={r.type}
                                           onPress={() =>
-                                            handleSelectCommentReaction(
+                                            handleToggleCommentLike(
+                                              post.id,
                                               comment.id,
-                                              r.type,
                                             )
                                           }
-                                          className="items-center justify-center active:scale-125"
-                                          activeOpacity={0.7}
+                                          className="flex-row items-center gap-1 active:opacity-70"
                                         >
-                                          <Text className="text-xl">
-                                            {r.emoji}
+                                          <Ionicons
+                                            name={
+                                              hasCommentReaction
+                                                ? "heart"
+                                                : "heart-outline"
+                                            }
+                                            size={16}
+                                            color={
+                                              hasCommentReaction
+                                                ? "#EF4444"
+                                                : "#6b7280"
+                                            }
+                                          />
+                                          <Text
+                                            className={`text-xs ${
+                                              hasCommentReaction
+                                                ? "text-[#EF4444] font-bold"
+                                                : "text-gray-500 font-medium"
+                                            }`}
+                                          >
+                                            {commentLikesCount}
                                           </Text>
                                         </TouchableOpacity>
-                                      ))}
-                                    </View>
-                                  )}
 
-                                  {/* Left Column (Avatar) */}
-                                  <View
-                                    className={`${
-                                      isReply ? "h-7 w-7" : "h-8 w-8"
-                                    } rounded-full mr-3 bg-gray-300 items-center justify-center overflow-hidden`}
-                                  >
-                                    <Ionicons
-                                      name="person"
-                                      size={isReply ? 14 : 16}
-                                      color="#FFFFFF"
-                                    />
-                                  </View>
-
-                                  {/* Right Column */}
-                                  <View className="flex-1">
-                                    {/* Author Row */}
-                                    <View className="flex-row justify-between items-center mb-1">
-                                      <Text
-                                        className={`${
-                                          isReply ? "text-xs" : "text-sm"
-                                        } font-bold text-gray-800`}
-                                      >
-                                        {comment.authorName}
-                                      </Text>
-                                      <Text className="text-xs text-gray-400">
-                                        {comment.timeAgo}
-                                      </Text>
-                                    </View>
-
-                                    {/* Comment Text */}
-                                    <Text className="text-sm text-gray-700 leading-5 mb-1">
-                                      {comment.content}
-                                    </Text>
-
-                                    {/* Interaction Bar */}
-                                    <View className="flex-row items-center gap-4 mt-1">
-                                      {/* Reaction Button Trigger */}
-                                      <TouchableOpacity
-                                        onPress={() =>
-                                          handleQuickCommentReaction(comment.id)
-                                        }
-                                        onLongPress={() =>
-                                          setActiveReactionCommentId(comment.id)
-                                        }
-                                        delayLongPress={200}
-                                        className="flex-row items-center gap-1 active:opacity-70"
-                                      >
-                                        {hasCommentReaction ? (
-                                          <>
-                                            <Text className="text-sm leading-none">
-                                              {
-                                                currentCommentReactionConfig?.emoji
-                                              }
-                                            </Text>
-                                            <Text
-                                              className="text-xs font-bold"
-                                              style={{
-                                                color:
-                                                  currentCommentReactionConfig?.color ||
-                                                  "#EF4444",
-                                              }}
-                                            >
-                                              {
-                                                currentCommentReactionConfig?.label
-                                              }{" "}
-                                              {commentLikesCount}
-                                            </Text>
-                                          </>
-                                        ) : (
-                                          <>
-                                            <Ionicons
-                                              name="heart-outline"
-                                              size={16}
-                                              color="#6b7280"
-                                            />
-                                            <Text className="text-xs text-gray-500 font-medium">
-                                              {comment.likes}
-                                            </Text>
-                                          </>
-                                        )}
-                                      </TouchableOpacity>
-
-                                      {/* Reply Action Trigger */}
-                                      <TouchableOpacity
-                                        onPress={() => {
-                                          setReplyingTo({
-                                            commentId: comment.id,
-                                            username: comment.authorName,
-                                          });
-                                          commentInputRef.current?.focus();
-                                        }}
-                                        className="active:opacity-70"
-                                      >
-                                        <Text className="text-xs text-gray-500 font-medium hover:text-[#72AF5B]">
-                                          Reply
-                                        </Text>
-                                      </TouchableOpacity>
+                                        {/* Reply Action Trigger */}
+                                        <TouchableOpacity
+                                          onPress={() => {
+                                            setReplyingTo({
+                                              commentId: comment.id,
+                                              username: comment.authorName,
+                                            });
+                                            commentInputRef.current?.focus();
+                                          }}
+                                          className="active:opacity-70"
+                                        >
+                                          <Text className="text-xs text-gray-500 font-medium hover:text-[#72AF5B]">
+                                            Reply
+                                          </Text>
+                                        </TouchableOpacity>
+                                      </View>
                                     </View>
                                   </View>
-                                </View>
-                              );
-                            };
+                                );
+                              };
 
-                            return (
-                              <View key={rootComment.id}>
-                                {/* Top-level Comment */}
-                                {renderCommentItem(rootComment, false)}
+                              return (
+                                <View key={rootComment.id}>
+                                  {/* Top-level Comment */}
+                                  {renderCommentItem(rootComment, false)}
 
-                                {/* View Replies Toggle Button */}
-                                {childReplies.length > 0 &&
-                                  !areRepliesExpanded && (
-                                    <TouchableOpacity
-                                      onPress={() =>
-                                        toggleRepliesVisibility(rootComment.id)
-                                      }
-                                      className="flex-row items-center ml-12 mb-3.5 active:opacity-70"
-                                      activeOpacity={0.7}
-                                    >
-                                      <View className="w-5 h-[1.5px] bg-gray-300 mr-2 rounded-full" />
-
-                                      <Text className="text-xs font-semibold text-gray-600 ml-1 hover:text-[#72AF5B]">
-                                        View {childReplies.length}{" "}
-                                        {childReplies.length === 1
-                                          ? "reply"
-                                          : "replies"}
-                                      </Text>
-                                    </TouchableOpacity>
-                                  )}
-
-                                {/* Expanded Replies List */}
-                                {childReplies.length > 0 &&
-                                  areRepliesExpanded && (
-                                    <View className="mb-1">
-                                      {childReplies.map((reply) =>
-                                        renderCommentItem(reply, true),
-                                      )}
-
-                                      {/* Hide Replies Button */}
+                                  {/* View Replies Toggle Button */}
+                                  {childReplies.length > 0 &&
+                                    !areRepliesExpanded && (
                                       <TouchableOpacity
                                         onPress={() =>
                                           toggleRepliesVisibility(
@@ -1231,15 +1552,43 @@ export default function NewsFeed() {
                                         activeOpacity={0.7}
                                       >
                                         <View className="w-5 h-[1.5px] bg-gray-300 mr-2 rounded-full" />
-                                        <Text className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]">
-                                          Hide replies
+                                        <Text className="text-xs font-semibold text-gray-600 ml-1 hover:text-[#72AF5B]">
+                                          View {childReplies.length}{" "}
+                                          {childReplies.length === 1
+                                            ? "reply"
+                                            : "replies"}
                                         </Text>
                                       </TouchableOpacity>
-                                    </View>
-                                  )}
-                              </View>
-                            );
-                          },
+                                    )}
+
+                                  {/* Expanded Replies List */}
+                                  {childReplies.length > 0 &&
+                                    areRepliesExpanded && (
+                                      <View className="mb-1">
+                                        {childReplies.map((reply) =>
+                                          renderCommentItem(reply, true),
+                                        )}
+
+                                        {/* Hide Replies Button */}
+                                        <TouchableOpacity
+                                          onPress={() =>
+                                            toggleRepliesVisibility(
+                                              rootComment.id,
+                                            )
+                                          }
+                                          className="flex-row items-center ml-12 mb-3.5 active:opacity-70"
+                                          activeOpacity={0.7}
+                                        >
+                                          <View className="w-5 h-[1.5px] bg-gray-300 mr-2 rounded-full" />
+                                          <Text className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]">
+                                            Hide replies
+                                          </Text>
+                                        </TouchableOpacity>
+                                      </View>
+                                    )}
+                                </View>
+                              );
+                            })
                         )}
 
                         {/* Bottom 'Add a comment...' Input Section */}
@@ -1292,20 +1641,28 @@ export default function NewsFeed() {
                               }
                               placeholderTextColor="#9CA3AF"
                               className="flex-1 text-sm text-gray-800 p-0"
+                              onSubmitEditing={() => handleAddComment(post.id)}
                             />
                             <TouchableOpacity
-                              onPress={() => {
-                                if ((commentInputs[post.id] || "").trim()) {
-                                  setCommentInputs((prev) => ({
-                                    ...prev,
-                                    [post.id]: "",
-                                  }));
-                                  setReplyingTo(null);
-                                }
-                              }}
-                              className="ml-2 bg-[#72AF5B] p-1.5 rounded-full items-center justify-center active:opacity-80"
+                              onPress={() => handleAddComment(post.id)}
+                              disabled={
+                                !(commentInputs[post.id] || "").trim() ||
+                                submittingComments[post.id]
+                              }
+                              className="ml-2 bg-[#72AF5B] p-1.5 rounded-full items-center justify-center active:opacity-80 min-w-[28px] min-h-[28px]"
                             >
-                              <Ionicons name="send" size={13} color="#FFFFFF" />
+                              {submittingComments[post.id] ? (
+                                <ActivityIndicator
+                                  size="small"
+                                  color="#FFFFFF"
+                                />
+                              ) : (
+                                <Ionicons
+                                  name="send"
+                                  size={13}
+                                  color="#FFFFFF"
+                                />
+                              )}
                             </TouchableOpacity>
                           </View>
                         </View>
@@ -1313,7 +1670,8 @@ export default function NewsFeed() {
                     )}
                   </View>
                 );
-              })}
+              })
+            )}
             </View>
           </ScrollView>
         </View>
@@ -1364,11 +1722,7 @@ export default function NewsFeed() {
                       key={col.id}
                       onPress={() => {
                         if (bookmarkPostId) {
-                          setBookmarkedPosts((prev) => ({
-                            ...prev,
-                            [bookmarkPostId]:
-                              prev[bookmarkPostId] === col.id ? "" : col.id,
-                          }));
+                          handleToggleSavePost(bookmarkPostId, col.name);
                         }
                         setBookmarkPostId(null);
                       }}
@@ -2064,10 +2418,398 @@ export default function NewsFeed() {
         )}
       </Modal>
 
+      {/* 1. Post Options Action Sheet Modal */}
+      <Modal
+        visible={isPostMenuVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsPostMenuVisible(false)}
+      >
+        <Pressable
+          onPress={() => setIsPostMenuVisible(false)}
+          className="flex-1 bg-black/50 justify-end"
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl"
+          >
+            {/* Header Handle */}
+            <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-4" />
+
+            <Text className="text-base font-bold text-gray-900 mb-3 px-1">
+              Post Options
+            </Text>
+
+            {isPostOwner(selectedPostForMenu) ? (
+              <View className="gap-1">
+                {/* Edit Post */}
+                <TouchableOpacity
+                  onPress={handleOpenEditModal}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-blue-50 items-center justify-center mr-3">
+                    <Ionicons name="create-outline" size={22} color="#3B82F6" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-sm font-semibold text-gray-900">
+                      Edit Post
+                    </Text>
+                    <Text className="text-xs text-gray-500">
+                      Update content, category, or privacy
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* Change Privacy */}
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsPostMenuVisible(false);
+                    setIsPrivacyModalVisible(true);
+                  }}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-green-50 items-center justify-center mr-3">
+                    <Ionicons name="globe-outline" size={22} color="#72AF5B" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-sm font-semibold text-gray-900">
+                      Change Audience
+                    </Text>
+                    <Text className="text-xs text-gray-500">
+                      Current: {selectedPostForMenu?.privacy || "Public"}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                </TouchableOpacity>
+
+                {/* Delete Post */}
+                <TouchableOpacity
+                  onPress={() => {
+                    setIsPostMenuVisible(false);
+                    setIsDeleteConfirmVisible(true);
+                  }}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
+                >
+                  <View className="w-10 h-10 rounded-full bg-red-50 items-center justify-center mr-3">
+                    <Ionicons name="trash-outline" size={22} color="#EF4444" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-sm font-semibold text-red-600">
+                      Delete Post
+                    </Text>
+                    <Text className="text-xs text-red-400">
+                      Remove this post permanently
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <View className="gap-1">
+                {/* Save Post */}
+                <TouchableOpacity
+                  onPress={() => {
+                    if (selectedPostForMenu) {
+                      handleToggleSavePost(selectedPostForMenu.id);
+                    }
+                    setIsPostMenuVisible(false);
+                  }}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-yellow-50 items-center justify-center mr-3">
+                    <Ionicons name="bookmark-outline" size={22} color="#EAB308" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-sm font-semibold text-gray-900">
+                      Save Post
+                    </Text>
+                    <Text className="text-xs text-gray-500">
+                      Add to your saved posts
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* Hide Post */}
+                <TouchableOpacity
+                  onPress={() => {
+                    if (selectedPostForMenu) {
+                      setPosts((prev) => prev.filter((p) => p.id !== selectedPostForMenu.id));
+                      showToast("Post hidden from your feed.", "info");
+                    }
+                    setIsPostMenuVisible(false);
+                  }}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center mr-3">
+                    <Ionicons name="eye-off-outline" size={22} color="#6B7280" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-sm font-semibold text-gray-900">
+                      Hide Post
+                    </Text>
+                    <Text className="text-xs text-gray-500">
+                      See fewer posts like this
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Cancel Button */}
+            <TouchableOpacity
+              onPress={() => setIsPostMenuVisible(false)}
+              className="mt-3 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+            >
+              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* 2. Edit Post Modal */}
+      <Modal
+        visible={isEditModalVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={() => setIsEditModalVisible(false)}
+      >
+        <SafeAreaView className="flex-1 bg-white">
+          {/* Header */}
+          <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-100">
+            <TouchableOpacity
+              onPress={() => setIsEditModalVisible(false)}
+              className="p-1 active:opacity-70"
+            >
+              <Ionicons name="close" size={24} color="#374151" />
+            </TouchableOpacity>
+            <Text className="text-base font-bold text-gray-900">Edit Post</Text>
+            <TouchableOpacity
+              onPress={handleSaveEditPost}
+              disabled={isUpdatingPost}
+              className="bg-[#72AF5B] px-4 py-1.5 rounded-full active:opacity-80"
+            >
+              {isUpdatingPost ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text className="text-white font-bold text-sm">Save</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <ScrollView className="flex-1 p-4" keyboardShouldPersistTaps="handled">
+            {/* Category Selector */}
+            <Text className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Category
+            </Text>
+            <View className="flex-row flex-wrap gap-2 mb-4">
+              {(["Field", "Wholesaler", "Temporary", "General"] as const).map((cat) => (
+                <TouchableOpacity
+                  key={cat}
+                  onPress={() => setEditPostCategory(cat)}
+                  className={`px-3 py-1.5 rounded-full border ${
+                    editPostCategory === cat
+                      ? "bg-[#72AF5B] border-[#72AF5B]"
+                      : "bg-gray-50 border-gray-200"
+                  }`}
+                >
+                  <Text
+                    className={`text-xs font-semibold ${
+                      editPostCategory === cat ? "text-white" : "text-gray-700"
+                    }`}
+                  >
+                    {cat}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Privacy Selector */}
+            <Text className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Audience / Privacy
+            </Text>
+            <View className="flex-row gap-2 mb-4">
+              {(["Public", "Friends", "Only me"] as const).map((priv) => (
+                <TouchableOpacity
+                  key={priv}
+                  onPress={() => setEditPostPrivacy(priv)}
+                  className={`flex-row items-center px-3 py-1.5 rounded-full border ${
+                    editPostPrivacy === priv
+                      ? "bg-[#72AF5B] border-[#72AF5B]"
+                      : "bg-gray-50 border-gray-200"
+                  }`}
+                >
+                  <Ionicons
+                    name={
+                      priv === "Public"
+                        ? "globe-outline"
+                        : priv === "Friends"
+                        ? "people-outline"
+                        : "lock-closed-outline"
+                    }
+                    size={14}
+                    color={editPostPrivacy === priv ? "#FFFFFF" : "#6B7280"}
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text
+                    className={`text-xs font-semibold ${
+                      editPostPrivacy === priv ? "text-white" : "text-gray-700"
+                    }`}
+                  >
+                    {priv}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            {/* Content Input */}
+            <Text className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
+              Post Content
+            </Text>
+            <TextInput
+              value={editPostContent}
+              onChangeText={setEditPostContent}
+              placeholder="What do you want to update?"
+              placeholderTextColor="#9CA3AF"
+              multiline
+              numberOfLines={6}
+              textAlignVertical="top"
+              className="bg-gray-50 border border-gray-200 rounded-xl p-3 text-sm text-gray-900 min-h-[140px]"
+            />
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* 3. Quick Privacy Change Modal */}
+      <Modal
+        visible={isPrivacyModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsPrivacyModalVisible(false)}
+      >
+        <Pressable
+          onPress={() => setIsPrivacyModalVisible(false)}
+          className="flex-1 bg-black/50 justify-end"
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl"
+          >
+            <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-4" />
+            <Text className="text-base font-bold text-gray-900 mb-1">
+              Select Audience
+            </Text>
+            <Text className="text-xs text-gray-500 mb-4">
+              Who can see this post on Local Farm?
+            </Text>
+
+            <View className="gap-2">
+              {[
+                {
+                  type: "Public",
+                  title: "Public",
+                  desc: "Anyone on or off Local Farm",
+                  icon: "globe-outline",
+                },
+                {
+                  type: "Friends",
+                  title: "Friends",
+                  desc: "Your connections on Local Farm",
+                  icon: "people-outline",
+                },
+                {
+                  type: "Only me",
+                  title: "Only me",
+                  desc: "Only you can see this post",
+                  icon: "lock-closed-outline",
+                },
+              ].map((item) => (
+                <TouchableOpacity
+                  key={item.type}
+                  onPress={() => handleQuickChangePrivacy(item.type)}
+                  className={`flex-row items-center p-3 rounded-2xl border ${
+                    selectedPostForMenu?.privacy === item.type
+                      ? "bg-green-50/50 border-[#72AF5B]"
+                      : "bg-gray-50 border-gray-200"
+                  } active:opacity-80`}
+                >
+                  <View className="w-10 h-10 rounded-full bg-white items-center justify-center mr-3 border border-gray-100 shadow-xs">
+                    <Ionicons name={item.icon as any} size={20} color="#72AF5B" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-sm font-bold text-gray-900">
+                      {item.title}
+                    </Text>
+                    <Text className="text-xs text-gray-500">{item.desc}</Text>
+                  </View>
+                  {selectedPostForMenu?.privacy === item.type && (
+                    <Ionicons name="checkmark-circle" size={22} color="#72AF5B" />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <TouchableOpacity
+              onPress={() => setIsPrivacyModalVisible(false)}
+              className="mt-4 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+            >
+              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+            </TouchableOpacity>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
+      {/* 4. Delete Confirmation Modal */}
+      <Modal
+        visible={isDeleteConfirmVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setIsDeleteConfirmVisible(false)}
+      >
+        <Pressable
+          onPress={() => setIsDeleteConfirmVisible(false)}
+          className="flex-1 bg-black/50 items-center justify-center p-4"
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            className="bg-white rounded-3xl p-6 w-full max-w-sm items-center shadow-2xl"
+          >
+            <View className="w-14 h-14 rounded-full bg-red-100 items-center justify-center mb-4">
+              <Ionicons name="trash-outline" size={28} color="#EF4444" />
+            </View>
+            <Text className="text-lg font-bold text-gray-900 text-center mb-1.5">
+              Delete Post?
+            </Text>
+            <Text className="text-xs text-gray-500 text-center mb-6 leading-4">
+              Are you sure you want to delete this post? This action cannot be undone.
+            </Text>
+
+            <View className="flex-row gap-3 w-full">
+              <TouchableOpacity
+                onPress={() => setIsDeleteConfirmVisible(false)}
+                className="flex-1 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+              >
+                <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleDeletePost}
+                disabled={isDeletingPost}
+                className="flex-1 py-3 rounded-xl bg-red-600 items-center justify-center active:bg-red-700"
+              >
+                {isDeletingPost ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text className="text-sm font-bold text-white">Delete</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       {/* Create Post Modal */}
       <CreatePostModal
         isVisible={isCreatePostVisible}
         onClose={() => setCreatePostVisible(false)}
+        onPost={handleNewPostCreated}
       />
 
       {/* Bottom Navigation Bar */}

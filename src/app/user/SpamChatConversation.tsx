@@ -9,7 +9,7 @@ import {
   View,
 } from "react-native";
 
-// ─── Main Screen ──────────────────────────────────────────────────────────────
+// Main Screen
 
 export default function SpamChatConversation() {
   const router = useRouter();

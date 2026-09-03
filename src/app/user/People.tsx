@@ -1,6 +1,21 @@
-import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { useToast } from "@/context/toast-context";
 import {
+  cancelFriendRequestApi,
+  ConnectionRequestItem,
+  FriendItem,
+  getConnectionRequestsApi,
+  getFriendsApi,
+  respondToConnectionRequestApi,
+  SearchedUserItem,
+  searchUsersToConnectApi,
+  sendFriendRequestApi,
+} from "@/services/connection-service";
+import { Ionicons } from "@expo/vector-icons";
+import React, { useEffect, useRef, useState } from "react";
+import {
+  ActivityIndicator,
+  Image,
+  RefreshControl,
   SafeAreaView,
   ScrollView,
   Text,
@@ -12,224 +27,571 @@ import {
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
 
-interface ConnectionRequest {
-  id: string;
-  name: string;
-  mutualFriends: string;
-  timeAgo: string;
-}
-
-const INITIAL_REQUESTS: ConnectionRequest[] = [
-  {
-    id: "1",
-    name: "Mark Paul Cosido",
-    mutualFriends: "50 mutual friends",
-    timeAgo: "1hr",
-  },
-  {
-    id: "2",
-    name: "Fritz Subrabas",
-    mutualFriends: "1.6k friends",
-    timeAgo: "3hrs",
-  },
-  {
-    id: "3",
-    name: "Noel",
-    mutualFriends: "18 mutual friends",
-    timeAgo: "1d",
-  },
-  {
-    id: "4",
-    name: "Richard Laviña",
-    mutualFriends: "1 mutual friend",
-    timeAgo: "1d",
-  },
-  {
-    id: "5",
-    name: "Angelo Mijares",
-    mutualFriends: "250 mutual friends",
-    timeAgo: "1w",
-  },
-  {
-    id: "6",
-    name: "Tita",
-    mutualFriends: "260 mutual friends",
-    timeAgo: "1mon",
-  },
-  {
-    id: "7",
-    name: "Tiklo Tiboy",
-    mutualFriends: "12 mutual friends",
-    timeAgo: "3mon",
-  },
-];
-
 export default function People() {
+  const { showToast } = useToast();
   const [searchQuery, setSearchQuery] = useState("");
   const [isSidebarVisible, setSidebarVisible] = useState(false);
   const [activeTab, setActiveTab] = useState("Request");
+
+  // Requests state
+  const [requests, setRequests] = useState<ConnectionRequestItem[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [requestStates, setRequestStates] = useState<
-    Record<string, "confirmed" | "declined" | undefined>
+    Record<string, "confirmed" | "declined" | "loading" | undefined>
   >({});
 
-  const handleConfirm = (id: string) => {
-    setRequestStates((prev) => ({ ...prev, [id]: "confirmed" }));
+  // Search state
+  const [searchResults, setSearchResults] = useState<SearchedUserItem[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchActionLoading, setSearchActionLoading] = useState<
+    Record<string, boolean>
+  >({});
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Friends state
+  const [friends, setFriends] = useState<FriendItem[]>([]);
+
+  const fetchRequests = async (isPull = false) => {
+    if (isPull) setIsRefreshing(true);
+    else setIsLoading(true);
+
+    try {
+      const data = await getConnectionRequestsApi();
+      setRequests(data);
+    } catch (err: any) {
+      console.warn("Failed to fetch connection requests:", err);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
+    }
   };
 
-  const handleDecline = (id: string) => {
-    setRequestStates((prev) => ({ ...prev, [id]: "declined" }));
+  const fetchFriends = async () => {
+    try {
+      const data = await getFriendsApi();
+      setFriends(data);
+    } catch (err: any) {
+      console.warn("Failed to fetch friends:", err);
+    }
   };
 
-  const filteredRequests = INITIAL_REQUESTS.filter((req) =>
-    req.name.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
+  useEffect(() => {
+    fetchRequests();
+    fetchFriends();
+  }, []);
+
+  // Search Debounce Effect
+  useEffect(() => {
+    if (searchTimeoutRef.current) {
+      clearTimeout(searchTimeoutRef.current);
+    }
+
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const results = await searchUsersToConnectApi(searchQuery);
+        setSearchResults(results);
+      } catch (err) {
+        console.warn("User search error:", err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 300);
+
+    return () => {
+      if (searchTimeoutRef.current) {
+        clearTimeout(searchTimeoutRef.current);
+      }
+    };
+  }, [searchQuery]);
+
+  // Request actions
+  const handleConfirm = async (item: ConnectionRequestItem | SearchedUserItem) => {
+    const id = "connectionId" in item && item.connectionId ? item.connectionId : item.id;
+    setRequestStates((prev) => ({ ...prev, [id]: "loading" }));
+    try {
+      await respondToConnectionRequestApi(id, "confirm");
+      setRequestStates((prev) => ({ ...prev, [id]: "confirmed" }));
+      showToast(`Connected with ${item.name}!`, "success");
+      // Update in search results if present
+      setSearchResults((prev) =>
+        prev.map((u) =>
+          u.id === item.id ? { ...u, relationship: "accepted" } : u
+        )
+      );
+    } catch (err: any) {
+      setRequestStates((prev) => ({ ...prev, [id]: undefined }));
+      showToast(err?.message || "Failed to confirm request.", "error");
+    }
+  };
+
+  const handleDecline = async (item: ConnectionRequestItem | SearchedUserItem) => {
+    const id = "connectionId" in item && item.connectionId ? item.connectionId : item.id;
+    setRequestStates((prev) => ({ ...prev, [id]: "loading" }));
+    try {
+      await respondToConnectionRequestApi(id, "decline");
+      setRequestStates((prev) => ({ ...prev, [id]: "declined" }));
+      showToast("Request removed.", "info");
+      // Update in search results if present
+      setSearchResults((prev) =>
+        prev.map((u) =>
+          u.id === item.id ? { ...u, relationship: "none" } : u
+        )
+      );
+    } catch (err: any) {
+      setRequestStates((prev) => ({ ...prev, [id]: undefined }));
+      showToast(err?.message || "Failed to decline request.", "error");
+    }
+  };
+
+  // Send friend request from search
+  const handleSendFriendRequest = async (user: SearchedUserItem) => {
+    setSearchActionLoading((prev) => ({ ...prev, [user.id]: true }));
+    try {
+      const res = await sendFriendRequestApi(user.id);
+      showToast(res.message || `Friend request sent to ${user.name}!`, "success");
+      setSearchResults((prev) =>
+        prev.map((u) =>
+          u.id === user.id
+            ? { ...u, relationship: "pending_sent", connectionId: res.connectionId || null }
+            : u
+        )
+      );
+    } catch (err: any) {
+      showToast(err?.message || "Failed to send friend request.", "error");
+    } finally {
+      setSearchActionLoading((prev) => ({ ...prev, [user.id]: false }));
+    }
+  };
+
+  // Cancel friend request
+  const handleCancelRequest = async (user: SearchedUserItem) => {
+    setSearchActionLoading((prev) => ({ ...prev, [user.id]: true }));
+    try {
+      await cancelFriendRequestApi(user.id, user.connectionId || undefined);
+      showToast("Friend request canceled.", "info");
+      setSearchResults((prev) =>
+        prev.map((u) =>
+          u.id === user.id ? { ...u, relationship: "none", connectionId: null } : u
+        )
+      );
+    } catch (err: any) {
+      showToast(err?.message || "Failed to cancel request.", "error");
+    } finally {
+      setSearchActionLoading((prev) => ({ ...prev, [user.id]: false }));
+    }
+  };
+
+  const isSearchMode = searchQuery.trim().length > 0;
+  const activeRequests = requests.filter((r) => requestStates[r.id] !== "declined");
 
   return (
     <SafeAreaView
       className="flex-1 bg-white relative h-full"
-      style={{ flex: 1, position: "relative", minHeight: "100%" }}
+      style={{ flex: 1, position: "relative", minHeight: "100%", overflow: "hidden" }}
     >
       {/* Main Content */}
       <ScrollView
         className="flex-1 bg-white"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 100 }}
+        bounces={false}
+        overScrollMode="never"
+        alwaysBounceVertical={false}
+        alwaysBounceHorizontal={false}
+        directionalLockEnabled={true}
+        contentContainerStyle={{ paddingBottom: 110 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => fetchRequests(true)}
+            colors={["#72AF5B"]}
+            tintColor="#72AF5B"
+          />
+        }
       >
-        {/*  Header Section */}
+        {/* Header Section */}
         <View className="px-5 pt-4 pb-2">
           <Text className="text-3xl font-bold text-gray-900">Connection</Text>
         </View>
 
-        {/*  Search Bar*/}
+        {/* Search Bar */}
         <View className="flex-row items-center px-5 py-3 gap-3">
           <TouchableOpacity
             onPress={() => setSidebarVisible(true)}
             className="p-1 active:opacity-70"
+            accessibilityRole="button"
+            accessibilityLabel="Open sidebar menu"
           >
             <Ionicons name="person-add-outline" size={26} color="#374151" />
           </TouchableOpacity>
 
-          {/* Search Input*/}
+          {/* Search Input */}
           <View className="flex-1 flex-row items-center bg-gray-100 rounded-full px-4 h-11 border border-gray-100">
             <TextInput
               value={searchQuery}
               onChangeText={setSearchQuery}
-              placeholder="Search..."
+              placeholder="Search users to add..."
               placeholderTextColor="#9CA3AF"
-              className="flex-1 text-base text-gray-800 pr-2 h-full"
+              className="flex-1 text-base text-gray-800 pr-2 h-full font-medium"
+              autoCapitalize="none"
             />
+            {searchQuery ? (
+              <TouchableOpacity
+                onPress={() => setSearchQuery("")}
+                className="p-1 mr-1"
+                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+              >
+                <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            ) : null}
             <Ionicons name="search-outline" size={20} color="#9CA3AF" />
           </View>
         </View>
-        {/*  Request Header */}
-        <View className="flex-row justify-between items-center px-5 py-3 mb-1">
-          <Text className="text-lg font-semibold text-gray-900">
-            Request{" "}
-            <Text className="text-[#72AF5B] font-bold">
-              {filteredRequests.length}
-            </Text>
-          </Text>
-          <TouchableOpacity>
-            <Text className="text-sm font-medium text-gray-600">Sort</Text>
-          </TouchableOpacity>
-        </View>
-        {/* 4. Request List */}
-        <View className="px-5">
-          {filteredRequests.map((item) => {
-            const state = requestStates[item.id];
 
-            return (
-              <View
-                key={item.id}
-                className="py-3.5 border-b border-gray-100 flex-row items-start justify-between"
-              >
-                {/* Circular Avatar */}
-                <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-300 overflow-hidden">
-                  <Ionicons name="person" size={30} color="#6B7280" />
+        {/* -------------------- SEARCH MODE -------------------- */}
+        {isSearchMode ? (
+          <View className="px-5">
+            <View className="flex-row justify-between items-center py-2 mb-2">
+              <Text className="text-lg font-semibold text-gray-900">
+                Search Results{" "}
+                <Text className="text-[#72AF5B] font-bold">
+                  ({searchResults.length})
+                </Text>
+              </Text>
+              {isSearching ? <ActivityIndicator size="small" color="#72AF5B" /> : null}
+            </View>
+
+            {isSearching ? (
+              <View className="py-12 items-center justify-center">
+                <ActivityIndicator size="large" color="#72AF5B" />
+                <Text className="text-xs text-gray-500 mt-2">
+                  Searching for users...
+                </Text>
+              </View>
+            ) : searchResults.length === 0 ? (
+              <View className="py-16 items-center justify-center px-6">
+                <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
+                  <Ionicons name="search-outline" size={32} color="#9CA3AF" />
                 </View>
+                <Text className="text-base font-bold text-gray-800 mb-1">
+                  No Users Found
+                </Text>
+                <Text className="text-xs text-gray-500 text-center">
+                  Try searching with a different name or username.
+                </Text>
+              </View>
+            ) : (
+              searchResults.map((user) => {
+                const isLoadingAction = searchActionLoading[user.id];
 
-                {/* Main Info & Action Buttons */}
-                <View className="flex-1">
-                  <View className="flex-row justify-between items-start">
-                    <View className="flex-1 pr-2">
-                      <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
-                        {item.name}
-                      </Text>
-                      <View className="flex-row items-center mb-2.5">
-                        <Ionicons
-                          name="people"
-                          size={13}
-                          color="#6B7280"
-                          style={{ marginRight: 4 }}
+                return (
+                  <View
+                    key={user.id}
+                    className="py-3.5 border-b border-gray-100 flex-row items-center justify-between"
+                  >
+                    {/* Avatar */}
+                    <View className="h-13 w-13 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-200 overflow-hidden" style={{ width: 50, height: 50 }}>
+                      {user.avatarUrl ? (
+                        <Image
+                          source={{ uri: user.avatarUrl }}
+                          className="w-full h-full"
+                          resizeMode="cover"
                         />
-                        <Text className="text-gray-500 text-xs font-medium">
-                          {item.mutualFriends}
+                      ) : (
+                        <Ionicons name="person" size={26} color="#6B7280" />
+                      )}
+                    </View>
+
+                    {/* Name & Username */}
+                    <View className="flex-1 pr-2">
+                      <Text className="font-bold text-gray-900 text-base leading-tight">
+                        {user.name}
+                      </Text>
+                      <Text className="text-gray-500 text-xs mt-0.5">
+                        {user.username ? `@${user.username}` : "Local Farmer"}
+                      </Text>
+                    </View>
+
+                    {/* Action Buttons based on relationship */}
+                    {user.relationship === "accepted" ? (
+                      <View className="bg-green-50 px-3 py-1.5 rounded-xl flex-row items-center gap-1 border border-green-200">
+                        <Ionicons name="checkmark-circle" size={14} color="#72AF5B" />
+                        <Text className="text-[#72AF5B] font-bold text-xs">
+                          Connected
                         </Text>
                       </View>
-                    </View>
-
-                    {/* Time Received */}
-                    <Text className="text-[#72AF5B] font-medium text-xs">
-                      {item.timeAgo}
-                    </Text>
+                    ) : user.relationship === "pending_sent" ? (
+                      <TouchableOpacity
+                        onPress={() => handleCancelRequest(user)}
+                        disabled={isLoadingAction}
+                        className="bg-gray-100 px-3 py-1.5 rounded-xl flex-row items-center gap-1 border border-gray-200 active:bg-gray-200"
+                      >
+                        {isLoadingAction ? (
+                          <ActivityIndicator size="small" color="#6B7280" />
+                        ) : (
+                          <>
+                            <Ionicons name="time-outline" size={14} color="#6B7280" />
+                            <Text className="text-gray-700 font-semibold text-xs">
+                              Requested
+                            </Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    ) : user.relationship === "pending_received" ? (
+                      <View className="flex-row items-center gap-1.5">
+                        <TouchableOpacity
+                          onPress={() => handleConfirm(user)}
+                          className="bg-[#72AF5B] px-3 py-1.5 rounded-xl items-center justify-center active:bg-[#62974e]"
+                        >
+                          <Text className="text-white font-bold text-xs">Confirm</Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          onPress={() => handleDecline(user)}
+                          className="bg-gray-200 px-2.5 py-1.5 rounded-xl items-center justify-center active:bg-gray-300"
+                        >
+                          <Text className="text-gray-700 font-semibold text-xs">Decline</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ) : (
+                      /* Not Connected: Add Friend Button */
+                      <TouchableOpacity
+                        onPress={() => handleSendFriendRequest(user)}
+                        disabled={isLoadingAction}
+                        className="bg-[#72AF5B] px-3.5 py-2 rounded-xl flex-row items-center justify-center gap-1 active:bg-[#62974e] shadow-2xs"
+                        activeOpacity={0.8}
+                      >
+                        {isLoadingAction ? (
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                        ) : (
+                          <>
+                            <Ionicons name="person-add" size={14} color="#FFFFFF" />
+                            <Text className="text-white font-bold text-xs">
+                              Add Friend
+                            </Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    )}
                   </View>
+                );
+              })
+            )}
+          </View>
+        ) : (
+          /* -------------------- INCOMING REQUESTS & FRIENDS MODE -------------------- */
+          <>
+            {/* Request Header */}
+            <View className="flex-row justify-between items-center px-5 py-3 mb-1">
+              <Text className="text-lg font-semibold text-gray-900">
+                Request{" "}
+                <Text className="text-[#72AF5B] font-bold">
+                  {activeRequests.filter((r) => requestStates[r.id] !== "confirmed").length}
+                </Text>
+              </Text>
+              <TouchableOpacity activeOpacity={0.7}>
+                <Text className="text-sm font-medium text-gray-600">Sort</Text>
+              </TouchableOpacity>
+            </View>
 
-                  {/* Card Bottom Buttons */}
-                  {state === "confirmed" ? (
-                    <View className="bg-white border border-[#72AF5B] py-2 rounded-xl items-center">
-                      <Text className="text-[#72AF5B] font-bold text-xs">
-                        Request Confirmed
-                      </Text>
-                    </View>
-                  ) : state === "declined" ? (
-                    <View className="bg-white border border-[#E63946] py-2 rounded-xl items-center">
-                      <Text className="text-[#E63946] font-semibold text-xs">
-                        Request Removed
-                      </Text>
-                    </View>
-                  ) : (
-                    <View className="flex-row items-center gap-2">
-                      {/* Confirm Button */}
-                      <TouchableOpacity
-                        onPress={() => handleConfirm(item.id)}
-                        className="flex-1 bg-[#72AF5B] py-2.5 rounded-xl items-center justify-center active:bg-[#62974e] shadow-2xs"
-                        activeOpacity={0.8}
-                        accessibilityRole="button"
-                        accessibilityLabel="Confirm friend request"
-                      >
-                        <Text className="text-white font-bold text-xs sm:text-sm">
-                          Confirm
-                        </Text>
-                      </TouchableOpacity>
-
-                      {/* Decline Button */}
-                      <TouchableOpacity
-                        onPress={() => handleDecline(item.id)}
-                        className="flex-1 bg-[#E5E7EB] py-2.5 rounded-xl items-center justify-center active:bg-gray-300"
-                        activeOpacity={0.8}
-                        accessibilityRole="button"
-                        accessibilityLabel="Decline friend request"
-                      >
-                        <Text className="text-gray-700 font-semibold text-xs sm:text-sm">
-                          Decline
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                </View>
+            {/* Loading State */}
+            {isLoading ? (
+              <View className="py-12 items-center justify-center">
+                <ActivityIndicator size="large" color="#72AF5B" />
+                <Text className="text-sm text-gray-500 mt-2 font-medium">
+                  Loading requests...
+                </Text>
               </View>
-            );
-          })}
-        </View>
+            ) : activeRequests.length === 0 ? (
+              <View className="py-16 items-center justify-center px-6">
+                <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
+                  <Ionicons name="people-outline" size={32} color="#9CA3AF" />
+                </View>
+                <Text className="text-base font-bold text-gray-800 mb-1">
+                  No Connection Requests
+                </Text>
+                <Text className="text-xs text-gray-500 text-center">
+                  Use the search bar above to find farmers and send friend requests!
+                </Text>
+              </View>
+            ) : (
+              /* Request List */
+              <View className="px-5">
+                {activeRequests.map((item) => {
+                  const state = requestStates[item.id];
+
+                  return (
+                    <View
+                      key={item.id}
+                      className="py-3.5 border-b border-gray-100 flex-row items-start justify-between"
+                    >
+                      {/* Circular Avatar */}
+                      <View className="h-14 w-14 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-200 overflow-hidden">
+                        {item.avatarUrl ? (
+                          <Image
+                            source={{ uri: item.avatarUrl }}
+                            className="w-full h-full"
+                            resizeMode="cover"
+                          />
+                        ) : (
+                          <Ionicons name="person" size={28} color="#6B7280" />
+                        )}
+                      </View>
+
+                      {/* Main Info & Action Buttons */}
+                      <View className="flex-1">
+                        <View className="flex-row justify-between items-start">
+                          <View className="flex-1 pr-2">
+                            <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
+                              {item.name}
+                            </Text>
+                            <View className="flex-row items-center mb-2.5">
+                              <Ionicons
+                                name="people"
+                                size={13}
+                                color="#6B7280"
+                                style={{ marginRight: 4 }}
+                              />
+                              <Text className="text-gray-500 text-xs font-medium">
+                                {item.mutualFriends || "Local Farm member"}
+                              </Text>
+                            </View>
+                          </View>
+
+                          {/* Time Received */}
+                          <Text className="text-[#72AF5B] font-medium text-xs">
+                            {item.timeAgo || "Recently"}
+                          </Text>
+                        </View>
+
+                        {/* Card Bottom Buttons */}
+                        {state === "confirmed" ? (
+                          <View className="bg-green-50 border border-[#72AF5B] py-2 rounded-xl items-center flex-row justify-center gap-1.5">
+                            <Ionicons name="checkmark-circle" size={16} color="#72AF5B" />
+                            <Text className="text-[#72AF5B] font-bold text-xs">
+                              Request Confirmed
+                            </Text>
+                          </View>
+                        ) : state === "declined" ? (
+                          <View className="bg-red-50 border border-red-200 py-2 rounded-xl items-center">
+                            <Text className="text-red-500 font-semibold text-xs">
+                              Request Removed
+                            </Text>
+                          </View>
+                        ) : (
+                          <View className="flex-row items-center gap-2">
+                            {/* Confirm Button */}
+                            <TouchableOpacity
+                              onPress={() => handleConfirm(item)}
+                              disabled={state === "loading"}
+                              className="flex-1 bg-[#72AF5B] py-2.5 rounded-xl items-center justify-center active:bg-[#62974e] shadow-2xs"
+                              activeOpacity={0.8}
+                              accessibilityRole="button"
+                              accessibilityLabel="Confirm connection request"
+                            >
+                              {state === "loading" ? (
+                                <ActivityIndicator size="small" color="#FFFFFF" />
+                              ) : (
+                                <Text className="text-white font-bold text-xs sm:text-sm">
+                                  Confirm
+                                </Text>
+                              )}
+                            </TouchableOpacity>
+
+                            {/* Decline Button */}
+                            <TouchableOpacity
+                              onPress={() => handleDecline(item)}
+                              disabled={state === "loading"}
+                              className="flex-1 bg-[#E5E7EB] py-2.5 rounded-xl items-center justify-center active:bg-gray-300"
+                              activeOpacity={0.8}
+                              accessibilityRole="button"
+                              accessibilityLabel="Decline connection request"
+                            >
+                              <Text className="text-gray-700 font-semibold text-xs sm:text-sm">
+                                Decline
+                              </Text>
+                            </TouchableOpacity>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
+            {/* -------------------- FRIENDS LIST SECTION -------------------- */}
+            <View className="flex-row justify-between items-center px-5 py-3 mb-1 mt-2">
+              <Text className="text-lg font-semibold text-gray-900">
+                Friends{" "}
+                <Text className="text-[#72AF5B] font-bold">
+                  {friends.length}
+                </Text>
+              </Text>
+            </View>
+
+            {friends.length === 0 ? (
+              <View className="py-10 items-center justify-center px-6">
+                <View className="w-14 h-14 rounded-full bg-gray-100 items-center justify-center mb-3">
+                  <Ionicons name="people-outline" size={28} color="#9CA3AF" />
+                </View>
+                <Text className="text-sm font-bold text-gray-800 mb-1">
+                  No Friends Yet
+                </Text>
+                <Text className="text-xs text-gray-500 text-center">
+                  Accept connection requests to see them here.
+                </Text>
+              </View>
+            ) : (
+              <View className="px-5">
+                {friends.map((friend) => (
+                  <View
+                    key={friend.connectionId}
+                    className="py-3.5 border-b border-gray-100 flex-row items-center justify-between"
+                  >
+                    {/* Avatar */}
+                    <View className="h-12 w-12 rounded-full bg-gray-200 items-center justify-center mr-3 border border-gray-200 overflow-hidden">
+                      {friend.avatarUrl ? (
+                        <Image
+                          source={{ uri: friend.avatarUrl }}
+                          className="w-full h-full"
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Ionicons name="person" size={24} color="#6B7280" />
+                      )}
+                    </View>
+
+                    {/* Name */}
+                    <View className="flex-1 pr-2">
+                      <Text className="font-bold text-gray-900 text-sm leading-tight">
+                        {friend.name}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            )}
+          </>
+        )}
       </ScrollView>
+
+      {/* Sidebar Navigation Menu */}
       <SidebarMenu
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
       />
-      {/* 5. Bottom Navigation Component */}
-      <BottomNavBar showFab={false} />
+
+      {/* Bottom Navigation Component */}
+      <BottomNavBar activeTab="Connection" showFab={false} />
     </SafeAreaView>
   );
 }

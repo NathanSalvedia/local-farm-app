@@ -1,9 +1,13 @@
+import { useAuth } from "@/hooks/use-auth";
 import { Ionicons } from "@expo/vector-icons";
+import { useRouter } from "expo-router";
 import { useState } from "react";
 import { Image, Text, TouchableOpacity, View } from "react-native";
 import { INITIAL_NOTIFICATIONS, NotificationModal } from "./NotificationModal";
 
 const UserHeader = () => {
+  const router = useRouter();
+  const { user } = useAuth();
   const [isNotifOpen, setNotifOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(
     INITIAL_NOTIFICATIONS.filter((n) => n.isUnread).length,
@@ -51,11 +55,20 @@ const UserHeader = () => {
 
         {/* User Profile Avatar Icon */}
         <TouchableOpacity
-          className="w-8 h-8 rounded-full border border-[#72AF5B] items-center justify-center active:opacity-80"
+          onPress={() => router.push("/user/PersonalInformation" as any)}
+          className="w-8 h-8 rounded-full border border-[#72AF5B] items-center justify-center overflow-hidden active:opacity-80 bg-gray-100"
           accessibilityRole="button"
           accessibilityLabel="Profile"
         >
-          <Ionicons name="person-outline" size={18} color="#333333" />
+          {user?.avatarUrl ? (
+            <Image
+              source={{ uri: user.avatarUrl }}
+              style={{ width: "100%", height: "100%" }}
+              resizeMode="cover"
+            />
+          ) : (
+            <Ionicons name="person-outline" size={18} color="#333333" />
+          )}
         </TouchableOpacity>
       </View>
 

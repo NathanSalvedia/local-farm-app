@@ -1,5 +1,7 @@
+import { getBadgeCountsApi } from "@/services/badge-service";
 import { Ionicons } from "@expo/vector-icons";
 import { usePathname, useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
 
 export interface TabRoute {
@@ -9,7 +11,7 @@ export interface TabRoute {
 }
 
 export interface NavigationProps {
-  activeTab?: "Home" | "Friends" | "Messages" | "Map" | "Menu" | string;
+  activeTab?: "Home" | "Friends" | "Messages" | "Map" | "Menu" | "Chat" | "Connection" | string;
   activeTabName?: string;
   onFabPress?: () => void;
   showFab?: boolean;
@@ -31,23 +33,8 @@ export interface NavigationProps {
   };
 }
 
-const ACTIVE_COLOR = "#006400"; // Dark green matching reference image
+const ACTIVE_COLOR = "#72AF5B"; // LocalFarm green
 const INACTIVE_COLOR = "#9CA3AF"; // Neutral gray
-
-interface TabItemConfig {
-  key: string;
-  title: "Home" | "Friends" | "Messages" | "Map" | "Menu";
-  icon: keyof typeof Ionicons.glyphMap;
-  badge?: number;
-}
-
-const STATIC_TABS: TabItemConfig[] = [
-  { key: "index", title: "Home", icon: "home" },
-  { key: "community", title: "Friends", icon: "people", badge: 2 },
-  { key: "chat", title: "Messages", icon: "chatbubble", badge: 7 },
-  { key: "explore", title: "Map", icon: "map" },
-  { key: "more", title: "Menu", icon: "menu" },
-];
 
 export function UserTabBar({
   state,
@@ -57,6 +44,21 @@ export function UserTabBar({
   showFab = true,
 }: NavigationProps) {
   const router = useRouter();
+  const [badgeCounts, setBadgeCounts] = useState({ requestsCount: 0, unreadMessagesCount: 0 });
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadBadges = async () => {
+      const counts = await getBadgeCountsApi();
+      if (isMounted) setBadgeCounts(counts);
+    };
+    loadBadges();
+    const interval = setInterval(loadBadges, 5000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   if (!state || !descriptors || !navigation) return null;
 
@@ -73,7 +75,7 @@ export function UserTabBar({
         zIndex: 50,
       }}
     >
-      {/* Floating Action Button (FAB) at bottom right */}
+      {/* Floating Action Button (FAB) */}
       {showFab && (
         <TouchableOpacity
           className="absolute bottom-[72px] right-4 h-14 w-14 rounded-full bg-[#72AF5B] items-center justify-center shadow-lg elevation-6 z-[60]"
@@ -92,11 +94,23 @@ export function UserTabBar({
         {state.routes.map((route: TabRoute, index: number) => {
           const options = descriptors[route.key]?.options || {};
           const isFocused = state.index === index;
-          const tabConfig = STATIC_TABS.find(
-            (t) =>
-              t.key === route.name ||
-              t.title.toLowerCase() === route.name.toLowerCase()
-          ) || STATIC_TABS[index] || { icon: "home", badge: 0 };
+
+          let iconName: keyof typeof Ionicons.glyphMap = "home";
+          let badgeCount = 0;
+
+          if (route.name === "community" || route.name === "People" || route.name === "Friends") {
+            iconName = "people";
+            badgeCount = badgeCounts.requestsCount;
+          } else if (route.name === "chat" || route.name === "Chats" || route.name === "Messages") {
+            iconName = "chatbubble";
+            badgeCount = badgeCounts.unreadMessagesCount;
+          } else if (route.name === "explore" || route.name === "Map" || route.name === "ExploreMap") {
+            iconName = "map";
+          } else if (route.name === "more" || route.name === "Menu" || route.name === "MenuProfile") {
+            iconName = "menu";
+          } else {
+            iconName = "home";
+          }
 
           const iconColor = isFocused ? ACTIVE_COLOR : INACTIVE_COLOR;
 
@@ -105,31 +119,31 @@ export function UserTabBar({
               try {
                 router.push("/user/NewsFeed");
                 return;
-              } catch (e) {}
+              } catch {}
             }
-            if (route.name === "chat" || route.name === "Chats") {
+            if (route.name === "chat" || route.name === "Chats" || route.name === "Messages") {
               try {
                 router.push("/user/Chats");
                 return;
-              } catch (e) {}
+              } catch {}
             }
-            if (route.name === "community" || route.name === "People") {
+            if (route.name === "community" || route.name === "People" || route.name === "Friends") {
               try {
                 router.push("/user/People");
                 return;
-              } catch (e) {}
+              } catch {}
             }
-            if (route.name === "explore" || route.name === "Map" || route.name === "NearbyUsers") {
+            if (route.name === "explore" || route.name === "Map" || route.name === "ExploreMap") {
               try {
                 router.push("/user/ExploreMap");
                 return;
-              } catch (e) {}
+              } catch {}
             }
-            if (route.name === "more" || route.name === "Menu" || route.name === "Profile") {
+            if (route.name === "more" || route.name === "Menu" || route.name === "MenuProfile") {
               try {
                 router.push("/user/MenuProfile");
                 return;
-              } catch (e) {}
+              } catch {}
             }
             const event = navigation.emit({
               type: "tabPress",
@@ -159,25 +173,25 @@ export function UserTabBar({
               {/* Short Active Green Line Indicator at Top */}
               {isFocused && (
                 <View
-                  className="absolute top-0 w-8 h-[3.5px] bg-[#006400] rounded-b-md"
+                  className="absolute top-0 w-8 h-[3.5px] bg-[#72AF5B] rounded-b-md"
                   style={{
                     position: "absolute",
                     top: 0,
                     width: 34,
                     height: 3.5,
-                    backgroundColor: "#006400",
+                    backgroundColor: "#72AF5B",
                     borderBottomLeftRadius: 3,
                     borderBottomRightRadius: 3,
                   }}
                 />
               )}
 
-              <Ionicons name={tabConfig.icon} size={24} color={iconColor} />
+              <Ionicons name={iconName} size={24} color={iconColor} />
 
-              {tabConfig.badge !== undefined && tabConfig.badge > 0 && (
-                <View className="absolute top-2 right-[20%] w-4 h-4 rounded-full bg-red-600 items-center justify-center shadow-2xs">
+              {badgeCount > 0 && (
+                <View className="absolute top-2 right-[20%] min-w-[17px] h-[17px] px-1 rounded-full bg-red-600 items-center justify-center shadow-2xs">
                   <Text className="text-white text-[10px] font-bold text-center leading-tight">
-                    {tabConfig.badge > 99 ? "99+" : tabConfig.badge}
+                    {badgeCount > 99 ? "99+" : badgeCount}
                   </Text>
                 </View>
               )}
@@ -192,6 +206,21 @@ export function UserTabBar({
 export default function Navigation(props?: NavigationProps) {
   const router = useRouter();
   const pathname = usePathname();
+  const [badgeCounts, setBadgeCounts] = useState({ requestsCount: 0, unreadMessagesCount: 0 });
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadBadges = async () => {
+      const counts = await getBadgeCountsApi();
+      if (isMounted) setBadgeCounts(counts);
+    };
+    loadBadges();
+    const interval = setInterval(loadBadges, 4000);
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+    };
+  }, []);
 
   if (props?.state && props?.descriptors && props?.navigation) {
     return <UserTabBar {...props} />;
@@ -204,7 +233,10 @@ export default function Navigation(props?: NavigationProps) {
     const tabMap: Record<string, string> = {
       Home: "index",
       Friends: "community",
+      Connection: "community",
       Messages: "chat",
+      Chat: "chat",
+      Chats: "chat",
       Map: "explore",
       Menu: "more",
     };
@@ -247,7 +279,8 @@ export default function Navigation(props?: NavigationProps) {
     } else if (
       pathname.includes("More") ||
       pathname.includes("Menu") ||
-      pathname.includes("MenuProfile")
+      pathname.includes("MenuProfile") ||
+      pathname.includes("Profile")
     ) {
       activeKey = "more";
     } else {
@@ -291,6 +324,14 @@ export default function Navigation(props?: NavigationProps) {
     }
   };
 
+  const tabsConfig = [
+    { key: "index", title: "Home", icon: "home" as const, badge: 0 },
+    { key: "community", title: "Friends", icon: "people" as const, badge: badgeCounts.requestsCount },
+    { key: "chat", title: "Messages", icon: "chatbubble" as const, badge: badgeCounts.unreadMessagesCount },
+    { key: "explore", title: "Map", icon: "map" as const, badge: 0 },
+    { key: "more", title: "Menu", icon: "menu" as const, badge: 0 },
+  ];
+
   return (
     <View
       className="absolute bottom-0 left-0 right-0 w-full z-50"
@@ -320,7 +361,7 @@ export default function Navigation(props?: NavigationProps) {
 
       {/* Bottom Navigation Bar */}
       <View className="flex-row items-center justify-around w-full h-14 bg-white border-t border-gray-200 shadow-2xl elevation-10">
-        {STATIC_TABS.map((tab) => {
+        {tabsConfig.map((tab) => {
           const isFocused =
             activeKey === tab.key ||
             activeKey === tab.title ||
@@ -340,13 +381,13 @@ export default function Navigation(props?: NavigationProps) {
               {/* Short Active Green Line Indicator at Top Edge */}
               {isFocused && (
                 <View
-                  className="absolute top-0 w-8 h-[3.5px] bg-[#006400] rounded-b-md"
+                  className="absolute top-0 w-8 h-[3.5px] bg-[#72AF5B] rounded-b-md"
                   style={{
                     position: "absolute",
                     top: 0,
                     width: 34,
                     height: 3.5,
-                    backgroundColor: "#006400",
+                    backgroundColor: "#72AF5B",
                     borderBottomLeftRadius: 3,
                     borderBottomRightRadius: 3,
                   }}
@@ -356,7 +397,7 @@ export default function Navigation(props?: NavigationProps) {
               <Ionicons name={tab.icon} size={24} color={iconColor} />
 
               {tab.badge !== undefined && tab.badge > 0 && (
-                <View className="absolute top-2 right-[20%] w-4 h-4 rounded-full bg-red-600 items-center justify-center shadow-2xs">
+                <View className="absolute top-2 right-[20%] min-w-[17px] h-[17px] px-1 rounded-full bg-red-600 items-center justify-center shadow-2xs">
                   <Text className="text-white text-[10px] font-bold text-center leading-tight">
                     {tab.badge > 99 ? "99+" : tab.badge}
                   </Text>

@@ -13,7 +13,7 @@ import {
 import ChatSidebarModal from "../../components/ChatSidebarModal";
 import BottomNavBar from "../../components/Navigation";
 
-// ─── Types ────────────────────────────────────────────────────────────────────
+// Types
 
 interface SpamItem {
   id: string;
@@ -23,7 +23,7 @@ interface SpamItem {
   unreadCount?: number;
 }
 
-// ─── Mock Data ────────────────────────────────────────────────────────────────
+// Mock Data
 
 const MOCK_SPAM: SpamItem[] = [
   {
@@ -35,7 +35,7 @@ const MOCK_SPAM: SpamItem[] = [
   },
 ];
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
+// Sub-components
 
 function SpamListItem({
   item,
@@ -92,18 +92,6 @@ export default function SpamMessages() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
   const [isSidebarVisible, setSidebarVisible] = useState(false);
-
-  const handleBack = () => {
-    try {
-      if (router.canGoBack()) {
-        router.back();
-      } else {
-        router.push("/user/Chats" as any);
-      }
-    } catch {
-      router.push("/user/Chats" as any);
-    }
-  };
 
   const filteredSpam = MOCK_SPAM.filter(
     (item) =>

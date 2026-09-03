@@ -1,69 +1,166 @@
+import {
+  apiFetch,
+  setAuthToken,
+  removeAuthToken,
+  getAuthToken,
+} from "@/lib/api";
+
 export type UserRole = "user" | "admin";
 
 export interface User {
   id: string;
   name: string;
+  fullName?: string;
   email: string;
   role: UserRole;
+  username?: string;
+  phoneNumber?: string;
+  gender?: string;
+  firstName?: string;
+  lastName?: string;
+  avatarUrl?: string;
 }
 
 export interface AuthResponse {
   user: User;
-  token: string;
+  token?: string;
+  message?: string;
+}
+
+export interface SignUpParams {
+  name: string;
+  email: string;
+  password: string;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  phoneNumber?: string;
+  gender?: string;
+  role?: UserRole;
 }
 
 export async function loginApi(
   email: string,
   password: string,
 ): Promise<AuthResponse> {
-  // Simulate network request latency
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  const response = await apiFetch<AuthResponse>("/auth/login", {
+    method: "POST",
+    body: JSON.stringify({
+      email: email.trim(),
+      password,
+    }),
+  });
 
-  if (email.toLowerCase() === "error@example.com") {
-    throw new Error("Invalid email or password.");
+  if (response.token) {
+    await setAuthToken(response.token);
   }
 
-  // Detect admin role if email contains 'admin'
-  const isAdmin = email.toLowerCase().includes("admin");
-
-  return {
-    user: {
-      id: "usr_" + Date.now(),
-      name: isAdmin
-        ? "Admin User"
-        : email.split("@")[0] || "Farmer User",
-      email: email,
-      role: isAdmin ? "admin" : "user",
-    },
-    token: "mock-jwt-token-" + Date.now(),
-  };
+  return response;
 }
 
 export async function signUpApi(
-  name: string,
-  email: string,
-  password: string,
+  params: SignUpParams | string,
+  email?: string,
+  password?: string,
 ): Promise<AuthResponse> {
-  // Simulate network request latency
-  await new Promise((resolve) => setTimeout(resolve, 800));
+  let payload: Record<string, any> = {};
 
-  if (email.toLowerCase() === "existing@example.com") {
-    throw new Error("An account with this email already exists.");
+  if (typeof params === "object") {
+    payload = {
+      name: params.name,
+      email: params.email.trim(),
+      password: params.password,
+      firstName: params.firstName,
+      lastName: params.lastName,
+      username: params.username,
+      phoneNumber: params.phoneNumber,
+      gender: params.gender,
+      role: params.role || (params.email.toLowerCase().includes("admin") ? "admin" : "user"),
+    };
+  } else {
+    payload = {
+      name: params,
+      email: (email || "").trim(),
+      password: password || "",
+      role: (email || "").toLowerCase().includes("admin") ? "admin" : "user",
+    };
   }
 
-  const isAdmin = email.toLowerCase().includes("admin");
+  const response = await apiFetch<AuthResponse>("/auth/register", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
 
-  return {
-    user: {
-      id: "usr_" + Date.now(),
-      name: name.trim() || "New User",
-      email: email,
-      role: isAdmin ? "admin" : "user",
-    },
-    token: "mock-jwt-token-" + Date.now(),
-  };
+  if (response.token) {
+    await setAuthToken(response.token);
+  }
+
+  return response;
+}
+
+export async function getCurrentUserApi(): Promise<User | null> {
+  const token = await getAuthToken();
+  if (!token) return null;
+
+  try {
+    const response = await apiFetch<{ user: User }>("/auth/me", {
+      method: "GET",
+    });
+    return response.user;
+  } catch {
+    await removeAuthToken();
+    return null;
+  }
 }
 
 export async function logoutApi(): Promise<void> {
-  await new Promise((resolve) => setTimeout(resolve, 300));
+  await removeAuthToken();
 }
+
+export async function resetPasswordForEmailApi(email: string): Promise<void> {
+  await apiFetch("/auth/forgot-password", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim() }),
+  });
+}
+
+export async function verifyOtpApi(
+  email: string,
+  otp: string,
+): Promise<void> {
+  await apiFetch("/auth/verify-otp", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim(), otp: otp.trim() }),
+  });
+}
+
+export async function resetPasswordApi(
+  email: string,
+  password: string,
+): Promise<void> {
+  await apiFetch("/auth/reset-password", {
+    method: "POST",
+    body: JSON.stringify({ email: email.trim(), password }),
+  });
+}
+
+export async function updateProfileApi(
+  data: Partial<User> & { fullName?: string },
+): Promise<{ message: string; user: User }> {
+  return await apiFetch<{ message: string; user: User }>("/auth/profile", {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export async function changePasswordApi(
+  currentPassword: string,
+  newPassword: string,
+): Promise<{ message: string }> {
+  return await apiFetch<{ message: string }>("/auth/change-password", {
+    method: "POST",
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+
+

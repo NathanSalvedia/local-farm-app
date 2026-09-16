@@ -1,14 +1,18 @@
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
   Modal,
-  SafeAreaView,
+  Pressable,
+  ScrollView,
+  StyleSheet,
   Text,
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 export interface ChatSidebarModalProps {
   isVisible: boolean;
@@ -50,6 +54,8 @@ export default function ChatSidebarModal({
     }
     onClose();
 
+    if (item === activeItem) return;
+
     const targetRoute = ROUTE_MAP[item];
     if (targetRoute) {
       try {
@@ -66,61 +72,96 @@ export default function ChatSidebarModal({
       transparent={true}
       animationType="fade"
       onRequestClose={onClose}
+      statusBarTranslucent={true}
     >
-      {/* Backdrop */}
-      <TouchableWithoutFeedback onPress={onClose}>
-        <View className="flex-1 bg-black/30">
-          {/* Sidebar Container */}
-          <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-            <View className="absolute left-0 top-0 bottom-0 w-4/5 max-w-[320px] bg-white shadow-2xl flex-col">
-              <SafeAreaView className="flex-1">
-                {/* Header Section (Placed at Top Corners) */}
-                <View className="flex-row justify-between items-center px-5 pt-4 pb-3 mb-2">
-                  <Text className="text-2xl font-semibold text-black">
-                    Chats
-                  </Text>
-                  <TouchableOpacity
-                    onPress={onClose}
-                    className="p-1 -mr-2 active:opacity-70"
-                    accessibilityRole="button"
-                    accessibilityLabel="Close sidebar"
-                  >
-                    <Ionicons name="close-outline" size={32} color="#000000" />
-                  </TouchableOpacity>
-                </View>
+      <View className="flex-1 relative" style={{ flex: 1 }}>
+        {/* Full-bleed Gradient Backdrop (Dark Gradient Black) */}
+        <TouchableWithoutFeedback onPress={onClose}>
+          <View style={StyleSheet.absoluteFill}>
+            <LinearGradient
+              colors={[
+                "rgba(0, 0, 0, 0.78)",
+                "rgba(0, 0, 0, 0.58)",
+                "rgba(0, 0, 0, 0.38)",
+              ]}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={StyleSheet.absoluteFill}
+            />
+          </View>
+        </TouchableWithoutFeedback>
 
-                {/* Menu Items List */}
-                <View className="px-3 flex-col">
-                  {MENU_ITEMS.map((item) => {
-                    const isActive = activeItem === item;
-
-                    return (
-                      <TouchableOpacity
-                        key={item}
-                        onPress={() => handleSelectItem(item)}
-                        activeOpacity={0.8}
-                        className={`py-3.5 px-4 mb-2 rounded-lg ${
-                          isActive ? "bg-[#77af5c]" : "bg-transparent"
-                        }`}
-                      >
-                        <Text
-                          className={`text-base ${
-                            isActive
-                              ? "font-bold text-white"
-                              : "font-medium text-gray-800"
-                          }`}
-                        >
-                          {item}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </SafeAreaView>
+        {/* Mobile Responsive Sidebar Drawer */}
+        <Pressable
+          onPress={(e) => e.stopPropagation()}
+          className="h-full w-[78%] max-w-[320px] bg-white flex-col"
+          style={{
+            height: "100%",
+            width: "78%",
+            maxWidth: 320,
+            backgroundColor: "#FFFFFF",
+            elevation: 24,
+            shadowColor: "#000000",
+            shadowOffset: { width: 4, height: 0 },
+            shadowOpacity: 0.25,
+            shadowRadius: 16,
+          }}
+        >
+          <SafeAreaView
+            className="flex-1 bg-white"
+            edges={["top", "bottom", "left"]}
+          >
+            {/* Header Section (Placed at Top Corners) */}
+            <View className="flex-row justify-between items-center px-5 pt-3 pb-3.5 border-b border-gray-100 mb-3">
+              <Text className="text-2xl font-bold text-gray-900">
+                Chats
+              </Text>
+              <TouchableOpacity
+                onPress={onClose}
+                className="p-1 -mr-1 active:opacity-70"
+                accessibilityRole="button"
+                accessibilityLabel="Close sidebar"
+              >
+                <Ionicons name="close" size={26} color="#374151" />
+              </TouchableOpacity>
             </View>
-          </TouchableWithoutFeedback>
-        </View>
-      </TouchableWithoutFeedback>
+
+            {/* Menu Items List */}
+            <ScrollView
+              className="flex-1 px-3"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ gap: 6, paddingBottom: 28 }}
+            >
+              {MENU_ITEMS.map((item) => {
+                const isActive = activeItem === item;
+
+                return (
+                  <TouchableOpacity
+                    key={item}
+                    onPress={() => handleSelectItem(item)}
+                    activeOpacity={0.8}
+                    className={`py-3.5 px-4 rounded-xl flex-row items-center ${
+                      isActive
+                        ? "bg-[#72AF5B]"
+                        : "bg-transparent active:bg-gray-100"
+                    }`}
+                  >
+                    <Text
+                      className={`text-base pl-1 ${
+                        isActive
+                          ? "font-bold text-white"
+                          : "font-medium text-gray-800"
+                      }`}
+                    >
+                      {item}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+          </SafeAreaView>
+        </Pressable>
+      </View>
     </Modal>
   );
 }

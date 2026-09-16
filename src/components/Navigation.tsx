@@ -1,8 +1,11 @@
 import { getBadgeCountsApi } from "@/services/badge-service";
 import { Ionicons } from "@expo/vector-icons";
-import { usePathname, useRouter } from "expo-router";
+import { router, usePathname } from "expo-router";
 import React, { useEffect, useState } from "react";
 import { Text, TouchableOpacity, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+export const BOTTOM_NAV_BAR_BASE_HEIGHT = 56;
 
 export interface TabRoute {
   key: string;
@@ -43,7 +46,8 @@ export function UserTabBar({
   onFabPress,
   showFab = true,
 }: NavigationProps) {
-  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, 0);
   const [badgeCounts, setBadgeCounts] = useState({ requestsCount: 0, unreadMessagesCount: 0 });
 
   useEffect(() => {
@@ -78,8 +82,8 @@ export function UserTabBar({
       {/* Floating Action Button (FAB) */}
       {showFab && (
         <TouchableOpacity
-          className="absolute bottom-[72px] right-4 h-14 w-14 rounded-full bg-[#72AF5B] items-center justify-center shadow-lg elevation-6 z-[60]"
-          style={{ position: "absolute", bottom: 72, right: 16, zIndex: 60 }}
+          className="absolute right-4 h-14 w-14 rounded-full bg-[#72AF5B] items-center justify-center shadow-lg elevation-6 z-[60]"
+          style={{ position: "absolute", bottom: 72 + bottomInset, right: 16, zIndex: 60 }}
           activeOpacity={0.8}
           onPress={onFabPress}
           accessibilityRole="button"
@@ -90,7 +94,13 @@ export function UserTabBar({
       )}
 
       {/* Navigation Bar */}
-      <View className="flex-row items-center justify-around w-full h-14 bg-white border-t border-gray-200 shadow-2xl elevation-10">
+      <View
+        className="flex-row items-center justify-around w-full bg-white border-t border-gray-200 shadow-2xl elevation-10"
+        style={{
+          height: BOTTOM_NAV_BAR_BASE_HEIGHT + bottomInset,
+          paddingBottom: bottomInset,
+        }}
+      >
         {state.routes.map((route: TabRoute, index: number) => {
           const options = descriptors[route.key]?.options || {};
           const isFocused = state.index === index;
@@ -115,33 +125,34 @@ export function UserTabBar({
           const iconColor = isFocused ? ACTIVE_COLOR : INACTIVE_COLOR;
 
           const onPress = () => {
+            if (isFocused) return;
             if (route.name === "index" || route.name === "home") {
               try {
-                router.push("/user/NewsFeed");
+                router.replace("/user/NewsFeed" as any);
                 return;
               } catch {}
             }
             if (route.name === "chat" || route.name === "Chats" || route.name === "Messages") {
               try {
-                router.push("/user/Chats");
+                router.replace("/user/Chats" as any);
                 return;
               } catch {}
             }
             if (route.name === "community" || route.name === "People" || route.name === "Friends") {
               try {
-                router.push("/user/People");
+                router.replace("/user/People" as any);
                 return;
               } catch {}
             }
             if (route.name === "explore" || route.name === "Map" || route.name === "ExploreMap") {
               try {
-                router.push("/user/ExploreMap");
+                router.replace("/user/ExploreMap" as any);
                 return;
               } catch {}
             }
             if (route.name === "more" || route.name === "Menu" || route.name === "MenuProfile") {
               try {
-                router.push("/user/MenuProfile");
+                router.replace("/user/MenuProfile" as any);
                 return;
               } catch {}
             }
@@ -204,7 +215,8 @@ export function UserTabBar({
 }
 
 export default function Navigation(props?: NavigationProps) {
-  const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const bottomInset = Math.max(insets.bottom, 0);
   const pathname = usePathname();
   const [badgeCounts, setBadgeCounts] = useState({ requestsCount: 0, unreadMessagesCount: 0 });
 
@@ -291,33 +303,45 @@ export default function Navigation(props?: NavigationProps) {
   const showFab = props?.showFab ?? true;
 
   const handleTabPress = (tabKey: string) => {
+    // Guard: Do not re-navigate or re-trigger transitions if already on this tab screen
+    const isCurrentTab =
+      (tabKey === "index" && (pathname === "/user/NewsFeed" || pathname === "/user" || pathname === "/" || pathname.endsWith("/NewsFeed"))) ||
+      (tabKey === "community" && (pathname === "/user/People" || pathname.endsWith("/People"))) ||
+      (tabKey === "chat" && (pathname === "/user/Chats" || pathname.endsWith("/Chats"))) ||
+      (tabKey === "explore" && (pathname === "/user/ExploreMap" || pathname.endsWith("/ExploreMap"))) ||
+      (tabKey === "more" && (pathname === "/user/MenuProfile" || pathname.endsWith("/MenuProfile")));
+
+    if (isCurrentTab) {
+      return;
+    }
+
     if (tabKey === "index") {
       try {
-        router.push("/user/NewsFeed");
+        router.replace("/user/NewsFeed" as any);
       } catch (e) {
         console.warn(e);
       }
     } else if (tabKey === "community") {
       try {
-        router.push("/user/People");
+        router.replace("/user/People" as any);
       } catch (e) {
         console.warn(e);
       }
     } else if (tabKey === "chat") {
       try {
-        router.push("/user/Chats");
+        router.replace("/user/Chats" as any);
       } catch (e) {
         console.warn(e);
       }
     } else if (tabKey === "explore") {
       try {
-        router.push("/user/ExploreMap");
+        router.replace("/user/ExploreMap" as any);
       } catch (e) {
         console.warn(e);
       }
     } else if (tabKey === "more") {
       try {
-        router.push("/user/MenuProfile");
+        router.replace("/user/MenuProfile" as any);
       } catch (e) {
         console.warn(e);
       }
@@ -348,8 +372,8 @@ export default function Navigation(props?: NavigationProps) {
       {/* Floating Action Button (FAB) */}
       {showFab && (
         <TouchableOpacity
-          className="absolute bottom-[72px] right-4 h-14 w-14 rounded-full bg-[#72AF5B] items-center justify-center shadow-lg elevation-6 z-[60]"
-          style={{ position: "absolute", bottom: 72, right: 16, zIndex: 60 }}
+          className="absolute right-4 h-14 w-14 rounded-full bg-[#72AF5B] items-center justify-center shadow-lg elevation-6 z-[60]"
+          style={{ position: "absolute", bottom: 72 + bottomInset, right: 16, zIndex: 60 }}
           activeOpacity={0.8}
           onPress={props?.onFabPress}
           accessibilityRole="button"
@@ -360,7 +384,13 @@ export default function Navigation(props?: NavigationProps) {
       )}
 
       {/* Bottom Navigation Bar */}
-      <View className="flex-row items-center justify-around w-full h-14 bg-white border-t border-gray-200 shadow-2xl elevation-10">
+      <View
+        className="flex-row items-center justify-around w-full bg-white border-t border-gray-200 shadow-2xl elevation-10"
+        style={{
+          height: BOTTOM_NAV_BAR_BASE_HEIGHT + bottomInset,
+          paddingBottom: bottomInset,
+        }}
+      >
         {tabsConfig.map((tab) => {
           const isFocused =
             activeKey === tab.key ||

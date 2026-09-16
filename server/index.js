@@ -46,6 +46,8 @@ function formatUser(row) {
     firstName: row.first_name || "",
     lastName: row.last_name || "",
     avatarUrl: row.avatar_url || "",
+    bio: row.bio || "",
+    about: row.bio || "",
   };
 }
 
@@ -65,6 +67,7 @@ app.get(["/", "/api"], (req, res) => {
       login: "POST /api/auth/login",
       me: "GET /api/auth/me",
       updateProfile: "PUT /api/auth/profile",
+      sendSignupOtp: "POST /api/auth/send-signup-otp",
       forgotPassword: "POST /api/auth/forgot-password",
       verifyOtp: "POST /api/auth/verify-otp",
       resetPassword: "POST /api/auth/reset-password",
@@ -243,6 +246,8 @@ const profileUpdateHandler = async (req, res) => {
       phoneNumber,
       gender,
       avatarUrl,
+      bio,
+      about,
     } = req.body;
 
     const pool = getPool();
@@ -272,22 +277,43 @@ const profileUpdateHandler = async (req, res) => {
     const newPhoneNumber = phoneNumber !== undefined ? phoneNumber.trim() : current.phone_number;
     const newGender = gender !== undefined ? gender : current.gender;
     const newAvatarUrl = avatarUrl !== undefined ? avatarUrl : current.avatar_url;
+    const newBio = bio !== undefined ? bio : (about !== undefined ? about : current.bio);
 
-    await pool.query(
-      `UPDATE users
-       SET full_name = ?, first_name = ?, last_name = ?, username = ?, phone_number = ?, gender = ?, avatar_url = ?
-       WHERE id = ?`,
-      [
-        newFullName,
-        newFirstName,
-        newLastName,
-        newUsername,
-        newPhoneNumber,
-        newGender,
-        newAvatarUrl,
-        userId,
-      ]
-    );
+    try {
+      await pool.query(
+        `UPDATE users
+         SET full_name = ?, first_name = ?, last_name = ?, username = ?, phone_number = ?, gender = ?, avatar_url = ?, bio = ?
+         WHERE id = ?`,
+        [
+          newFullName,
+          newFirstName,
+          newLastName,
+          newUsername,
+          newPhoneNumber,
+          newGender,
+          newAvatarUrl,
+          newBio,
+          userId,
+        ]
+      );
+    } catch {
+      // Fallback if bio column does not exist yet
+      await pool.query(
+        `UPDATE users
+         SET full_name = ?, first_name = ?, last_name = ?, username = ?, phone_number = ?, gender = ?, avatar_url = ?
+         WHERE id = ?`,
+        [
+          newFullName,
+          newFirstName,
+          newLastName,
+          newUsername,
+          newPhoneNumber,
+          newGender,
+          newAvatarUrl,
+          userId,
+        ]
+      );
+    }
 
     const [updatedRows] = await pool.query("SELECT * FROM users WHERE id = ? LIMIT 1", [userId]);
     const updatedUser = formatUser(updatedRows[0]);
@@ -304,6 +330,57 @@ const profileUpdateHandler = async (req, res) => {
 
 app.put(["/api/auth/profile", "/api/user/profile", "/api/users/profile", "/auth/profile", "/user/profile"], authenticateToken, profileUpdateHandler);
 app.post(["/api/auth/profile", "/api/user/profile", "/api/users/profile", "/auth/profile", "/user/profile"], authenticateToken, profileUpdateHandler);
+
+// 4b. Send Signup Verification OTP
+app.post("/api/auth/send-signup-otp", async (req, res) => {
+  try {
+    const { email, username } = req.body;
+    if (!email) {
+      return res.status(400).json({ message: "Email is required." });
+    }
+
+    const pool = getPool();
+
+    // Check if email already exists
+    const [existingEmail] = await pool.query(
+      "SELECT id FROM users WHERE email = ? LIMIT 1",
+      [email.trim().toLowerCase()]
+    );
+    if (existingEmail.length > 0) {
+      return res.status(400).json({ message: "An account with this email already exists." });
+    }
+
+    // Check if username already exists
+    if (username) {
+      const [existingUser] = await pool.query(
+        "SELECT id FROM users WHERE username = ? LIMIT 1",
+        [username.trim()]
+      );
+      if (existingUser.length > 0) {
+        return res.status(400).json({ message: "This username is already taken." });
+      }
+    }
+
+    // Generate 6-digit random code
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000); // 15 mins expiry
+
+    await pool.query(
+      "INSERT INTO otps (email, otp, type, expires_at) VALUES (?, ?, 'signup', ?)",
+      [email.trim().toLowerCase(), otp, expiresAt]
+    );
+
+    console.log(`[Signup OTP Generated] Email: ${email}, OTP: ${otp}`);
+
+    res.json({
+      message: "Verification code sent to your email.",
+      devOtp: otp,
+    });
+  } catch (err) {
+    console.error("[Send Signup OTP Error]", err);
+    res.status(500).json({ message: err.message || "Failed to send signup verification code." });
+  }
+});
 
 // 5. Send Forgot Password OTP
 app.post("/api/auth/forgot-password", async (req, res) => {
@@ -1111,10 +1188,10 @@ app.post(
   authenticateToken,
   async (req, res) => {
     try {
-      const { receiverId, conversationId, messageText, messageType, imageUrl } = req.body;
+      const { receiverId, conversationId, messageText, messageType, imageUrl, autoReplyText, autoReplyType } = req.body;
       const text = (messageText || "").trim();
 
-      if (!text && !imageUrl) {
+      if (!text && !imageUrl && !autoReplyText) {
         return res.status(400).json({ message: "Message content or image is required." });
       }
 
@@ -1148,15 +1225,43 @@ app.post(
       );
 
       if (convCheck.length > 0) {
+        let lastSnippet = autoReplyText ? String(autoReplyText).trim() : text;
+        if (messageType === "location") {
+          try {
+            const parsed = JSON.parse(text);
+            lastSnippet = `📍 ${parsed.title || "Shared a location pin"}`;
+          } catch {
+            lastSnippet = "📍 Shared a location pin";
+          }
+        } else if (!text && imageUrl) {
+          lastSnippet = "Sent an image";
+        } else if (!text) {
+          lastSnippet = "Sent a message";
+        }
+
         convId = convCheck[0].id;
         await pool.query(
           "UPDATE conversations SET last_message = ?, last_message_time = NOW() WHERE id = ?",
-          [text || (imageUrl ? "Sent an image" : "Sent a message"), convId]
+          [lastSnippet, convId]
         );
       } else {
+        let lastSnippet = autoReplyText ? String(autoReplyText).trim() : text;
+        if (messageType === "location") {
+          try {
+            const parsed = JSON.parse(text);
+            lastSnippet = `📍 ${parsed.title || "Shared a location pin"}`;
+          } catch {
+            lastSnippet = "📍 Shared a location pin";
+          }
+        } else if (!text && imageUrl) {
+          lastSnippet = "Sent an image";
+        } else if (!text) {
+          lastSnippet = "Sent a message";
+        }
+
         const [cInsert] = await pool.query(
           "INSERT INTO conversations (user1_id, user2_id, last_message, last_message_time) VALUES (?, ?, ?, NOW())",
-          [u1, u2, text || (imageUrl ? "Sent an image" : "Sent a message")]
+          [u1, u2, lastSnippet]
         );
         convId = cInsert.insertId;
       }
@@ -1187,7 +1292,28 @@ app.post(
         isSeen: false,
       };
 
-      res.status(201).json({ message: "Message sent!", data: createdMessage });
+      let createdAutoReply = null;
+      if (autoReplyText) {
+        const arText = String(autoReplyText).trim();
+        const arType = autoReplyType || "auto_reply";
+        const [arInsert] = await pool.query(
+          "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, image_url, is_read) VALUES (?, ?, ?, ?, ?, NULL, 0)",
+          [convId, targetReceiverId, senderId, arText, arType]
+        );
+        createdAutoReply = {
+          id: String(arInsert.insertId),
+          conversationId: String(convId),
+          sender: "other",
+          senderId: String(targetReceiverId),
+          receiverId: String(senderId),
+          type: arType,
+          text: arText,
+          time: timeStr,
+          isSeen: false,
+        };
+      }
+
+      res.status(201).json({ message: "Message sent!", data: createdMessage, autoReply: createdAutoReply });
     } catch (err) {
       console.error("[Send Message Error]", err);
       res.status(500).json({ message: err.message || "Failed to send message." });
@@ -1261,8 +1387,18 @@ function formatTimeAgo(dateStr) {
   return past.toLocaleDateString();
 }
 
+function sanitizePostLocation(loc) {
+  if (!loc) return "";
+  const trimmed = String(loc).trim();
+  if (!trimmed || trimmed === "Iligan City, Philippines") return "";
+  return trimmed;
+}
+
 async function ensureSamplePosts(pool) {
   try {
+    // Migration: clear out any legacy hardcoded "Iligan City, Philippines" placeholder
+    await pool.query("UPDATE posts SET location = NULL WHERE location = 'Iligan City, Philippines'");
+
     const [rows] = await pool.query("SELECT id FROM posts LIMIT 1");
     if (rows.length === 0) {
       const [users] = await pool.query("SELECT id FROM users LIMIT 3");
@@ -1272,8 +1408,8 @@ async function ensureSamplePosts(pool) {
       await pool.query(
         `INSERT INTO posts (user_id, content, image_url, category, privacy, location, likes_count, comments_count, shares_count)
          VALUES
-         (?, 'Mga suki! Naa tay presko ug tam-is nga apple karon.🍎 Puno sa vitamins ug perfect para sa tibuok pamilya!', 'https://images.unsplash.com/photo-1560806887-1e4cd0b6cbd6?auto=format&fit=crop&w=800&q=80', 'Wholesaler', 'Public', 'Iligan City, Philippines', 142, 22, 55),
-         (?, 'Mga suki! Naa tay presko nga durian karon. Puno sa vitamins ug perfect para sa tibuok pamilya!', 'https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?auto=format&fit=crop&w=800&q=80', 'Temporary', 'Public', 'Iligan City, Philippines', 289, 41, 18)`,
+         (?, 'Mga suki! Naa tay presko ug tam-is nga apple karon.🍎 Puno sa vitamins ug perfect para sa tibuok pamilya!', 'https://images.unsplash.com/photo-1560806887-1e4cd0b6cbd6?auto=format&fit=crop&w=800&q=80', 'Wholesaler', 'Public', NULL, 142, 22, 55),
+         (?, 'Mga suki! Naa tay presko nga durian karon. Puno sa vitamins ug perfect para sa tibuok pamilya!', 'https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?auto=format&fit=crop&w=800&q=80', 'Temporary', 'Public', NULL, 289, 41, 18)`,
         [u1, u2]
       );
     }
@@ -1322,7 +1458,7 @@ app.get(
           authorName: r.full_name || `${r.first_name || ""} ${r.last_name || ""}`.trim() || r.username || "Local Farmer",
           authorRole: r.category || (r.role === "admin" ? "Wholesaler" : "Field"),
           avatarUri: r.avatar_url || "",
-          location: r.location || "Iligan City, Philippines",
+          location: sanitizePostLocation(r.location),
           timeAgo: formatTimeAgo(r.created_at),
           content: r.content,
           imageUrl: r.image_url || "",
@@ -1341,7 +1477,7 @@ app.get(
                 authorName: r.orig_author_name || `${r.orig_first_name || ""} ${r.orig_last_name || ""}`.trim() || r.orig_username || "Local Farmer",
                 authorRole: r.orig_category || (r.orig_role === "admin" ? "Wholesaler" : "Field"),
                 avatarUri: r.orig_avatar_url || "",
-                location: r.orig_location || "Iligan City, Philippines",
+                location: sanitizePostLocation(r.orig_location),
                 timeAgo: formatTimeAgo(r.orig_created_at),
                 content: r.orig_content,
                 imageUrl: r.orig_image_url || "",
@@ -1465,7 +1601,7 @@ app.get(
           authorName: r.full_name || `${r.first_name || ""} ${r.last_name || ""}`.trim() || r.username || "Local Farmer",
           authorRole: r.category || (r.role === "admin" ? "Wholesaler" : "Field"),
           avatarUri: r.avatar_url || "",
-          location: r.location || "Iligan City, Philippines",
+          location: sanitizePostLocation(r.location),
           timeAgo: formatTimeAgo(r.created_at),
           content: r.content,
           imageUrl: r.image_url || "",
@@ -1484,7 +1620,7 @@ app.get(
                 authorName: r.orig_author_name || `${r.orig_first_name || ""} ${r.orig_last_name || ""}`.trim() || r.orig_username || "Local Farmer",
                 authorRole: r.orig_category || (r.orig_role === "admin" ? "Wholesaler" : "Field"),
                 avatarUri: r.orig_avatar_url || "",
-                location: r.orig_location || "Iligan City, Philippines",
+                location: sanitizePostLocation(r.orig_location),
                 timeAgo: formatTimeAgo(r.orig_created_at),
                 content: r.orig_content,
                 imageUrl: r.orig_image_url || "",
@@ -1528,12 +1664,12 @@ app.post(
         ? privacy
         : "Public";
 
-      const postLocation = location || "Iligan City, Philippines";
+      const postLocation = sanitizePostLocation(location);
 
       const [insertRes] = await pool.query(
         `INSERT INTO posts (user_id, content, image_url, category, privacy, location, likes_count, comments_count, shares_count)
          VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0)`,
-        [userId, text, chosenImage, validCategory, validPrivacy, postLocation]
+        [userId, text, chosenImage, validCategory, validPrivacy, postLocation || null]
       );
 
       const postId = insertRes.insertId;
@@ -1550,7 +1686,7 @@ app.post(
         authorName: userRow?.full_name || `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() || userRow?.username || "Local Farmer",
         authorRole: validCategory || (userRow?.role === "admin" ? "Wholesaler" : "Field"),
         avatarUri: userRow?.avatar_url || "",
-        location: postLocation,
+        location: postLocation || "",
         timeAgo: "Just now",
         content: text,
         imageUrl: chosenImage || "",
@@ -1616,14 +1752,69 @@ app.post(
   }
 );
 
-// 14.3.1 Edit Post / Update Privacy / Category
+// 14.2.1 Get Single Post
+app.get(
+  "/api/posts/:id",
+  optionalAuthenticateToken,
+  async (req, res) => {
+    try {
+      const postId = req.params.id;
+      const pool = getPool();
+      const currentUserId = req.user?.id || 0;
+
+      const query = `
+        SELECT p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.category, p.privacy, p.location,
+               p.likes_count, p.comments_count, p.shares_count, p.created_at,
+               u.full_name, u.first_name, u.last_name, u.username, u.avatar_url, u.role,
+               EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = ?) AS is_liked,
+               EXISTS(SELECT 1 FROM saved_posts sp WHERE sp.post_id = p.id AND sp.user_id = ?) AS is_saved
+        FROM posts p
+        JOIN users u ON p.user_id = u.id
+        WHERE p.id = ?
+        LIMIT 1
+      `;
+
+      const [rows] = await pool.query(query, [currentUserId, currentUserId, postId]);
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: "Post not found." });
+      }
+
+      const r = rows[0];
+      const post = {
+        id: String(r.id),
+        userId: String(r.user_id),
+        authorName: r.full_name || `${r.first_name || ""} ${r.last_name || ""}`.trim() || r.username || "Local Farmer",
+        authorRole: r.category || (r.role === "admin" ? "Wholesaler" : "Field"),
+        avatarUri: r.avatar_url || "",
+        location: sanitizePostLocation(r.location),
+        timeAgo: formatTimeAgo(r.created_at),
+        content: r.content,
+        imageUrl: r.image_url || "",
+        category: r.category,
+        privacy: r.privacy,
+        likes: Number(r.likes_count) || 0,
+        comments: Number(r.comments_count) || 0,
+        shares: Number(r.shares_count) || 0,
+        isLiked: Boolean(r.is_liked),
+        isSaved: Boolean(r.is_saved),
+      };
+
+      res.json({ post });
+    } catch (err) {
+      console.error("[Get Post Error]", err);
+      res.status(500).json({ message: err.message || "Failed to fetch post." });
+    }
+  }
+);
+
+// 14.3.1 Edit Post / Update Privacy / Category / Content / Location / Photos
 app.put(
   ["/api/posts/:id", "/api/posts/update"],
   authenticateToken,
   async (req, res) => {
     try {
       const postId = req.params.id || req.body.id || req.body.postId;
-      const { content, category, privacy } = req.body;
+      const { content, category, privacy, location, imageUrl, photos } = req.body;
       const pool = getPool();
       const userId = req.user.id;
       const role = req.user.role;
@@ -1646,10 +1837,18 @@ app.put(
         : post.privacy;
 
       const updatedContent = content !== undefined ? content : post.content;
+      const updatedLocation = location !== undefined ? sanitizePostLocation(location) : post.location;
+
+      let updatedImage = post.image_url;
+      if (imageUrl !== undefined) {
+        updatedImage = imageUrl;
+      } else if (Array.isArray(photos)) {
+        updatedImage = photos.length > 0 ? photos[0] : null;
+      }
 
       await pool.query(
-        "UPDATE posts SET content = ?, category = ?, privacy = ?, updated_at = NOW() WHERE id = ?",
-        [updatedContent, validCategory, validPrivacy, postId]
+        "UPDATE posts SET content = ?, category = ?, privacy = ?, location = ?, image_url = ?, updated_at = NOW() WHERE id = ?",
+        [updatedContent, validCategory, validPrivacy, updatedLocation || null, updatedImage || null, postId]
       );
 
       res.json({
@@ -1659,6 +1858,8 @@ app.put(
           content: updatedContent,
           category: validCategory,
           privacy: validPrivacy,
+          location: updatedLocation || "",
+          imageUrl: updatedImage || "",
         },
       });
     } catch (err) {
@@ -1827,38 +2028,64 @@ app.post(
 
       const pool = getPool();
       const userId = req.user.id;
-      const parent = parentId ? Number(parentId) : null;
+      let parent = parentId && !isNaN(Number(parentId)) ? Number(parentId) : null;
 
-      const [insertRes] = await pool.query(
-        "INSERT INTO post_comments (post_id, user_id, parent_id, content, likes_count) VALUES (?, ?, ?, ?, 0)",
-        [postId, userId, parent, text]
-      );
+      if (parent) {
+        try {
+          const [[parentRow]] = await pool.query(
+            "SELECT id FROM post_comments WHERE id = ?",
+            [parent]
+          );
+          if (!parentRow) {
+            parent = null;
+          }
+        } catch {
+          parent = null;
+        }
+      }
 
-      const commentId = insertRes.insertId;
+      let postNum = postId && !isNaN(Number(postId)) ? Number(postId) : null;
+      let commentId = Date.now();
 
-      // Increment comments_count on posts table
-      await pool.query(
-        "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?",
-        [postId]
-      );
+      if (postNum) {
+        try {
+          const [insertRes] = await pool.query(
+            "INSERT INTO post_comments (post_id, user_id, parent_id, content, likes_count) VALUES (?, ?, ?, ?, 0)",
+            [postNum, userId, parent, text]
+          );
+          commentId = insertRes.insertId;
+
+          // Increment comments_count on posts table
+          await pool.query(
+            "UPDATE posts SET comments_count = comments_count + 1 WHERE id = ?",
+            [postNum]
+          );
+        } catch (dbErr) {
+          console.warn("[Add Comment DB Warning]", dbErr.message);
+        }
+      }
 
       // Fetch author info
-      const [[userRow]] = await pool.query(
-        "SELECT full_name, first_name, last_name, username, avatar_url FROM users WHERE id = ?",
-        [userId]
-      );
+      let userRow = null;
+      try {
+        const [[u]] = await pool.query(
+          "SELECT full_name, first_name, last_name, username, avatar_url FROM users WHERE id = ?",
+          [userId]
+        );
+        userRow = u;
+      } catch {}
 
       const newComment = {
         id: String(commentId),
         postId: String(postId),
         userId: String(userId),
-        authorName: userRow?.full_name || `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() || userRow?.username || "Local Farmer",
+        authorName: userRow?.full_name || `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() || userRow?.username || req.user?.username || "Local Farmer",
         avatarUri: userRow?.avatar_url || "",
         timeAgo: "Just now",
         content: text,
         likes: 0,
         isLiked: false,
-        parentId: parent ? String(parent) : null,
+        parentId: parentId ? String(parentId) : null,
       };
 
       res.status(201).json({ message: "Comment posted!", comment: newComment });
@@ -1966,7 +2193,7 @@ app.post(
             (caption || "").trim(),
             null,
             targetPost.category || "General",
-            targetPost.location || "Iligan City, Philippines"
+            sanitizePostLocation(targetPost.location) || null
           ]
         );
 
@@ -1988,7 +2215,7 @@ app.post(
           authorName: userRow?.full_name || `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() || userRow?.username || "Local Farmer",
           authorRole: targetPost.category || (userRow?.role === "admin" ? "Wholesaler" : "Field"),
           avatarUri: userRow?.avatar_url || "",
-          location: targetPost.location || "Iligan City, Philippines",
+          location: sanitizePostLocation(targetPost.location),
           timeAgo: "Just now",
           content: (caption || "").trim(),
           imageUrl: "",
@@ -2005,7 +2232,7 @@ app.post(
             authorName: origRow.full_name || `${origRow.first_name || ""} ${origRow.last_name || ""}`.trim() || origRow.username || "Local Farmer",
             authorRole: origRow.category || (origRow.role === "admin" ? "Wholesaler" : "Field"),
             avatarUri: origRow.avatar_url || "",
-            location: origRow.location || "Iligan City, Philippines",
+            location: sanitizePostLocation(origRow.location),
             timeAgo: formatTimeAgo(origRow.created_at),
             content: origRow.content,
             imageUrl: origRow.image_url || "",

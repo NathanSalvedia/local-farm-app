@@ -1,14 +1,37 @@
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import Constants from "expo-constants";
+import * as Device from "expo-device";
 import { Platform } from "react-native";
 
-// Change this IP if testing on a physical mobile device over local Wi-Fi
-// (e.g. "http://192.168.1.5:5000/api")
-const DEFAULT_HOST = Platform.select({
-  web: "http://localhost:5000/api",
-  android: "http://10.0.2.2:5000/api", // Android emulator maps 10.0.2.2 to host machine localhost
-  ios: "http://localhost:5000/api",
-  default: "http://localhost:5000/api",
-});
+function getDynamicHost(): string {
+  if (Platform.OS === "web") {
+    return "http://localhost:5000/api";
+  }
+
+  // In Expo Go or Dev Client, Constants provides the IP of the machine running Metro
+  const metroHost =
+    Constants.expoConfig?.hostUri?.split(":")[0] ||
+    (Constants as any).manifest2?.extra?.expoGo?.debuggerHost?.split(":")[0] ||
+    (Constants as any).manifest?.debuggerHost?.split(":")[0];
+
+  if (metroHost && metroHost !== "localhost" && metroHost !== "127.0.0.1") {
+    return `http://${metroHost}:5000/api`;
+  }
+
+  // Physical mobile device fallback (PC's current local Wi-Fi IP)
+  if (Device.isDevice) {
+    return "http://192.168.12.2:5000/api";
+  }
+
+  // Android emulator loopback alias
+  if (Platform.OS === "android") {
+    return "http://10.0.2.2:5000/api";
+  }
+
+  return "http://localhost:5000/api";
+}
+
+const DEFAULT_HOST = getDynamicHost();
 
 export const TOKEN_STORAGE_KEY = "localfarm_auth_token";
 export const API_URL_STORAGE_KEY = "localfarm_api_url";

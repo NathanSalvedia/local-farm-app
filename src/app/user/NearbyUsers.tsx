@@ -1,13 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import {
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
@@ -168,7 +168,7 @@ export default function NearbyUsers() {
                         accessibilityLabel="Not interested"
                       >
                         <Text
-                          className="text-gray-700 font-semibold text-xs sm:text-sm text-center"
+                          className="text-gray-700 font-semibold text-sm sm:text-sm text-center"
                           numberOfLines={1}
                         >
                           Not Interested
@@ -182,12 +182,12 @@ export default function NearbyUsers() {
           })}
         </View>
       </ScrollView>
+      <BottomNavBar showFab={false} />
       <SidebarMenu
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeTab="Nearby Users"
       />
-      <BottomNavBar showFab={false} />
     </SafeAreaView>
   );
 }

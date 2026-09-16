@@ -1,7 +1,8 @@
 import { useAuth } from "@/hooks/use-auth";
+import { getRSBSAApplication, RSBSAApplication } from "@/services/rsbsa-service";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useState } from "react";
 import { Image, Text, TouchableOpacity, View } from "react-native";
 import { INITIAL_NOTIFICATIONS, NotificationModal } from "./NotificationModal";
 
@@ -12,9 +13,27 @@ const UserHeader = () => {
   const [unreadCount, setUnreadCount] = useState(
     INITIAL_NOTIFICATIONS.filter((n) => n.isUnread).length,
   );
+  const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
+
+  useFocusEffect(
+    useCallback(() => {
+      let isMounted = true;
+      getRSBSAApplication()
+        .then((app) => {
+          if (isMounted) setRsbsaApp(app);
+        })
+        .catch((err) => console.log("[UserHeader] Failed to load RSBSA:", err));
+      return () => {
+        isMounted = false;
+      };
+    }, [])
+  );
+
+  const isRSBSAVerified = rsbsaApp?.status === "verified";
 
   return (
-    <View className="flex-row justify-between items-center px-4 py-3 bg-white border-b border-gray-100 z-30">
+    <>
+      <View className="flex-row justify-between items-center px-4 py-3 bg-white border-b border-gray-100 z-30">
       {/* Left: Brand Logo */}
       <View className="flex-row items-center">
         <Image
@@ -55,21 +74,41 @@ const UserHeader = () => {
 
         {/* User Profile Avatar Icon */}
         <TouchableOpacity
-          onPress={() => router.push("/user/PersonalInformation" as any)}
-          className="w-8 h-8 rounded-full border border-[#72AF5B] items-center justify-center overflow-hidden active:opacity-80 bg-gray-100"
+          onPress={() =>
+            router.push({
+              pathname: "/user/UserProfile",
+              params: {
+                userId: user?.id,
+                userName: user?.name || user?.username || "Local Farmer",
+                userAvatar: user?.avatarUrl,
+                userRole: isRSBSAVerified ? "RSBSA Verified Farmer" : (user as any)?.role || "Farmer",
+                isVerified: isRSBSAVerified ? "true" : "false",
+              },
+            } as any)
+          }
+          className="relative w-8 h-8 rounded-full border border-[#72AF5B] items-center justify-center overflow-visible active:opacity-80 bg-gray-100"
           accessibilityRole="button"
           accessibilityLabel="Profile"
         >
-          {user?.avatarUrl ? (
-            <Image
-              source={{ uri: user.avatarUrl }}
-              style={{ width: "100%", height: "100%" }}
-              resizeMode="cover"
-            />
-          ) : (
-            <Ionicons name="person-outline" size={18} color="#333333" />
+          <View className="w-full h-full rounded-full overflow-hidden items-center justify-center">
+            {user?.avatarUrl ? (
+              <Image
+                source={{ uri: user.avatarUrl }}
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="cover"
+              />
+            ) : (
+              <Ionicons name="person-outline" size={18} color="#333333" />
+            )}
+          </View>
+          {isRSBSAVerified && (
+            <View className="absolute -bottom-1 -right-1 bg-white rounded-full w-3.5 h-3.5 items-center justify-center shadow-xs border border-white">
+              <Ionicons name="checkmark-circle" size={13} color="#10B981" />
+            </View>
           )}
         </TouchableOpacity>
+      </View>
+
       </View>
 
       {/* Separated Notifications Modal Component */}
@@ -78,7 +117,7 @@ const UserHeader = () => {
         onClose={() => setNotifOpen(false)}
         onUnreadCountChange={setUnreadCount}
       />
-    </View>
+    </>
   );
 };
 

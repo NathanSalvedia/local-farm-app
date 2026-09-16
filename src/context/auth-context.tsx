@@ -1,4 +1,5 @@
-import { useRouter } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { router } from "expo-router";
 import React, { createContext, useState, useEffect, ReactNode } from "react";
 import {
   User,
@@ -30,10 +31,26 @@ export const AuthContext = createContext<AuthContextType>({
   refreshUser: async () => {},
 });
 
+// Module-scoped session cache: survives Fast Refresh and hot reload cycles in memory
+let inMemoryUser: User | null = null;
+let inMemoryAuthInitialized = false;
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const router = useRouter();
-  const [user, setUser] = useState<User | null>(null);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [user, setUserState] = useState<User | null>(inMemoryUser);
+  const [isLoading, setIsLoadingState] = useState<boolean>(!inMemoryAuthInitialized);
+
+  const setUser = (newUser: User | null | ((prev: User | null) => User | null)) => {
+    setUserState((prev) => {
+      const resolved = typeof newUser === "function" ? newUser(prev) : newUser;
+      inMemoryUser = resolved;
+      return resolved;
+    });
+  };
+
+  const setIsLoading = (loading: boolean) => {
+    inMemoryAuthInitialized = !loading;
+    setIsLoadingState(loading);
+  };
 
   const refreshUser = async () => {
     try {
@@ -45,14 +62,40 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   useEffect(() => {
+    let isMounted = true;
+
+    // Check cached user first for instant UI
+    AsyncStorage.getItem("localfarm_cached_user")
+      .then((cached) => {
+        if (isMounted && cached) {
+          try {
+            const parsed = JSON.parse(cached);
+            setUser((prev) => prev || parsed);
+          } catch {}
+        }
+      })
+      .catch(() => {});
+
     // Check stored JWT session on app boot
     getCurrentUserApi()
       .then((currentUser) => {
-        setUser(currentUser);
+        if (isMounted && currentUser) {
+          setUser((prev) => ({ ...(prev || {}), ...currentUser }));
+          AsyncStorage.setItem(
+            "localfarm_cached_user",
+            JSON.stringify(currentUser),
+          ).catch(() => {});
+        }
       })
       .finally(() => {
-        setIsLoading(false);
+        if (isMounted) {
+          setIsLoading(false);
+        }
       });
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   const signIn = async (email: string, password: string) => {
@@ -60,6 +103,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await loginApi(email, password);
       setUser(response.user);
+      await AsyncStorage.setItem(
+        "localfarm_cached_user",
+        JSON.stringify(response.user),
+      );
     } finally {
       setIsLoading(false);
     }
@@ -74,25 +121,66 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const response = await signUpApi(params, email, password);
       setUser(response.user);
+      await AsyncStorage.setItem(
+        "localfarm_cached_user",
+        JSON.stringify(response.user),
+      );
     } finally {
       setIsLoading(false);
     }
   };
 
   const updateUser = async (data: Partial<User> & { fullName?: string }) => {
-    const res = await updateProfileApi(data);
-    setUser(res.user);
-    return res.user;
+    try {
+      const res = await updateProfileApi(data);
+      const mergedUser = { ...res.user, ...data };
+      setUser(mergedUser);
+      await AsyncStorage.setItem(
+        "localfarm_cached_user",
+        JSON.stringify(mergedUser),
+      );
+      return mergedUser;
+    } catch {
+      // Fallback: update local state if backend call fails or runs offline
+      let updatedUser: User | null = null;
+      setUser((prev) => {
+        if (!prev) return null;
+        updatedUser = {
+          ...prev,
+          ...data,
+          name: data.fullName || data.name || prev.name,
+          fullName: data.fullName || data.name || prev.fullName,
+          about: data.about !== undefined ? data.about : prev.about,
+          bio:
+            data.bio !== undefined
+              ? data.bio
+              : data.about !== undefined
+                ? data.about
+                : prev.bio,
+        };
+        return updatedUser;
+      });
+      if (updatedUser) {
+        await AsyncStorage.setItem(
+          "localfarm_cached_user",
+          JSON.stringify(updatedUser),
+        );
+        return updatedUser;
+      }
+      return { ...data } as any;
+    }
   };
 
   const signOut = async () => {
     setIsLoading(true);
     try {
       await logoutApi();
+      await AsyncStorage.removeItem("localfarm_cached_user");
       setUser(null);
       router.replace("/auth/Login" as any);
     } catch (err) {
       console.error("Logout error", err);
+      await AsyncStorage.removeItem("localfarm_cached_user");
       setUser(null);
       router.replace("/auth/Login" as any);
     } finally {

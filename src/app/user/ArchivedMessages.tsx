@@ -3,7 +3,6 @@ import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
   Modal,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
@@ -11,6 +10,7 @@ import {
   TouchableWithoutFeedback,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import ChatSidebarModal from "../../components/ChatSidebarModal";
 import BottomNavBar from "../../components/Navigation";
@@ -295,15 +295,15 @@ export default function ArchivedMessages() {
         </TouchableWithoutFeedback>
       </Modal>
 
+      {/*  Bottom Navigation Bar  */}
+      <BottomNavBar showFab={false} activeTabName="chat" />
+
       {/*  Sidebar Drawer  */}
       <ChatSidebarModal
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeItem="Archived"
       />
-
-      {/*  Bottom Navigation Bar  */}
-      <BottomNavBar showFab={false} activeTabName="chat" />
     </SafeAreaView>
   );
 }

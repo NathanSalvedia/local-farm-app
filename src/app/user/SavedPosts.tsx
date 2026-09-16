@@ -1,5 +1,4 @@
 import { useToast } from "@/context/toast-context";
-import { useAuth } from "@/hooks/use-auth";
 import {
   getSavedPostsApi,
   getSavedCollectionsApi,
@@ -8,40 +7,75 @@ import {
 } from "@/services/post-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Dimensions,
   Image,
   Modal,
   Pressable,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
+
+const { width: SCREEN_WIDTH } = Dimensions.get("window");
+const GRID_GAP = 1.5;
+const NUM_COLUMNS = 3;
+const TILE_SIZE = (SCREEN_WIDTH - GRID_GAP * (NUM_COLUMNS - 1)) / NUM_COLUMNS;
+
+const COLLECTION_PADDING = 16;
+const COLLECTION_GAP = 12;
+const COLLECTION_CARD_WIDTH =
+  (SCREEN_WIDTH - COLLECTION_PADDING * 2 - COLLECTION_GAP) / 2;
 
 export default function SavedPosts() {
   const router = useRouter();
-  const { user } = useAuth();
   const { showToast } = useToast();
 
   const [savedPosts, setSavedPosts] = useState<SavedPostItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
 
-  // Selected post for 3-dots action menu
-  const [selectedPost, setSelectedPost] = useState<SavedPostItem | null>(null);
-  const [isActionMenuVisible, setIsActionMenuVisible] = useState(false);
+  // Active view: 'collections' (2-column folders) or 'grid' (3-column photo grid)
+  const [activeTab, setActiveTab] = useState<"collections" | "grid">("collections");
+  // Currently opened collection in grid view (null means All Posts)
+  const [activeCollectionName, setActiveCollectionName] = useState<string | null>(null);
 
-  // Collection modal state
-  const [isCollectionModalVisible, setIsCollectionModalVisible] = useState(false);
-  const [selectedPostForCollection, setSelectedPostForCollection] = useState<SavedPostItem | null>(null);
+  // Collections list from API
   const [collections, setCollections] = useState<string[]>(["All Saved"]);
+
+  // Modals
+  const [isCreateCollectionVisible, setIsCreateCollectionVisible] = useState(false);
   const [newCollectionName, setNewCollectionName] = useState("");
-  const [isCreatingCollection, setIsCreatingCollection] = useState(false);
+  const [selectedPostForDetail, setSelectedPostForDetail] = useState<SavedPostItem | null>(null);
+  const [selectedPostForFolder, setSelectedPostForFolder] = useState<SavedPostItem | null>(null);
+  const [isFolderPickerVisible, setIsFolderPickerVisible] = useState(false);
+
+  // Search
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+
+  const loadData = async () => {
+    try {
+      const [postsData, collectionsData] = await Promise.all([
+        getSavedPostsApi(),
+        getSavedCollectionsApi(),
+      ]);
+      setSavedPosts(postsData);
+      setCollections(collectionsData);
+    } catch (err: any) {
+      console.warn("Failed to load saved posts:", err);
+      showToast(err?.message || "Failed to load saved posts.", "error");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  };
 
   const fetchCollections = async () => {
     try {
@@ -52,27 +86,32 @@ export default function SavedPosts() {
     }
   };
 
-  const fetchSavedPosts = async () => {
-    try {
-      const data = await getSavedPostsApi();
-      setSavedPosts(data);
-    } catch (err: any) {
-      console.warn("Failed to fetch saved posts:", err);
-      showToast(err?.message || "Failed to load saved posts.", "error");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
   useEffect(() => {
-    fetchSavedPosts();
-    fetchCollections();
-  }, []);
+    let isMounted = true;
+    Promise.all([getSavedPostsApi(), getSavedCollectionsApi()])
+      .then(([postsData, collectionsData]) => {
+        if (isMounted) {
+          setSavedPosts(postsData);
+          setCollections(collectionsData);
+          setLoading(false);
+        }
+      })
+      .catch((err: any) => {
+        if (isMounted) {
+          console.warn("Failed to load saved posts:", err);
+          showToast(err?.message || "Failed to load saved posts.", "error");
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [showToast]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchSavedPosts();
+    loadData();
   };
 
   const handleUnsave = async (postId: string) => {
@@ -80,460 +119,817 @@ export default function SavedPosts() {
       const res = await toggleSavePostApi(postId);
       if (!res.isSaved) {
         setSavedPosts((prev) => prev.filter((p) => p.id !== postId));
-        showToast("Removed from saved posts.", "info");
+        showToast("Removed from Saved", "info");
       }
-      setIsActionMenuVisible(false);
-      setSelectedPost(null);
+      if (selectedPostForDetail?.id === postId) {
+        setSelectedPostForDetail(null);
+      }
     } catch (err: any) {
       showToast(err?.message || "Failed to unsave post.", "error");
     }
   };
 
-  const handleOpenCollectionModal = (post: SavedPostItem) => {
-    setSelectedPostForCollection(post);
-    setIsCollectionModalVisible(true);
-  };
-
   const handleSaveToCollection = async (collection: string) => {
-    if (!selectedPostForCollection) return;
+    if (!selectedPostForFolder) return;
     try {
-      await toggleSavePostApi(selectedPostForCollection.id, collection);
+      await toggleSavePostApi(selectedPostForFolder.id, collection);
       setSavedPosts((prev) =>
         prev.map((p) =>
-          p.id === selectedPostForCollection.id
+          p.id === selectedPostForFolder.id
             ? { ...p, collectionName: collection }
             : p
         )
       );
-      showToast(`Added to "${collection}"!`, "success");
-      setIsCollectionModalVisible(false);
-      setSelectedPostForCollection(null);
+      if (selectedPostForDetail?.id === selectedPostForFolder.id) {
+        setSelectedPostForDetail((prev) =>
+          prev ? { ...prev, collectionName: collection } : null
+        );
+      }
+      showToast(`Saved to "${collection}"`, "success");
+      setIsFolderPickerVisible(false);
+      setSelectedPostForFolder(null);
       fetchCollections();
     } catch (err: any) {
       showToast(err?.message || "Failed to update collection.", "error");
     }
   };
 
-  const handleCreateNewCollection = () => {
+  const handleCreateCollection = async () => {
     const trimmed = newCollectionName.trim();
     if (!trimmed) return;
     if (!collections.includes(trimmed)) {
       setCollections((prev) => [...prev, trimmed]);
     }
-    if (selectedPostForCollection) {
-      handleSaveToCollection(trimmed);
+    if (selectedPostForFolder) {
+      await handleSaveToCollection(trimmed);
+    } else {
+      showToast(`Collection "${trimmed}" created`, "success");
     }
     setNewCollectionName("");
-    setIsCreatingCollection(false);
+    setIsCreateCollectionVisible(false);
+  };
+
+  // Extract distinct collection names
+  const allCollectionNames = useMemo(() => {
+    const set = new Set<string>();
+    collections.forEach((c) => {
+      if (c && c !== "All Saved") set.add(c);
+    });
+    savedPosts.forEach((p) => {
+      if (p.collectionName && p.collectionName !== "All Saved") {
+        set.add(p.collectionName);
+      }
+    });
+    return Array.from(set);
+  }, [collections, savedPosts]);
+
+  // Posts filtered by collection (if in grid view) and search
+  const visiblePosts = useMemo(() => {
+    return savedPosts.filter((post) => {
+      if (activeCollectionName) {
+        const pCol = (post.collectionName || "All Saved").toLowerCase();
+        if (pCol !== activeCollectionName.toLowerCase()) {
+          return false;
+        }
+      }
+
+      if (searchQuery.trim().length > 0) {
+        const q = searchQuery.toLowerCase().trim();
+        const cMatch = (post.content || "").toLowerCase().includes(q);
+        const aMatch = (post.authorName || "").toLowerCase().includes(q);
+        const rMatch = (post.authorRole || "").toLowerCase().includes(q);
+        const catMatch = (post.category || "").toLowerCase().includes(q);
+        return cMatch || aMatch || rMatch || catMatch;
+      }
+
+      return true;
+    });
+  }, [savedPosts, activeCollectionName, searchQuery]);
+
+  // Helper to get preview images for collection collage
+  const getCollectionPreviewImages = (colName: string | null): string[] => {
+    const matching = savedPosts.filter((p) => {
+      if (!colName) return true;
+      return (p.collectionName || "All Saved").toLowerCase() === colName.toLowerCase();
+    });
+
+    const urls: string[] = [];
+    matching.forEach((p) => {
+      const url = p.imageUrl || p.originalPost?.imageUrl || p.avatarUri;
+      if (url && !urls.includes(url)) {
+        urls.push(url);
+      }
+    });
+    return urls.slice(0, 4);
+  };
+
+  // Helper for quad collage preview
+  const renderCollageCover = (imageUrls: string[], size: number) => {
+    if (imageUrls.length === 0) {
+      return (
+        <View
+          style={{ width: size, height: size }}
+          className="bg-[#FAFAFA] items-center justify-center rounded-lg border border-gray-200"
+        >
+          <Ionicons name="bookmark-outline" size={36} color="#DBDBDB" />
+        </View>
+      );
+    }
+
+    if (imageUrls.length < 4) {
+      return (
+        <Image
+          source={{ uri: imageUrls[0] }}
+          style={{ width: size, height: size, borderRadius: 8 }}
+          resizeMode="cover"
+        />
+      );
+    }
+
+    // 2x2 Collage (Instagram signature look)
+    const half = (size - 1) / 2;
+    return (
+      <View
+        style={{ width: size, height: size, borderRadius: 8 }}
+        className="overflow-hidden bg-gray-100 flex-row flex-wrap gap-[1px]"
+      >
+        {imageUrls.slice(0, 4).map((url, idx) => (
+          <Image
+            key={idx}
+            source={{ uri: url }}
+            style={{ width: half, height: half }}
+            resizeMode="cover"
+          />
+        ))}
+      </View>
+    );
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-[#F8F9FA]">
-      {/* Top Header */}
-      <View className="flex-row items-center justify-between px-4 py-3 bg-white shadow-xs">
+    <SafeAreaView className="flex-1 bg-white">
+      {/* 1. Instagram Saved Header */}
+      <View className="px-4 py-2.5 bg-white border-b border-gray-200 flex-row items-center justify-between z-10">
         <TouchableOpacity
           onPress={() => {
-            if (router.canGoBack()) {
+            if (activeCollectionName) {
+              setActiveCollectionName(null);
+            } else if (activeTab === "grid") {
+              setActiveTab("collections");
+            } else if (router.canGoBack()) {
               router.back();
             } else {
               router.push("/user/MenuProfile" as any);
             }
           }}
-          className="p-1 active:opacity-70"
+          className="p-1 -ml-1 active:opacity-60"
           accessibilityRole="button"
           accessibilityLabel="Go back"
         >
-          <Ionicons name="arrow-undo" size={24} color="#111827" />
+          <Ionicons name="chevron-back" size={26} color="#000000" />
         </TouchableOpacity>
 
-        <Text className="text-lg font-bold text-gray-900">Saved</Text>
+        {/* Header Title */}
+        <Text className="text-base font-bold text-gray-900 tracking-tight">
+          {activeCollectionName ? activeCollectionName : "Saved"}
+        </Text>
 
-        <View className="w-8" />
+        {/* Right Action Icons: Search & + New Collection */}
+        <View className="flex-row items-center gap-3">
+          <TouchableOpacity
+            onPress={() => setIsSearchOpen((prev) => !prev)}
+            className="p-1 active:opacity-60"
+            accessibilityLabel="Search saved posts"
+          >
+            <Ionicons
+              name={isSearchOpen ? "close" : "search-outline"}
+              size={22}
+              color="#000000"
+            />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => {
+              setSelectedPostForFolder(null);
+              setIsCreateCollectionVisible(true);
+            }}
+            className="p-1 active:opacity-60"
+            accessibilityRole="button"
+            accessibilityLabel="Create collection"
+          >
+            <Ionicons name="add" size={28} color="#000000" />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      {/* Section Subheader */}
-      <View className="px-5 pt-4 pb-2">
-        <Text className="text-xl font-bold text-gray-900">All</Text>
+      {/* Search Input Bar (Dropdown when active) */}
+      {isSearchOpen && (
+        <View className="px-4 py-2 bg-gray-50 border-b border-gray-200">
+          <View className="flex-row items-center bg-gray-200/70 rounded-lg px-3 h-9">
+            <Ionicons name="search" size={16} color="#8E8E8E" />
+            <TextInput
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="Search saved posts..."
+              placeholderTextColor="#8E8E8E"
+              autoFocus
+              className="flex-1 text-sm text-gray-900 ml-2 pr-2 h-full font-normal"
+            />
+            {searchQuery ? (
+              <TouchableOpacity onPress={() => setSearchQuery("")}>
+                <Ionicons name="close-circle" size={16} color="#8E8E8E" />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        </View>
+      )}
+
+      {/* 2. Instagram Tab Switcher (Collections vs All Posts) */}
+      {!activeCollectionName && (
+        <View className="flex-row border-b border-gray-200 bg-white">
+          <TouchableOpacity
+            onPress={() => setActiveTab("collections")}
+            className={`flex-1 py-3 items-center justify-center border-b-2 ${
+              activeTab === "collections"
+                ? "border-black"
+                : "border-transparent"
+            }`}
+            activeOpacity={0.8}
+          >
+            <Text
+              className={`text-sm font-semibold tracking-wide ${
+                activeTab === "collections" ? "text-black" : "text-gray-400"
+              }`}
+            >
+              Collections
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            onPress={() => setActiveTab("grid")}
+            className={`flex-1 py-3 items-center justify-center border-b-2 ${
+              activeTab === "grid"
+                ? "border-black"
+                : "border-transparent"
+            }`}
+            activeOpacity={0.8}
+          >
+            <Text
+              className={`text-sm font-semibold tracking-wide ${
+                activeTab === "grid" ? "text-black" : "text-gray-400"
+              }`}
+            >
+              All Posts
+            </Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* 3. Privacy Hint Notice (Signature Instagram element) */}
+      <View className="px-4 py-2 bg-white flex-row items-center justify-center">
+        <Ionicons name="lock-closed" size={11} color="#737373" />
+        <Text className="text-[11px] text-[#737373] ml-1 font-normal">
+          Only you can see what you&apos;ve saved
+        </Text>
       </View>
 
-      {/* Main Content */}
+      {/* 4. Main Content Area */}
       <ScrollView
-        className="flex-1 px-4 py-2"
+        className="flex-1 bg-white"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 40 }}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            colors={["#72AF5B"]}
-            tintColor="#72AF5B"
+            colors={["#000000"]}
+            tintColor="#000000"
           />
         }
       >
         {loading ? (
-          <View className="py-20 items-center justify-center">
-            <ActivityIndicator size="large" color="#72AF5B" />
-            <Text className="text-gray-500 text-sm mt-3 font-medium">
-              Loading saved posts...
-            </Text>
+          <View className="py-28 items-center justify-center">
+            <ActivityIndicator size="small" color="#000000" />
           </View>
         ) : savedPosts.length === 0 ? (
-          <View className="py-16 items-center justify-center px-6">
-            <View className="w-20 h-20 rounded-full bg-green-50 items-center justify-center mb-4">
-              <Ionicons name="bookmark-outline" size={40} color="#72AF5B" />
+          /* Empty State */
+          <View className="py-24 items-center justify-center px-8">
+            <View className="w-20 h-20 rounded-full border-2 border-black items-center justify-center mb-5">
+              <Ionicons name="bookmark-outline" size={38} color="#000000" />
             </View>
-            <Text className="text-lg font-bold text-gray-900 text-center mb-1">
-              No Saved Posts
+            <Text className="text-xl font-bold text-gray-900 text-center mb-2">
+              Save Posts
             </Text>
             <Text className="text-sm text-gray-500 text-center mb-6 leading-5">
-              Posts and updates you save will appear here in your cards list.
+              Save photos and updates from local growers and farmers to your collections.
             </Text>
             <TouchableOpacity
               onPress={() => router.push("/user/NewsFeed" as any)}
-              className="bg-[#72AF5B] px-6 py-3 rounded-full flex-row items-center active:opacity-80 shadow-sm"
+              className="bg-black px-6 py-2.5 rounded-lg active:opacity-80"
             >
-              <Ionicons
-                name="newspaper-outline"
-                size={18}
-                color="#FFFFFF"
-                style={{ marginRight: 6 }}
-              />
-              <Text className="text-white font-bold text-sm">
+              <Text className="text-white font-semibold text-sm">
                 Explore Feed
               </Text>
             </TouchableOpacity>
           </View>
-        ) : (
-          <View className="gap-3">
-            {savedPosts.map((post) => {
-              // Determine thumbnail image
-              const thumbnailUri =
-                post.imageUrl ||
-                post.originalPost?.imageUrl ||
-                post.avatarUri ||
-                null;
-
-              // Determine display title
-              const displayTitle =
-                post.content && post.content.trim().length > 0
-                  ? post.content.length > 45
-                    ? post.content.substring(0, 45).trim() + "..."
-                    : post.content.trim()
-                  : `${post.authorName}'s Post`;
-
-              return (
-                <View
-                  key={post.savedId || post.id}
-                  className="bg-white rounded-2xl p-3 shadow-sm flex-row"
-                >
-                  {/* Left Column: Media Thumbnail */}
-                  <View className="w-24 h-24 rounded-xl bg-gray-100 overflow-hidden mr-3.5 relative items-center justify-center">
-                    {thumbnailUri ? (
-                      <Image
-                        source={{ uri: thumbnailUri }}
-                        className="w-full h-full"
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View className="w-full h-full bg-green-50 items-center justify-center">
-                        <Ionicons name="leaf-outline" size={32} color="#72AF5B" />
-                      </View>
-                    )}
-
-                    {/* Badge on bottom of thumbnail if shared */}
-                    {post.isShared && (
-                      <View className="absolute bottom-1 right-1 bg-black/60 rounded px-1 py-0.5">
-                        <Ionicons name="arrow-redo" size={10} color="#FFFFFF" />
-                      </View>
-                    )}
-                  </View>
-
-                  {/* Right Column: Details & Actions */}
-                  <View className="flex-1 justify-between py-0.5">
-                    {/* Top Text Info */}
-                    <View>
-                      {/* Post Title */}
-                      <Text
-                        className="text-base font-bold text-gray-900 leading-5 mb-0.5"
-                        numberOfLines={2}
-                      >
-                        {displayTitle}
-                      </Text>
-
-                      {/* Subtitle / Category */}
-                      <Text className="text-xs text-gray-500 mb-1.5 font-medium">
-                        Post • {post.category || post.authorRole || "General"}
-                      </Text>
-
-                      {/* Author Source Row */}
-                      <View className="flex-row items-center">
-                        <View className="w-4 h-4 rounded-full bg-gray-200 overflow-hidden mr-1.5 items-center justify-center">
-                          {post.avatarUri ? (
-                            <Image
-                              source={{ uri: post.avatarUri }}
-                              className="w-full h-full"
-                              resizeMode="cover"
-                            />
-                          ) : (
-                            <Ionicons name="person" size={10} color="#9CA3AF" />
-                          )}
-                        </View>
-                        <Text
-                          className="text-xs text-gray-600 flex-1"
-                          numberOfLines={1}
-                        >
-                          Saved from{" "}
-                          <Text className="font-semibold text-gray-800">
-                            {post.authorName}
-                          </Text>
-                          's post
-                        </Text>
-                      </View>
-                    </View>
-
-                    {/* Bottom Action Row */}
-                    <View className="flex-row items-center gap-2 mt-2">
-                      {/* Add to Collection Button */}
-                      <TouchableOpacity
-                        onPress={() => handleOpenCollectionModal(post)}
-                        className="flex-1 bg-gray-100 py-1.5 px-3 rounded-lg items-center justify-center active:bg-gray-200"
-                        activeOpacity={0.7}
-                        accessibilityRole="button"
-                        accessibilityLabel="Add to collection"
-                      >
-                        <Text className="text-xs font-semibold text-gray-800">
-                          Add to Collection
-                        </Text>
-                      </TouchableOpacity>
-
-                      {/* 3-Dots Options Button */}
-                      <TouchableOpacity
-                        onPress={() => {
-                          setSelectedPost(post);
-                          setIsActionMenuVisible(true);
-                        }}
-                        className="w-9 h-8 bg-gray-100 rounded-lg items-center justify-center active:bg-gray-200"
-                        activeOpacity={0.7}
-                        accessibilityRole="button"
-                        accessibilityLabel="More options"
-                      >
-                        <Ionicons
-                          name="ellipsis-horizontal"
-                          size={18}
-                          color="#374151"
-                        />
-                      </TouchableOpacity>
-                    </View>
-                  </View>
+        ) : activeTab === "collections" && !activeCollectionName ? (
+          /* COLLECTIONS VIEW: 2-Column Square Cards */
+          <View className="p-4">
+            <View className="flex-row flex-wrap gap-3">
+              {/* Card 1: All Posts Collection */}
+              <TouchableOpacity
+                onPress={() => {
+                  setActiveCollectionName(null);
+                  setActiveTab("grid");
+                }}
+                style={{ width: COLLECTION_CARD_WIDTH }}
+                className="active:opacity-85"
+              >
+                {renderCollageCover(
+                  getCollectionPreviewImages(null),
+                  COLLECTION_CARD_WIDTH
+                )}
+                <View className="mt-2 px-0.5">
+                  <Text
+                    className="text-sm font-semibold text-gray-900"
+                    numberOfLines={1}
+                  >
+                    All Posts
+                  </Text>
+                  <Text className="text-xs text-gray-500 font-normal mt-0.5">
+                    {savedPosts.length} {savedPosts.length === 1 ? "post" : "posts"}
+                  </Text>
                 </View>
-              );
-            })}
+              </TouchableOpacity>
+
+              {/* User Collections */}
+              {allCollectionNames.map((colName) => {
+                const count = savedPosts.filter(
+                  (p) =>
+                    (p.collectionName || "All Saved").toLowerCase() ===
+                    colName.toLowerCase()
+                ).length;
+                const previewImgs = getCollectionPreviewImages(colName);
+
+                return (
+                  <TouchableOpacity
+                    key={colName}
+                    onPress={() => {
+                      setActiveCollectionName(colName);
+                      setActiveTab("grid");
+                    }}
+                    style={{ width: COLLECTION_CARD_WIDTH }}
+                    className="active:opacity-85"
+                  >
+                    {renderCollageCover(previewImgs, COLLECTION_CARD_WIDTH)}
+                    <View className="mt-2 px-0.5">
+                      <Text
+                        className="text-sm font-semibold text-gray-900"
+                        numberOfLines={1}
+                      >
+                        {colName}
+                      </Text>
+                      <Text className="text-xs text-gray-500 font-normal mt-0.5">
+                        {count} {count === 1 ? "post" : "posts"}
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                );
+              })}
+
+              {/* Card 3: "+ New Collection" Placeholder Tile */}
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedPostForFolder(null);
+                  setIsCreateCollectionVisible(true);
+                }}
+                style={{
+                  width: COLLECTION_CARD_WIDTH,
+                  height: COLLECTION_CARD_WIDTH,
+                }}
+                className="border border-dashed border-gray-300 rounded-lg items-center justify-center bg-gray-50 active:bg-gray-100"
+              >
+                <Ionicons name="add-circle-outline" size={32} color="#8E8E8E" />
+                <Text className="text-xs font-semibold text-gray-600 mt-2">
+                  New Collection
+                </Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ) : (
+          /* GRID VIEW: Instagram 3-Column Square Photo Grid */
+          <View>
+            {visiblePosts.length === 0 ? (
+              <View className="py-24 items-center justify-center px-6">
+                <Ionicons name="images-outline" size={44} color="#C7C7C7" />
+                <Text className="text-base font-semibold text-gray-800 mt-3 mb-1">
+                  No Posts Saved
+                </Text>
+                <Text className="text-xs text-gray-500 text-center max-w-xs">
+                  {searchQuery
+                    ? `No matches for "${searchQuery}".`
+                    : "Bookmark posts to see them in this collection."}
+                </Text>
+              </View>
+            ) : (
+              <View className="flex-row flex-wrap">
+                {visiblePosts.map((post, index) => {
+                  const mediaUri =
+                    post.imageUrl ||
+                    post.originalPost?.imageUrl ||
+                    post.avatarUri ||
+                    null;
+
+                  // Determine right margin for 3-column grid alignment
+                  const isRightEdge = (index + 1) % NUM_COLUMNS === 0;
+
+                  return (
+                    <TouchableOpacity
+                      key={post.savedId || post.id}
+                      activeOpacity={0.88}
+                      onPress={() => setSelectedPostForDetail(post)}
+                      style={{
+                        width: TILE_SIZE,
+                        height: TILE_SIZE,
+                        marginRight: isRightEdge ? 0 : GRID_GAP,
+                        marginBottom: GRID_GAP,
+                      }}
+                      className="bg-gray-100 relative overflow-hidden"
+                    >
+                      {mediaUri ? (
+                        <Image
+                          source={{ uri: mediaUri }}
+                          style={{ width: "100%", height: "100%" }}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        /* Text Post Fallback Tile */
+                        <View className="w-full h-full bg-[#FAFAFA] p-2 justify-between border border-gray-100">
+                          <Text
+                            className="text-[10px] text-gray-800 leading-3 font-medium"
+                            numberOfLines={4}
+                          >
+                            {post.content || "Post update"}
+                          </Text>
+                          <Text
+                            className="text-[9px] text-gray-400 font-semibold"
+                            numberOfLines={1}
+                          >
+                            @{post.authorName}
+                          </Text>
+                        </View>
+                      )}
+
+                      {/* Top-Right Badge: Shared Post Indicator */}
+                      {post.isShared && (
+                        <View className="absolute top-1 right-1 bg-black/50 rounded-sm p-0.5">
+                          <Ionicons name="arrow-redo" size={10} color="#FFFFFF" />
+                        </View>
+                      )}
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+            )}
           </View>
         )}
       </ScrollView>
 
-      {/* 3-Dots Action Sheet Modal */}
+      {/* 5. Instagram-Style Post Detail Modal (When a photo tile is tapped) */}
       <Modal
-        visible={isActionMenuVisible}
+        visible={!!selectedPostForDetail}
+        transparent={false}
+        animationType="slide"
+        onRequestClose={() => setSelectedPostForDetail(null)}
+      >
+        <SafeAreaView className="flex-1 bg-white">
+          {/* Header */}
+          <View className="px-4 py-3 bg-white border-b border-gray-100 flex-row items-center justify-between">
+            <TouchableOpacity
+              onPress={() => setSelectedPostForDetail(null)}
+              className="p-1 -ml-1 active:opacity-60"
+            >
+              <Ionicons name="chevron-back" size={24} color="#000000" />
+            </TouchableOpacity>
+
+            <Text className="text-base font-bold text-gray-900">Post</Text>
+
+            <TouchableOpacity
+              onPress={() => {
+                if (selectedPostForDetail) {
+                  setSelectedPostForFolder(selectedPostForDetail);
+                  setIsFolderPickerVisible(true);
+                }
+              }}
+              className="p-1 active:opacity-60"
+            >
+              <Ionicons name="folder-outline" size={22} color="#000000" />
+            </TouchableOpacity>
+          </View>
+
+          {selectedPostForDetail && (
+            <ScrollView className="flex-1 bg-white" showsVerticalScrollIndicator={false}>
+              {/* Author Header */}
+              <View className="px-4 py-3 flex-row items-center justify-between">
+                <View className="flex-row items-center gap-2.5">
+                  <View className="w-8 h-8 rounded-full bg-gray-200 overflow-hidden items-center justify-center border border-gray-300/40">
+                    {selectedPostForDetail.avatarUri ? (
+                      <Image
+                        source={{ uri: selectedPostForDetail.avatarUri }}
+                        className="w-full h-full"
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={16} color="#737373" />
+                    )}
+                  </View>
+                  <View>
+                    <Text className="text-sm font-bold text-gray-900">
+                      {selectedPostForDetail.authorName}
+                    </Text>
+                    <Text className="text-[11px] text-gray-500">
+                      {selectedPostForDetail.location || selectedPostForDetail.authorRole || "Local Farm"}
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableOpacity
+                  onPress={() => {
+                    setSelectedPostForFolder(selectedPostForDetail);
+                    setIsFolderPickerVisible(true);
+                  }}
+                  className="p-1 active:opacity-60"
+                >
+                  <Ionicons name="ellipsis-horizontal" size={18} color="#000000" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Main Post Media (Square aspect ratio like Instagram) */}
+              {(selectedPostForDetail.imageUrl ||
+                selectedPostForDetail.originalPost?.imageUrl) ? (
+                <View
+                  style={{ width: SCREEN_WIDTH, height: SCREEN_WIDTH }}
+                  className="bg-black items-center justify-center"
+                >
+                  <Image
+                    source={{
+                      uri:
+                        selectedPostForDetail.imageUrl ||
+                        selectedPostForDetail.originalPost?.imageUrl,
+                    }}
+                    style={{ width: "100%", height: "100%" }}
+                    resizeMode="cover"
+                  />
+                </View>
+              ) : null}
+
+              {/* Instagram Action Icons Bar */}
+              <View className="px-4 pt-3 pb-2 flex-row items-center justify-between">
+                <View className="flex-row items-center gap-4">
+                  <TouchableOpacity
+                    onPress={() => router.push("/user/NewsFeed" as any)}
+                    className="active:opacity-60"
+                  >
+                    <Ionicons
+                      name={selectedPostForDetail.isLiked ? "heart" : "heart-outline"}
+                      size={26}
+                      color={selectedPostForDetail.isLiked ? "#ED4956" : "#000000"}
+                    />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => {
+                      setSelectedPostForDetail(null);
+                      router.push("/user/NewsFeed" as any);
+                    }}
+                    className="active:opacity-60"
+                  >
+                    <Ionicons
+                      name="chatbubble-outline"
+                      size={24}
+                      color="#000000"
+                    />
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    onPress={() => {
+                      setSelectedPostForDetail(null);
+                      router.push("/user/NewsFeed" as any);
+                    }}
+                    className="active:opacity-60"
+                  >
+                    <Ionicons
+                      name="paper-plane-outline"
+                      size={24}
+                      color="#000000"
+                    />
+                  </TouchableOpacity>
+                </View>
+
+                {/* Bookmark Saved Icon (Active = filled bookmark) */}
+                <TouchableOpacity
+                  onPress={() => handleUnsave(selectedPostForDetail.id)}
+                  className="active:opacity-60"
+                  accessibilityLabel="Unsave post"
+                >
+                  <Ionicons name="bookmark" size={24} color="#000000" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Likes Count */}
+              <View className="px-4 mb-1">
+                <Text className="text-sm font-bold text-gray-900">
+                  {selectedPostForDetail.likes || 0} likes
+                </Text>
+              </View>
+
+              {/* Caption */}
+              <View className="px-4 mb-2">
+                <Text className="text-sm text-gray-900 leading-5">
+                  <Text className="font-bold">
+                    {selectedPostForDetail.authorName}{" "}
+                  </Text>
+                  {selectedPostForDetail.content}
+                </Text>
+              </View>
+
+              {/* Comments & Timestamp */}
+              <View className="px-4 pb-8">
+                {selectedPostForDetail.comments > 0 && (
+                  <TouchableOpacity
+                    onPress={() => {
+                      setSelectedPostForDetail(null);
+                      router.push("/user/NewsFeed" as any);
+                    }}
+                    className="mb-1.5"
+                  >
+                    <Text className="text-xs text-gray-500">
+                      View all {selectedPostForDetail.comments} comments
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <Text className="text-[10px] text-gray-400 uppercase tracking-wider">
+                  {selectedPostForDetail.timeAgo} • Saved in{" "}
+                  {selectedPostForDetail.collectionName || "All Saved"}
+                </Text>
+              </View>
+            </ScrollView>
+          )}
+        </SafeAreaView>
+      </Modal>
+
+      {/* 6. Instagram-Style "New Collection" Modal */}
+      <Modal
+        visible={isCreateCollectionVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setIsActionMenuVisible(false)}
+        onRequestClose={() => setIsCreateCollectionVisible(false)}
       >
         <Pressable
-          onPress={() => setIsActionMenuVisible(false)}
-          className="flex-1 bg-black/50 justify-end"
+          onPress={() => setIsCreateCollectionVisible(false)}
+          className="flex-1 bg-black/60 items-center justify-center p-5"
         >
           <Pressable
             onPress={(e) => e.stopPropagation()}
-            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl"
+            className="w-full max-w-sm bg-white rounded-2xl p-6 shadow-2xl items-center"
           >
-            <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-4" />
-
-            <Text className="text-base font-bold text-gray-900 mb-3 px-1">
-              Saved Post Options
-            </Text>
-
-            <View className="gap-1">
-              {/* Add to Collection */}
-              <TouchableOpacity
-                onPress={() => {
-                  setIsActionMenuVisible(false);
-                  if (selectedPost) handleOpenCollectionModal(selectedPost);
-                }}
-                className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
-              >
-                <View className="w-10 h-10 rounded-full bg-blue-50 items-center justify-center mr-3">
-                  <Ionicons name="folder-outline" size={20} color="#3B82F6" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-semibold text-gray-900">
-                    Add to Collection
-                  </Text>
-                  <Text className="text-xs text-gray-500">
-                    Organize into custom folders
-                  </Text>
-                </View>
-              </TouchableOpacity>
-
-              {/* View in Feed */}
-              <TouchableOpacity
-                onPress={() => {
-                  setIsActionMenuVisible(false);
-                  router.push("/user/NewsFeed" as any);
-                }}
-                className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
-              >
-                <View className="w-10 h-10 rounded-full bg-green-50 items-center justify-center mr-3">
-                  <Ionicons name="newspaper-outline" size={20} color="#72AF5B" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-semibold text-gray-900">
-                    View in Feed
-                  </Text>
-                  <Text className="text-xs text-gray-500">
-                    Go to community newsfeed
-                  </Text>
-                </View>
-              </TouchableOpacity>
-
-              {/* Unsave / Remove from Saved */}
-              <TouchableOpacity
-                onPress={() => {
-                  if (selectedPost) handleUnsave(selectedPost.id);
-                }}
-                className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
-              >
-                <View className="w-10 h-10 rounded-full bg-red-50 items-center justify-center mr-3">
-                  <Ionicons name="bookmark" size={20} color="#EF4444" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-sm font-semibold text-red-600">
-                    Unsave Post
-                  </Text>
-                  <Text className="text-xs text-red-400">
-                    Remove this item from your saved list
-                  </Text>
-                </View>
-              </TouchableOpacity>
+            <View className="w-12 h-12 rounded-full bg-gray-100 items-center justify-center mb-3">
+              <Ionicons name="folder-outline" size={26} color="#000000" />
             </View>
 
-            <TouchableOpacity
-              onPress={() => setIsActionMenuVisible(false)}
-              className="mt-3 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
-            >
-              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
-            </TouchableOpacity>
+            <Text className="text-base font-bold text-gray-900 text-center mb-1">
+              New Collection
+            </Text>
+            <Text className="text-xs text-gray-500 text-center mb-4">
+              Give your collection a memorable name
+            </Text>
+
+            <TextInput
+              value={newCollectionName}
+              onChangeText={setNewCollectionName}
+              placeholder="Collection name"
+              placeholderTextColor="#8E8E8E"
+              autoFocus
+              className="w-full bg-gray-100 rounded-xl px-4 py-3 text-sm text-gray-900 mb-5 border border-gray-200"
+            />
+
+            <View className="flex-row gap-3 w-full">
+              <TouchableOpacity
+                onPress={() => {
+                  setNewCollectionName("");
+                  setIsCreateCollectionVisible(false);
+                }}
+                className="flex-1 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+              >
+                <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleCreateCollection}
+                disabled={!newCollectionName.trim()}
+                className={`flex-1 py-3 rounded-xl items-center justify-center ${
+                  newCollectionName.trim()
+                    ? "bg-[#0095F6] active:bg-[#0081D6]"
+                    : "bg-[#0095F6]/50"
+                }`}
+              >
+                <Text className="text-sm font-bold text-white">Save</Text>
+              </TouchableOpacity>
+            </View>
           </Pressable>
         </Pressable>
       </Modal>
 
-      {/* Add to Collection Modal */}
+      {/* 7. Instagram-Style Collection Picker Bottom Sheet */}
       <Modal
-        visible={isCollectionModalVisible}
+        visible={isFolderPickerVisible}
         transparent
-        animationType="fade"
-        onRequestClose={() => setIsCollectionModalVisible(false)}
+        animationType="slide"
+        onRequestClose={() => setIsFolderPickerVisible(false)}
       >
         <Pressable
-          onPress={() => setIsCollectionModalVisible(false)}
+          onPress={() => setIsFolderPickerVisible(false)}
           className="flex-1 bg-black/50 justify-end"
         >
           <Pressable
             onPress={(e) => e.stopPropagation()}
-            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl"
+            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl max-h-[75%]"
           >
-            <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-4" />
+            <View className="w-10 h-1 bg-gray-300 rounded-full self-center mb-4" />
 
-            <View className="flex-row items-center justify-between mb-3 px-1">
+            <View className="flex-row items-center justify-between mb-4 px-1">
               <Text className="text-base font-bold text-gray-900">
-                Add to Collection
+                Save to Collection
               </Text>
               <TouchableOpacity
-                onPress={() => setIsCreatingCollection(true)}
+                onPress={() => {
+                  setIsFolderPickerVisible(false);
+                  setIsCreateCollectionVisible(true);
+                }}
                 className="flex-row items-center"
               >
-                <Ionicons name="add" size={18} color="#72AF5B" />
-                <Text className="text-xs font-bold text-[#72AF5B] ml-1">
+                <Ionicons name="add" size={18} color="#0095F6" />
+                <Text className="text-xs font-bold text-[#0095F6] ml-0.5">
                   New Collection
                 </Text>
               </TouchableOpacity>
             </View>
 
-            {isCreatingCollection && (
-              <View className="mb-4 bg-gray-50 p-3 rounded-xl border border-gray-200">
-                <TextInput
-                  value={newCollectionName}
-                  onChangeText={setNewCollectionName}
-                  placeholder="Collection name (e.g. Favorite Produce)"
-                  placeholderTextColor="#9CA3AF"
-                  autoFocus
-                  className="bg-white px-3 py-2 rounded-lg border border-gray-300 text-sm text-gray-900 mb-2"
-                />
-                <View className="flex-row justify-end gap-2">
-                  <TouchableOpacity
-                    onPress={() => setIsCreatingCollection(false)}
-                    className="px-3 py-1.5 rounded-lg bg-gray-200"
-                  >
-                    <Text className="text-xs font-semibold text-gray-700">
-                      Cancel
-                    </Text>
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    onPress={handleCreateNewCollection}
-                    disabled={!newCollectionName.trim()}
-                    className="px-3.5 py-1.5 rounded-lg bg-[#72AF5B]"
-                  >
-                    <Text className="text-xs font-bold text-white">Create</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-            )}
-
-            <View className="gap-2 mb-3">
-              {collections.map((col) => {
+            <ScrollView className="mb-4 max-h-60" showsVerticalScrollIndicator={false}>
+              {["All Saved", ...allCollectionNames].map((col) => {
                 const isSelected =
-                  selectedPostForCollection?.collectionName === col;
+                  (selectedPostForFolder?.collectionName || "All Saved") === col;
 
                 return (
                   <TouchableOpacity
                     key={col}
                     onPress={() => handleSaveToCollection(col)}
-                    className={`flex-row items-center justify-between p-3 rounded-xl border ${
-                      isSelected
-                        ? "bg-green-50/70 border-[#72AF5B]"
-                        : "bg-gray-50 border-gray-200"
-                    } active:opacity-80`}
+                    className="flex-row items-center justify-between py-3 px-2 border-b border-gray-100 active:bg-gray-50"
                   >
-                    <View className="flex-row items-center">
-                      <View className="w-8 h-8 rounded-full bg-white items-center justify-center mr-3 border border-gray-100">
-                        <Ionicons
-                          name="folder"
-                          size={16}
-                          color={isSelected ? "#72AF5B" : "#6B7280"}
-                        />
-                      </View>
-                      <Text className="text-sm font-semibold text-gray-900">
+                    <View className="flex-row items-center gap-3">
+                      <Ionicons
+                        name="folder-outline"
+                        size={20}
+                        color={isSelected ? "#0095F6" : "#262626"}
+                      />
+                      <Text
+                        className={`text-sm ${
+                          isSelected ? "font-bold text-[#0095F6]" : "font-normal text-gray-900"
+                        }`}
+                      >
                         {col}
                       </Text>
                     </View>
 
                     {isSelected && (
                       <Ionicons
-                        name="checkmark-circle"
+                        name="checkmark"
                         size={20}
-                        color="#72AF5B"
+                        color="#0095F6"
                       />
                     )}
                   </TouchableOpacity>
                 );
               })}
-            </View>
+            </ScrollView>
 
             <TouchableOpacity
-              onPress={() => setIsCollectionModalVisible(false)}
-              className="mt-2 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+              onPress={() => {
+                if (selectedPostForFolder) {
+                  handleUnsave(selectedPostForFolder.id);
+                  setIsFolderPickerVisible(false);
+                }
+              }}
+              className="py-3 rounded-xl bg-red-50 items-center justify-center mb-2 active:bg-red-100"
             >
-              <Text className="text-sm font-semibold text-gray-700">Done</Text>
+              <Text className="text-sm font-semibold text-red-600">
+                Remove from Saved
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setIsFolderPickerVisible(false)}
+              className="py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+            >
+              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>

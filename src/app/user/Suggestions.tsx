@@ -6,18 +6,18 @@ import {
   SuggestionUserItem,
 } from "@/services/connection-service";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
@@ -84,14 +84,20 @@ export default function Suggestions() {
     if (suggestionStates[user.id] === "hidden") return false;
     return (
       user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (user.username && user.username.toLowerCase().includes(searchQuery.toLowerCase()))
+      (user.username &&
+        user.username.toLowerCase().includes(searchQuery.toLowerCase()))
     );
   });
 
   return (
     <SafeAreaView
       className="flex-1 bg-white relative h-full"
-      style={{ flex: 1, position: "relative", minHeight: "100%", overflow: "hidden" }}
+      style={{
+        flex: 1,
+        position: "relative",
+        minHeight: "100%",
+        overflow: "hidden",
+      }}
     >
       {/* 1. Header Section */}
       <View className="px-5 pt-4 pb-2">
@@ -196,7 +202,7 @@ export default function Suggestions() {
 
                   {/* Info & Action Buttons Container */}
                   <View className="flex-1">
-                    <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
+                    <Text className="font-bold  text-gray-900 text-sm leading-tight mb-1">
                       {item.name}
                     </Text>
 
@@ -208,7 +214,7 @@ export default function Suggestions() {
                         color="#6B7280"
                         style={{ marginRight: 4 }}
                       />
-                      <Text className="text-xs font-semibold text-gray-500">
+                      <Text className="text-sm font-semibold text-gray-500">
                         {item.mutualFriends || "Local Farm member"}
                       </Text>
                     </View>
@@ -240,7 +246,7 @@ export default function Suggestions() {
                           {state === "loading" ? (
                             <ActivityIndicator size="small" color="#FFFFFF" />
                           ) : (
-                            <Text className="text-white font-bold text-xs sm:text-sm">
+                            <Text className="text-white font-bold text-sm sm:text-sm">
                               Add friend
                             </Text>
                           )}
@@ -255,7 +261,7 @@ export default function Suggestions() {
                           accessibilityLabel="Not interested"
                         >
                           <Text
-                            className="text-gray-700 font-semibold text-xs sm:text-sm text-center"
+                            className="text-gray-700 font-semibold text-sm sm:text-sm text-center"
                             numberOfLines={1}
                           >
                             Not Interested
@@ -271,15 +277,15 @@ export default function Suggestions() {
         )}
       </ScrollView>
 
+      {/* Bottom Navigation Component */}
+      <BottomNavBar activeTab="Connection" showFab={false} />
+
       {/* Reusable Sidebar Drawer Menu */}
       <SidebarMenu
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeTab="Suggestions"
       />
-
-      {/* Bottom Navigation Component */}
-      <BottomNavBar activeTab="Connection" showFab={false} />
     </SafeAreaView>
   );
 }

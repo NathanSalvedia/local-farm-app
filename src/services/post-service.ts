@@ -11,6 +11,7 @@ export interface OriginalPostItem {
   content: string;
   imageUrl: string;
   category: string;
+  isVerified?: boolean;
 }
 
 export interface PostItem {
@@ -31,7 +32,10 @@ export interface PostItem {
   isLiked: boolean;
   isSaved?: boolean;
   isShared?: boolean;
+  isVerified?: boolean;
   originalPost?: OriginalPostItem | null;
+  expiresAt?: number | string | null;
+  durationLabel?: string;
 }
 
 export interface SavedPostItem extends PostItem {
@@ -50,6 +54,7 @@ export interface CommentItem {
   content: string;
   likes: number;
   isLiked: boolean;
+  isVerified?: boolean;
   parentId?: string | null;
 }
 
@@ -60,6 +65,8 @@ export interface CreatePostPayload {
   location?: string | null;
   photos?: string[];
   imageUrl?: string;
+  expiresAt?: number | string | null;
+  durationLabel?: string;
 }
 
 export async function getPostsApi(category?: string): Promise<PostItem[]> {
@@ -116,17 +123,48 @@ export async function sharePostApi(
   });
 }
 
+export async function getPostByIdApi(postId: string): Promise<PostItem> {
+  const res = await apiFetch<{ post: PostItem }>(`/posts/${postId}`);
+  return res.post;
+}
+
 export async function updatePostApi(
   postId: string,
-  data: { content?: string; category?: string; privacy?: string }
-): Promise<{ message: string; post: { id: string; content: string; category: string; privacy: string } }> {
-  return await apiFetch<{ message: string; post: { id: string; content: string; category: string; privacy: string } }>(
-    `/posts/${postId}`,
-    {
-      method: "PUT",
-      body: JSON.stringify(data),
-    }
-  );
+  data: {
+    content?: string;
+    category?: string;
+    privacy?: string;
+    location?: string | null;
+    imageUrl?: string | null;
+    photos?: string[];
+    expiresAt?: number | null;
+    durationLabel?: string;
+  }
+): Promise<{
+  message: string;
+  post: {
+    id: string;
+    content: string;
+    category: string;
+    privacy: string;
+    location?: string;
+    imageUrl?: string;
+  };
+}> {
+  return await apiFetch<{
+    message: string;
+    post: {
+      id: string;
+      content: string;
+      category: string;
+      privacy: string;
+      location?: string;
+      imageUrl?: string;
+    };
+  }>(`/posts/${postId}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
 }
 
 export async function deletePostApi(postId: string): Promise<{ message: string }> {

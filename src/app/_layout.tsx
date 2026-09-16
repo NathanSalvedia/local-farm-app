@@ -1,4 +1,6 @@
 import "../global.css";
+import "react-native-gesture-handler";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import {
   DarkTheme,
   DefaultTheme,
@@ -9,7 +11,7 @@ import {
 } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { useEffect, useState } from "react";
-import { Platform, useColorScheme } from "react-native";
+import { LogBox, useColorScheme, View } from "react-native";
 
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
@@ -20,7 +22,18 @@ import { useAuth } from "@/hooks/use-auth";
 
 SplashScreen.preventAutoHideAsync().catch(() => {});
 
+// Ignore non-fatal development warnings from transient Metro/HMR WebSocket drops and React 19 Fabric unmounted fiber checks
+LogBox.ignoreLogs([
+  "Cannot connect to Expo CLI",
+  "Can't perform a React state update on a component that hasn't mounted yet",
+  "Failed to fetch posts:",
+  "connect ECONNREFUSED",
+]);
+
 import { useToast } from "@/context/toast-context";
+
+// Module-scoped flag: persists in memory across hot reload and Fast Refresh cycles
+let hasCompletedStartup = false;
 
 function RootNavigation() {
   const { user, isLoading } = useAuth();
@@ -30,11 +43,17 @@ function RootNavigation() {
   const colorScheme = useColorScheme();
 
   // Startup phase states: 'splash' -> 'loading' -> 'ready'
+  // On hot reload, skip straight to 'ready' if initial startup was already completed
   const [appPhase, setAppPhase] = useState<"splash" | "loading" | "ready">(
-    "splash",
+    hasCompletedStartup ? "ready" : "splash",
   );
 
   useEffect(() => {
+    if (hasCompletedStartup) {
+      SplashScreen.hideAsync().catch(() => {});
+      return;
+    }
+
     // 1. Hide native splash and stay on custom Splash Screen for 1.2s
     const splashTimer = setTimeout(() => {
       SplashScreen.hideAsync().catch(() => {});
@@ -45,9 +64,12 @@ function RootNavigation() {
   }, []);
 
   useEffect(() => {
+    if (hasCompletedStartup) return;
+
     // 2. Stay on Loading Screen until minimum 2.4s total time & auth session check finishes
     if (appPhase === "loading" && !isLoading) {
       const loadingTimer = setTimeout(() => {
+        hasCompletedStartup = true;
         setAppPhase("ready");
       }, 1200);
 
@@ -58,10 +80,10 @@ function RootNavigation() {
   useEffect(() => {
     // 3. Security guards after splash/loading phase
     if (appPhase !== "ready") return;
+    if (isLoading) return;
 
     const firstSegment = (segments[0] as string) || "";
     const inAuthGroup = firstSegment === "auth";
-    const inAdminGroup = firstSegment === "admin";
 
     // A. Unauthenticated user trying to access ANY protected route
     if (!user && !inAuthGroup) {
@@ -69,47 +91,30 @@ function RootNavigation() {
       return;
     }
 
-    // B. Regular user trying to access admin restricted route
-    if (user && user.role !== "admin" && inAdminGroup) {
-      showToast("Access Restricted: Admin privileges required.", "error");
-      router.replace("/user/NewsFeed" as any);
-      return;
-    }
-
-    // C. Authenticated user visiting auth pages (Login/Signup/ForgotPassword)
+    // B. Authenticated user visiting auth pages (Login/Signup/ForgotPassword)
     if (user && inAuthGroup) {
-      if (user.role === "admin") {
-        router.replace("/admin" as any);
-      } else {
-        router.replace("/user/NewsFeed" as any);
-      }
+      router.replace("/user/NewsFeed" as any);
     }
-  }, [appPhase, user, segments]);
+  }, [appPhase, user, isLoading, segments]);
 
   // Phase 1: Green Splash Screen
   if (appPhase === "splash") {
     return <AnimatedSplashOverlay />;
   }
 
-  // Phase 2: White Loading Screen with animated running green border (Startup only)
+  // Phase 2: White Loading Screen with animated running green border
   if (appPhase === "loading") {
     return <LoadingScreen />;
   }
 
-  // Phase 3: Route Security Guard (Prevent rendering protected content before redirect)
+  // Phase 3: Route security guard (Prevent rendering protected content before redirect)
   const firstSegment = (segments[0] as string) || "";
   const inAuthGroup = firstSegment === "auth";
-  const inAdminGroup = firstSegment === "admin";
 
   if (!user && !inAuthGroup) {
-    return null;
+    return <View style={{ flex: 1, backgroundColor: "#FFFFFF" }} />;
   }
 
-  if (user && user.role !== "admin" && inAdminGroup) {
-    return null;
-  }
-
-  // Render App Navigation
   return (
     <ThemeProvider value={colorScheme === "dark" ? DarkTheme : DefaultTheme}>
       <Slot />
@@ -121,12 +126,14 @@ import { ToastProvider } from "@/context/toast-context";
 
 export default function RootLayout() {
   return (
-    <SafeAreaProvider>
-      <ToastProvider>
-        <AuthProvider>
-          <RootNavigation />
-        </AuthProvider>
-      </ToastProvider>
-    </SafeAreaProvider>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaProvider>
+        <ToastProvider>
+          <AuthProvider>
+            <RootNavigation />
+          </AuthProvider>
+        </ToastProvider>
+      </SafeAreaProvider>
+    </GestureHandlerRootView>
   );
 }

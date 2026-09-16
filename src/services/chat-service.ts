@@ -21,17 +21,39 @@ export interface ConversationItem {
   online: boolean;
 }
 
+export interface LocationPinData {
+  title: string;
+  address?: string;
+  latitude: number;
+  longitude: number;
+}
+
+export interface PriceOfferData {
+  id: string;
+  produceName: string;
+  icon?: string;
+  quantity: string;
+  unitPrice: string;
+  totalPrice: string;
+  notes?: string;
+  status: "pending" | "accepted" | "declined" | "countered";
+  counterPrice?: string;
+}
+
 export interface ChatMessage {
   id: string;
+  conversationId?: string;
   sender: "user" | "other";
   senderId?: string;
   receiverId?: string;
-  type?: "text" | "image";
+  type?: "text" | "image" | "location" | "offer" | "auto_reply";
   text?: string;
   imageUrl?: string;
   avatarUrl?: string;
   time?: string;
   isSeen?: boolean;
+  location?: LocationPinData;
+  offer?: PriceOfferData;
 }
 
 export async function getActiveChatUsersApi(): Promise<ActiveChatUser[]> {
@@ -63,10 +85,12 @@ export async function sendMessageApi(params: {
   receiverId?: string;
   conversationId?: string;
   messageText: string;
-  messageType?: "text" | "image";
+  messageType?: "text" | "image" | "location" | "offer" | "auto_reply";
   imageUrl?: string;
-}): Promise<{ message: string; data: ChatMessage }> {
-  return await apiFetch<{ message: string; data: ChatMessage }>("/chats/messages", {
+  autoReplyText?: string;
+  autoReplyType?: string;
+}): Promise<{ message: string; data: ChatMessage; autoReply?: ChatMessage }> {
+  return await apiFetch<{ message: string; data: ChatMessage; autoReply?: ChatMessage }>("/chats/messages", {
     method: "POST",
     body: JSON.stringify(params),
   });

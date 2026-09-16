@@ -1,75 +1,48 @@
-import {
-  ConnectionRequestItem,
-  FriendItem,
-  getFriendsApi,
-  getConnectionRequestsApi,
-  respondToConnectionRequestApi,
-} from "@/services/connection-service";
-import { useToast } from "@/context/toast-context";
+import { FriendItem, getFriendsApi } from "@/services/connection-service";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useEffect, useRef, useState } from "react";
+import { useRouter } from "expo-router";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  LayoutAnimation,
-  Platform,
+  Modal,
   Pressable,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Switch,
   Text,
   TextInput,
   TouchableOpacity,
-  UIManager,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
 
-if (Platform.OS === "android") {
-  UIManager.setLayoutAnimationEnabledExperimental?.(true);
-}
-
-type SortCategory = "Request" | "Friends";
-
-const SORT_OPTIONS = [
-  "Newest first",
-  "Oldest first",
-  "Nearest first",
-  "Farthest first",
-];
+const SORT_OPTIONS = ["Newest first", "Oldest first", "A to Z", "Z to A"];
 
 export default function Friends() {
-  const { showToast } = useToast();
+  const router = useRouter();
   const [isSidebarVisible, setSidebarVisible] = useState(false);
   const [isSortDropdownVisible, setSortDropdownVisible] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedSort, setSelectedSort] = useState("Newest first");
   const [noMutualFilter, setNoMutualFilter] = useState(false);
   const [friends, setFriends] = useState<FriendItem[]>([]);
-  const [connectionRequests, setConnectionRequests] = useState<ConnectionRequestItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [sortCategory, setSortCategory] = useState<SortCategory>("Request");
-  const [respondingIds, setRespondingIds] = useState<Record<string, boolean>>({});
-  const scrollViewRef = useRef<ScrollView>(null);
-  const friendsSectionRef = useRef<View>(null);
+  const [selectedFriendForOptions, setSelectedFriendForOptions] =
+    useState<FriendItem | null>(null);
 
-  const fetchAll = async (isPull = false) => {
+  const fetchFriends = async (isPull = false) => {
     if (isPull) setIsRefreshing(true);
-    else setIsLoading(true);
 
     try {
-      const [friendsData, requestsData] = await Promise.all([
-        getFriendsApi(),
-        getConnectionRequestsApi(),
-      ]);
-      setFriends(friendsData);
-      setConnectionRequests(requestsData);
+      const data = await getFriendsApi();
+      setFriends(data);
     } catch (err) {
-      console.warn("Failed to fetch connection data:", err);
+      console.warn("Failed to fetch friends:", err);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -77,66 +50,76 @@ export default function Friends() {
   };
 
   useEffect(() => {
-    const load = async () => {
-      await fetchAll();
+    let isMounted = true;
+    getFriendsApi()
+      .then((data) => {
+        if (isMounted) setFriends(data);
+      })
+      .catch((err) => {
+        console.warn("Failed to fetch friends:", err);
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
+    return () => {
+      isMounted = false;
     };
-    load();
   }, []);
 
-  const handleRespondToRequest = async (
-    request: ConnectionRequestItem,
-    action: "confirm" | "declined"
-  ) => {
-    setRespondingIds((prev) => ({ ...prev, [request.id]: true }));
-    try {
-      await respondToConnectionRequestApi(request.id, action);
-      setConnectionRequests((prev) => prev.filter((r) => r.id !== request.id));
-      showToast(
-        action === "confirm"
-          ? "Connection request accepted."
-          : "Connection request declined.",
-        "success"
-      );
-    } catch (err: any) {
-      showToast(err?.message || "Failed to respond to request.", "error");
-    } finally {
-      setRespondingIds((prev) => ({ ...prev, [request.id]: false }));
+  const filteredFriends = useMemo(() => {
+    let result = friends.filter((friend) => {
+      const matchesSearch =
+        friend.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (friend.username?.toLowerCase().includes(searchQuery.toLowerCase()) ??
+          false);
+      const matchesMutual = noMutualFilter ? !friend.hasMutual : true;
+      return matchesSearch && matchesMutual;
+    });
+
+    if (selectedSort === "Newest first") {
+      return result;
+    } else if (selectedSort === "Oldest first") {
+      return [...result].reverse();
+    } else if (selectedSort === "A to Z") {
+      return [...result].sort((a, b) => a.name.localeCompare(b.name));
+    } else if (selectedSort === "Z to A") {
+      return [...result].sort((a, b) => b.name.localeCompare(a.name));
     }
+    return result;
+  }, [friends, searchQuery, noMutualFilter, selectedSort]);
+
+  const handleOpenUserProfile = (friend: FriendItem) => {
+    router.push({
+      pathname: "/user/UserProfile",
+      params: {
+        userId: friend.id,
+        userName: friend.name,
+        userAvatar: friend.avatarUrl || "",
+      },
+    } as any);
   };
 
-  const filteredFriends = friends.filter((friend) => {
-    const matchesSearch = friend.name
-      .toLowerCase()
-      .includes(searchQuery.toLowerCase());
-    const matchesMutual = noMutualFilter ? !friend.hasMutual : true;
-    return matchesSearch && matchesMutual;
-  });
-
-  const filteredRequests = connectionRequests.filter((req) =>
-    req.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
-
-  const scrollToCategory = (category: SortCategory) => {
-    setSortCategory(category);
-    setSortDropdownVisible(false);
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    if (category === "Friends" && friendsSectionRef.current) {
-      setTimeout(() => {
-        friendsSectionRef.current?.measureLayout(
-          scrollViewRef.current as any,
-          (y) => {
-            scrollViewRef.current?.scrollTo({ y: y - 20, animated: true });
-          },
-          () => {}
-        );
-      }, 100);
-    }
+  const handleOpenChatWithFriend = (friend: FriendItem) => {
+    router.push({
+      pathname: "/user/ChatConversation",
+      params: {
+        userId: friend.id,
+        name: friend.name,
+        avatarUrl: friend.avatarUrl || "",
+        online: "true",
+      },
+    } as any);
   };
 
   return (
     <SafeAreaView
       className="flex-1 bg-white relative h-full"
-      style={{ flex: 1, position: "relative", minHeight: "100%", overflow: "hidden" }}
+      style={{
+        flex: 1,
+        position: "relative",
+        minHeight: "100%",
+        overflow: "hidden",
+      }}
     >
       {/* 1. Header Section */}
       <View className="px-5 pt-4 pb-2">
@@ -158,10 +141,20 @@ export default function Friends() {
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
-            placeholder="Search users to add..."
+            placeholder="Search friends..."
             placeholderTextColor="#9CA3AF"
             className="flex-1 text-base text-gray-800 pr-2 h-full"
+            autoCapitalize="none"
           />
+          {searchQuery ? (
+            <TouchableOpacity
+              onPress={() => setSearchQuery("")}
+              className="p-1 mr-1"
+              hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+            >
+              <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+            </TouchableOpacity>
+          ) : null}
           <Ionicons name="search-outline" size={20} color="#9CA3AF" />
         </View>
       </View>
@@ -188,45 +181,7 @@ export default function Friends() {
             }}
             className="bg-white p-4 rounded-2xl border border-gray-200 w-56"
           >
-            <Text className="text-gray-500 font-bold text-xs tracking-wider mb-2.5">
-              CATEGORY
-            </Text>
-
-            <View className="space-y-1 mb-3">
-              {(["Request", "Friends"] as SortCategory[]).map((cat) => {
-                const isSelected = sortCategory === cat;
-                return (
-                  <TouchableOpacity
-                    key={cat}
-                    onPress={() => scrollToCategory(cat)}
-                    className="flex-row items-center py-2"
-                  >
-                    <Ionicons
-                      name={isSelected ? "radio-button-on" : "radio-button-off"}
-                      size={20}
-                      color={isSelected ? "#72AF5B" : "#9CA3AF"}
-                      style={{ marginRight: 10 }}
-                    />
-                    <Text
-                      className={`text-sm ${
-                        isSelected
-                          ? "font-bold text-gray-900"
-                          : "font-normal text-gray-600"
-                      }`}
-                    >
-                      {cat}
-                    </Text>
-                    <Text className="text-xs text-gray-400 ml-auto">
-                      {cat === "Request" ? filteredRequests.length : filteredFriends.length}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-
-            <View className="border-b border-gray-200 mb-3" />
-
-            <Text className="text-gray-500 font-bold text-xs tracking-wider mb-2.5">
+            <Text className="text-gray-500 font-bold text-sm tracking-wider mb-2.5">
               SORT BY
             </Text>
 
@@ -283,7 +238,6 @@ export default function Friends() {
 
       {/* Content */}
       <ScrollView
-        ref={scrollViewRef}
         className="flex-1 bg-white z-0"
         showsVerticalScrollIndicator={false}
         bounces={false}
@@ -295,7 +249,7 @@ export default function Friends() {
         refreshControl={
           <RefreshControl
             refreshing={isRefreshing}
-            onRefresh={() => fetchAll(true)}
+            onRefresh={() => fetchFriends(true)}
             colors={["#72AF5B"]}
             tintColor="#72AF5B"
           />
@@ -305,17 +259,17 @@ export default function Friends() {
           <View className="py-12 items-center justify-center">
             <ActivityIndicator size="large" color="#72AF5B" />
             <Text className="text-sm text-gray-500 mt-2 font-medium">
-              Loading...
+              Loading friends...
             </Text>
           </View>
         ) : (
           <>
-            {/* ── REQUESTS SECTION ── */}
+            {/* ── FRIENDS HEADER ── */}
             <View className="flex-row justify-between items-center px-5 py-2 mb-1">
               <Text className="text-lg font-semibold text-gray-900">
-                Request{" "}
+                Friends{" "}
                 <Text className="text-[#72AF5B] font-bold">
-                  {filteredRequests.length}
+                  {filteredFriends.length}
                 </Text>
               </Text>
 
@@ -323,7 +277,9 @@ export default function Friends() {
                 onPress={() => setSortDropdownVisible(!isSortDropdownVisible)}
                 className="flex-row items-center py-1 px-2 rounded-lg active:bg-gray-100"
               >
-                <Text className="text-sm font-medium text-gray-700 mr-1">Sort</Text>
+                <Text className="text-sm font-medium text-gray-700 mr-1">
+                  Sort
+                </Text>
                 <Ionicons
                   name={
                     isSortDropdownVisible
@@ -334,95 +290,6 @@ export default function Friends() {
                   color="#4B5563"
                 />
               </TouchableOpacity>
-            </View>
-
-            {filteredRequests.length === 0 ? (
-              <View className="py-14 items-center justify-center px-6 mb-4">
-                <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
-                  <Ionicons name="people-outline" size={32} color="#9CA3AF" />
-                </View>
-                <Text className="text-base font-bold text-gray-800 mb-1">
-                  No Connection Requests
-                </Text>
-                <Text className="text-xs text-gray-500 text-center leading-5">
-                  Use the search bar above to find farmers and send friend requests!
-                </Text>
-              </View>
-            ) : (
-              <View className="px-5 mb-2">
-                {filteredRequests.map((request) => {
-                  const isResponding = respondingIds[request.id];
-                  return (
-                    <View
-                      key={request.id}
-                      className="flex-row items-center py-3 border-b border-gray-100"
-                    >
-                      <View className="h-12 w-12 rounded-full bg-gray-200 items-center justify-center mr-4 overflow-hidden border border-gray-200">
-                        {request.avatarUrl ? (
-                          <Image
-                            source={{ uri: request.avatarUrl }}
-                            className="w-full h-full"
-                            resizeMode="cover"
-                          />
-                        ) : (
-                          <Ionicons name="person" size={26} color="#6B7280" />
-                        )}
-                      </View>
-
-                      <View className="flex-1">
-                        <Text className="text-base font-semibold text-gray-800">
-                          {request.name}
-                        </Text>
-                        {request.username ? (
-                          <Text className="text-xs text-gray-400">
-                            @{request.username}
-                          </Text>
-                        ) : null}
-                        {request.mutualFriends ? (
-                          <Text className="text-xs text-gray-400 mt-0.5">
-                            {request.mutualFriends}
-                          </Text>
-                        ) : null}
-                      </View>
-
-                      <View className="flex-row gap-2">
-                        <TouchableOpacity
-                          onPress={() => handleRespondToRequest(request, "declined")}
-                          disabled={isResponding}
-                          className="w-9 h-9 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
-                        >
-                          {isResponding ? (
-                            <ActivityIndicator size="small" color="#6B7280" />
-                          ) : (
-                            <Ionicons name="close" size={18} color="#6B7280" />
-                          )}
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          onPress={() => handleRespondToRequest(request, "confirm")}
-                          disabled={isResponding}
-                          className="w-9 h-9 rounded-full bg-[#72AF5B] items-center justify-center active:bg-[#5d9a4a]"
-                        >
-                          {isResponding ? (
-                            <ActivityIndicator size="small" color="#FFFFFF" />
-                          ) : (
-                            <Ionicons name="checkmark" size={18} color="#FFFFFF" />
-                          )}
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-                  );
-                })}
-              </View>
-            )}
-
-            {/* ── FRIENDS SECTION ── */}
-            <View ref={friendsSectionRef} className="flex-row justify-between items-center px-5 py-2 mt-2 mb-1">
-              <Text className="text-lg font-semibold text-gray-900">
-                Friends{" "}
-                <Text className="text-[#72AF5B] font-bold">
-                  {filteredFriends.length}
-                </Text>
-              </Text>
             </View>
 
             {filteredFriends.length === 0 ? (
@@ -442,7 +309,9 @@ export default function Friends() {
                 {filteredFriends.map((friend) => (
                   <TouchableOpacity
                     key={friend.id}
-                    className="flex-row items-center py-3 border-b border-gray-100 active:bg-gray-50"
+                    onPress={() => handleOpenUserProfile(friend)}
+                    activeOpacity={0.7}
+                    className="flex-row items-center py-3.5 border-b border-gray-100 active:bg-gray-50"
                   >
                     <View className="h-12 w-12 rounded-full bg-gray-200 items-center justify-center mr-4 overflow-hidden border border-gray-200">
                       {friend.avatarUrl ? (
@@ -456,7 +325,7 @@ export default function Friends() {
                       )}
                     </View>
 
-                    <View className="flex-1">
+                    <View className="flex-1 pr-2">
                       <Text className="text-base font-semibold text-gray-800">
                         {friend.name}
                       </Text>
@@ -467,7 +336,22 @@ export default function Friends() {
                       ) : null}
                     </View>
 
-                    <Ionicons name="chatbubble-ellipses-outline" size={20} color="#72AF5B" />
+                    <TouchableOpacity
+                      onPress={(e) => {
+                        e.stopPropagation?.();
+                        setSelectedFriendForOptions(friend);
+                      }}
+                      className="w-9 h-9 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
+                      accessibilityRole="button"
+                      accessibilityLabel="Friend options"
+                      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    >
+                      <Ionicons
+                        name="ellipsis-horizontal"
+                        size={18}
+                        color="#4B5563"
+                      />
+                    </TouchableOpacity>
                   </TouchableOpacity>
                 ))}
               </View>
@@ -476,12 +360,131 @@ export default function Friends() {
         )}
       </ScrollView>
 
+      {/* Friend Options Bottom Sheet Modal */}
+      <Modal
+        visible={!!selectedFriendForOptions}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setSelectedFriendForOptions(null)}
+      >
+        <View className="flex-1 justify-end">
+          {/* Backdrop */}
+          <Pressable
+            onPress={() => setSelectedFriendForOptions(null)}
+            className="absolute inset-0 bg-black/40"
+          />
+
+          {/* Bottom Sheet Card */}
+          <View
+            style={{
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: -3 },
+              shadowOpacity: 0.15,
+              shadowRadius: 10,
+              elevation: 20,
+            }}
+            className="bg-white rounded-t-3xl pt-4 pb-8 px-6 border-t border-gray-100"
+          >
+            {/* Grabber indicator */}
+            <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-4" />
+
+            {/* Friend info header */}
+            {selectedFriendForOptions && (
+              <View className="flex-row items-center mb-4 pb-4 border-b border-gray-100">
+                <View className="h-12 w-12 rounded-full bg-gray-200 items-center justify-center mr-3.5 overflow-hidden border border-gray-200">
+                  {selectedFriendForOptions.avatarUrl ? (
+                    <Image
+                      source={{ uri: selectedFriendForOptions.avatarUrl }}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Ionicons name="person" size={24} color="#6B7280" />
+                  )}
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-bold text-gray-900">
+                    {selectedFriendForOptions.name}
+                  </Text>
+                  <Text className="text-xs text-gray-400 mt-0.5">
+                    {selectedFriendForOptions.username
+                      ? `@${selectedFriendForOptions.username}`
+                      : "Connected Friend"}
+                  </Text>
+                </View>
+              </View>
+            )}
+
+            {/* Action Items */}
+            <View className="space-y-1">
+              <TouchableOpacity
+                onPress={() => {
+                  const target = selectedFriendForOptions;
+                  setSelectedFriendForOptions(null);
+                  if (target) handleOpenUserProfile(target);
+                }}
+                className="flex-row items-center py-3 px-3 rounded-2xl active:bg-gray-50"
+              >
+                <View className="w-10 h-10 rounded-full bg-green-50 items-center justify-center mr-3.5 border border-green-100">
+                  <Ionicons name="person-outline" size={20} color="#72AF5B" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-semibold text-gray-900">
+                    View Profile
+                  </Text>
+                  <Text className="text-xs text-gray-500">
+                    See posts, photos, and info
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  const target = selectedFriendForOptions;
+                  setSelectedFriendForOptions(null);
+                  if (target) handleOpenChatWithFriend(target);
+                }}
+                className="flex-row items-center py-3 px-3 rounded-2xl active:bg-gray-50"
+              >
+                <View className="w-10 h-10 rounded-full bg-blue-50 items-center justify-center mr-3.5 border border-blue-100">
+                  <Ionicons
+                    name="chatbubble-ellipses-outline"
+                    size={20}
+                    color="#3B82F6"
+                  />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-semibold text-gray-900">
+                    Message
+                  </Text>
+                  <Text className="text-xs text-gray-500">
+                    Send a direct message
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+              </TouchableOpacity>
+            </View>
+
+            {/* Cancel Button */}
+            <TouchableOpacity
+              onPress={() => setSelectedFriendForOptions(null)}
+              className="mt-4 py-3.5 rounded-2xl bg-gray-100 items-center justify-center active:bg-gray-200"
+            >
+              <Text className="text-sm font-semibold text-gray-700">
+                Cancel
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      <BottomNavBar activeTab="Connection" showFab={false} />
       <SidebarMenu
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeTab="Your Friends"
       />
-      <BottomNavBar activeTab="Connection" showFab={false} />
     </SafeAreaView>
   );
 }

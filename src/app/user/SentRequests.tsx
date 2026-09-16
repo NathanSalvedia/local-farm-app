@@ -5,18 +5,18 @@ import {
   SentRequestItem,
 } from "@/services/connection-service";
 import { Ionicons } from "@expo/vector-icons";
-import React, { useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Image,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
@@ -28,7 +28,9 @@ export default function SentRequests() {
   const [sentRequests, setSentRequests] = useState<SentRequestItem[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const [cancellingIds, setCancellingIds] = useState<Record<string, boolean>>({});
+  const [cancellingIds, setCancellingIds] = useState<Record<string, boolean>>(
+    {},
+  );
 
   const fetchSentRequests = async (isPull = false) => {
     if (isPull) setIsRefreshing(true);
@@ -62,15 +64,22 @@ export default function SentRequests() {
     }
   };
 
-  const filteredRequests = sentRequests.filter((item) =>
-    item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (item.username && item.username.toLowerCase().includes(searchQuery.toLowerCase()))
+  const filteredRequests = sentRequests.filter(
+    (item) =>
+      item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (item.username &&
+        item.username.toLowerCase().includes(searchQuery.toLowerCase())),
   );
 
   return (
     <SafeAreaView
       className="flex-1 bg-white relative h-full"
-      style={{ flex: 1, position: "relative", minHeight: "100%", overflow: "hidden" }}
+      style={{
+        flex: 1,
+        position: "relative",
+        minHeight: "100%",
+        overflow: "hidden",
+      }}
     >
       {/* Main Scrollable Content */}
       <ScrollView
@@ -189,14 +198,14 @@ export default function SentRequests() {
                             color="#6B7280"
                             style={{ marginRight: 4 }}
                           />
-                          <Text className="text-gray-500 text-xs font-medium">
+                          <Text className="text-gray-500 text-sm font-medium">
                             {item.friendsCount || "Local Farm member"}
                           </Text>
                         </View>
                       </View>
 
                       {/* Time Sent */}
-                      <Text className="text-[#72AF5B] font-medium text-xs">
+                      <Text className="text-[#72AF5B] font-medium text-sm">
                         {item.timeAgo || "Recently"}
                       </Text>
                     </View>
@@ -205,7 +214,7 @@ export default function SentRequests() {
                     <TouchableOpacity
                       onPress={() => handleCancelRequest(item)}
                       disabled={isCancelling}
-                      className="w-full bg-gray-50 border border-gray-300 py-2.5 rounded-xl items-center justify-center active:bg-gray-200"
+                      className="w-full bg-gray-50 border border-gray-300 py-2.5 rounded-lg items-center justify-center active:bg-gray-200"
                       activeOpacity={0.8}
                       accessibilityRole="button"
                       accessibilityLabel="Cancel sent request"
@@ -213,7 +222,7 @@ export default function SentRequests() {
                       {isCancelling ? (
                         <ActivityIndicator size="small" color="#6B7280" />
                       ) : (
-                        <Text className="text-gray-700 font-semibold text-xs sm:text-sm">
+                        <Text className="text-gray-700 font-semibold text-sm sm:text-sm">
                           Cancel Request
                         </Text>
                       )}
@@ -226,12 +235,12 @@ export default function SentRequests() {
         )}
       </ScrollView>
 
+      <BottomNavBar activeTab="Connection" showFab={false} />
       <SidebarMenu
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeTab="Sent Request"
       />
-      <BottomNavBar activeTab="Connection" showFab={false} />
     </SafeAreaView>
   );
 }

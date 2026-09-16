@@ -35,7 +35,10 @@ export default function ForgotPasswordScreen() {
 
     if (!emailVal.isValid) {
       setEmailError(emailVal.error || "Please enter a valid email address.");
-      showToast(emailVal.error || "Please enter a valid email address.", "warning");
+      showToast(
+        emailVal.error || "Please enter a valid email address.",
+        "warning",
+      );
       return;
     }
 
@@ -49,7 +52,8 @@ export default function ForgotPasswordScreen() {
       showToast("OTP code sent successfully to your email!", "success");
     } catch (err: any) {
       setIsLoading(false);
-      const msg = err?.message || "Failed to send reset code. Please try again.";
+      const msg =
+        err?.message || "Failed to send reset code. Please try again.";
       setGeneralError(msg);
       showToast(msg, "error");
     }
@@ -70,28 +74,21 @@ export default function ForgotPasswordScreen() {
       resizeMode="cover"
       style={{ flex: 1, overflow: "hidden" }}
     >
-      {/* Top Header Bar */}
+      {/* Top Header Bar - Absolute overlay so it doesn't shift the centered form */}
       <View
-        className="w-full px-4 z-20"
+        className="absolute top-0 left-0 right-0 px-4 z-20"
         style={{ paddingTop: Math.max(insets.top + 8, 16) }}
-      >
-        <TouchableOpacity
-          className="p-2 self-start rounded-full active:opacity-70"
-          onPress={() => router.back()}
-          activeOpacity={0.7}
-        >
-          <Ionicons name="arrow-back-outline" size={26} color="#4B5563" />
-        </TouchableOpacity>
-      </View>
+      ></View>
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         className="flex-1 justify-center items-center px-5"
         style={{
+          paddingTop: Math.max(insets.top + 16, 24),
           paddingBottom: Math.max(insets.bottom + 16, 24),
         }}
       >
-        <View className="w-full max-w-[380px]">
+        <View className="w-full max-w-[380px] items-center">
           {/* Centered Circular Vector Icon */}
           <View className="w-20 h-20 rounded-full bg-[#72AF5B] items-center justify-center self-center mb-6 shadow-md shadow-[#72AF5B]/30">
             <MaterialCommunityIcons
@@ -101,14 +98,14 @@ export default function ForgotPasswordScreen() {
             />
           </View>
 
-          {/* Header Block */}
-          <View className="items-start mb-6 w-full">
-            <Text className="text-3xl font-extrabold text-neutral-900 text-left mb-2 tracking-tight">
+          {/* Centered Header Block */}
+          <View className="items-center mb-6 w-full">
+            <Text className="text-3xl font-extrabold text-neutral-900 text-center mb-2 tracking-tight">
               Forgot Password?
             </Text>
-            <Text className="text-sm text-neutral-600 text-left leading-relaxed">
-              Enter your registered email address and we will send a 6-digit
-              OTP code to reset your password.
+            <Text className="text-md text-neutral-600 text-center leading-relaxed px-2">
+              Enter your registered email address and we will send a 6-digit OTP
+              code to reset your password.
             </Text>
           </View>
 
@@ -151,7 +148,7 @@ export default function ForgotPasswordScreen() {
 
           {/* Footer / Back to Login Link */}
           <View className="flex-row justify-center items-center mt-2 w-full">
-            <Text className="text-sm text-neutral-600">
+            <Text className="text-md text-neutral-600">
               Remember your password?{" "}
             </Text>
             <TouchableOpacity
@@ -159,9 +156,7 @@ export default function ForgotPasswordScreen() {
               activeOpacity={0.7}
               className="py-1"
             >
-              <Text className="text-sm font-bold text-[#72AF5B]">
-                Sign In
-              </Text>
+              <Text className="text-md font-bold text-[#72AF5B]">Sign In</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -191,10 +186,10 @@ export default function ForgotPasswordScreen() {
             </Text>
 
             {/* Modal Message */}
-            <Text className="text-sm text-neutral-600 text-center mb-1 leading-5">
+            <Text className="text-md text-neutral-600 text-center mb-1 leading-5">
               We've sent a 6-digit verification code to
             </Text>
-            <Text className="text-sm font-bold text-[#72AF5B] text-center mb-5">
+            <Text className="text-md font-bold text-[#72AF5B] text-center mb-5">
               {email}
             </Text>
 
@@ -209,7 +204,7 @@ export default function ForgotPasswordScreen() {
                 color="#888888"
                 style={{ marginTop: 1, marginRight: 6 }}
               />
-              <Text className="text-xs text-neutral-500 flex-1 leading-4">
+              <Text className="text-sm text-neutral-500 flex-1 leading-4">
                 Didn't receive the email? Check your spam folder or wait a few
                 minutes before requesting again.
               </Text>
@@ -239,4 +234,3 @@ export default function ForgotPasswordScreen() {
     </ImageBackground>
   );
 }
-

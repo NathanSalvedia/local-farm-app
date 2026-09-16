@@ -2,13 +2,13 @@ import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import { useState } from "react";
 import {
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import ChatSidebarModal from "../../components/ChatSidebarModal";
 import BottomNavBar from "../../components/Navigation";
@@ -185,15 +185,15 @@ export default function SpamMessages() {
         )}
       </ScrollView>
 
+      {/*  Bottom Navigation Bar  */}
+      <BottomNavBar showFab={false} activeTabName="chat" />
+
       {/*  Sidebar Drawer */}
       <ChatSidebarModal
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeItem="Spam"
       />
-
-      {/*  Bottom Navigation Bar  */}
-      <BottomNavBar showFab={false} activeTabName="chat" />
     </SafeAreaView>
   );
 }

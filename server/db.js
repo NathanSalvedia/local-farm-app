@@ -1,4 +1,6 @@
 const mysql = require("mysql2/promise");
+const fs = require("fs");
+const { spawn } = require("child_process");
 require("dotenv").config();
 
 const dbConfig = {
@@ -14,15 +16,50 @@ const dbConfig = {
 
 let pool;
 
+async function autoStartMySQLIfAvailable() {
+  if (process.platform === "win32") {
+    const xamppMysqld = "C:\\xampp\\mysql\\bin\\mysqld.exe";
+    const xamppIni = "C:\\xampp\\mysql\\bin\\my.ini";
+    if (fs.existsSync(xamppMysqld)) {
+      console.log("[MySQL] Attempting to auto-start XAMPP MySQL daemon...");
+      try {
+        const subprocess = spawn(xamppMysqld, [`--defaults-file=${xamppIni}`, "--standalone"], {
+          detached: true,
+          stdio: "ignore",
+        });
+        subprocess.unref();
+        await new Promise((resolve) => setTimeout(resolve, 3500));
+        return true;
+      } catch (spawnErr) {
+        console.warn("[MySQL] Could not auto-start mysqld:", spawnErr.message);
+      }
+    }
+  }
+  return false;
+}
+
 async function initDB() {
   try {
-    // 1. Connect without database to ensure DB exists
-    const rootConn = await mysql.createConnection({
-      host: dbConfig.host,
-      port: dbConfig.port,
-      user: dbConfig.user,
-      password: dbConfig.password,
-    });
+    // 1. Connect without database to ensure DB exists (with retry and auto-start)
+    let rootConn;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        rootConn = await mysql.createConnection({
+          host: dbConfig.host,
+          port: dbConfig.port,
+          user: dbConfig.user,
+          password: dbConfig.password,
+        });
+        break;
+      } catch (connErr) {
+        if (connErr.code === "ECONNREFUSED" && attempt === 1) {
+          const started = await autoStartMySQLIfAvailable();
+          if (started) continue;
+        }
+        if (attempt === 3) throw connErr;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+    }
 
     await rootConn.query(
       `CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;`,
@@ -54,6 +91,11 @@ async function initDB() {
     // Ensure avatar_url column is LONGTEXT for Base64 / URL images
     try {
       await pool.query(`ALTER TABLE \`users\` MODIFY COLUMN \`avatar_url\` LONGTEXT DEFAULT NULL;`);
+    } catch {}
+
+    // Ensure bio column exists for user profile about/bio
+    try {
+      await pool.query(`ALTER TABLE \`users\` ADD COLUMN \`bio\` TEXT DEFAULT NULL;`);
     } catch {}
 
     // 4. Create password_resets / otps table for OTP verification
@@ -124,6 +166,11 @@ async function initDB() {
         FOREIGN KEY (\`receiver_id\`) REFERENCES \`users\`(\`id\`) ON DELETE CASCADE
       ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
     `);
+
+    // Safe migration: Support location and extended message types
+    try {
+      await pool.query(`ALTER TABLE \`messages\` MODIFY COLUMN \`message_type\` VARCHAR(50) NOT NULL DEFAULT 'text';`);
+    } catch (e) {}
 
     // 8. Create posts table
     await pool.query(`
@@ -227,6 +274,12 @@ async function initDB() {
     console.log(`[MySQL] Connected successfully to database: ${dbConfig.database} on ${dbConfig.host}:${dbConfig.port}`);
   } catch (err) {
     console.error("[MySQL] Connection error:", err.message);
+    if (err.code === "ECONNREFUSED") {
+      console.error(
+        `[MySQL] Could not connect to MySQL at ${dbConfig.host}:${dbConfig.port}. ` +
+          "Please ensure MySQL is running (e.g., via the XAMPP Control Panel or 'npm run mysql:start')."
+      );
+    }
   }
 }
 

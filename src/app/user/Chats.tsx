@@ -12,13 +12,13 @@ import {
   ActivityIndicator,
   Image,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import ChatSidebarModal from "../../components/ChatSidebarModal";
 import BottomNavBar from "../../components/Navigation";
@@ -322,15 +322,15 @@ export default function Chats() {
         )}
       </ScrollView>
 
-      {/* 5. Chat Sidebar Modal Component */}
+      {/* 5. Bottom Navigation Component */}
+      <BottomNavBar activeTab="Chat" showFab={false} />
+
+      {/* 6. Chat Sidebar Modal Component */}
       <ChatSidebarModal
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeItem="Messages"
       />
-
-      {/* 6. Bottom Navigation Component */}
-      <BottomNavBar activeTab="Chat" showFab={false} />
     </SafeAreaView>
   );
 }

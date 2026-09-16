@@ -2,9 +2,7 @@ import { useToast } from "@/context/toast-context";
 import {
   cancelFriendRequestApi,
   ConnectionRequestItem,
-  FriendItem,
   getConnectionRequestsApi,
-  getFriendsApi,
   respondToConnectionRequestApi,
   SearchedUserItem,
   searchUsersToConnectApi,
@@ -16,13 +14,13 @@ import {
   ActivityIndicator,
   Image,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import BottomNavBar from "../../components/Navigation";
 import SidebarMenu from "../../components/SidebarMenu";
@@ -49,13 +47,8 @@ export default function People() {
   >({});
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Friends state
-  const [friends, setFriends] = useState<FriendItem[]>([]);
-
   const fetchRequests = async (isPull = false) => {
     if (isPull) setIsRefreshing(true);
-    else setIsLoading(true);
-
     try {
       const data = await getConnectionRequestsApi();
       setRequests(data);
@@ -67,34 +60,39 @@ export default function People() {
     }
   };
 
-  const fetchFriends = async () => {
-    try {
-      const data = await getFriendsApi();
-      setFriends(data);
-    } catch (err: any) {
-      console.warn("Failed to fetch friends:", err);
-    }
-  };
-
   useEffect(() => {
-    fetchRequests();
-    fetchFriends();
+    let isMounted = true;
+    getConnectionRequestsApi()
+      .then((data) => {
+        if (isMounted) setRequests(data);
+      })
+      .catch((err: any) => {
+        console.warn("Failed to fetch connection requests:", err);
+      })
+      .finally(() => {
+        if (isMounted) setIsLoading(false);
+      });
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
-  // Search Debounce Effect
+  // Debounced search effect
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
     if (!searchQuery.trim()) {
-      setSearchResults([]);
-      setIsSearching(false);
+      searchTimeoutRef.current = setTimeout(() => {
+        setSearchResults([]);
+        setIsSearching(false);
+      }, 0);
       return;
     }
 
-    setIsSearching(true);
     searchTimeoutRef.current = setTimeout(async () => {
+      setIsSearching(true);
       try {
         const results = await searchUsersToConnectApi(searchQuery);
         setSearchResults(results);
@@ -297,7 +295,10 @@ export default function People() {
                     className="py-3.5 border-b border-gray-100 flex-row items-center justify-between"
                   >
                     {/* Avatar */}
-                    <View className="h-13 w-13 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-200 overflow-hidden" style={{ width: 50, height: 50 }}>
+                    <View
+                      className="h-13 w-13 rounded-full bg-gray-200 items-center justify-center mr-3.5 border border-gray-200 overflow-hidden"
+                      style={{ width: 50, height: 50 }}
+                    >
                       {user.avatarUrl ? (
                         <Image
                           source={{ uri: user.avatarUrl }}
@@ -385,7 +386,7 @@ export default function People() {
             )}
           </View>
         ) : (
-          /* -------------------- INCOMING REQUESTS & FRIENDS MODE -------------------- */
+          /* -------------------- INCOMING REQUESTS MODE -------------------- */
           <>
             {/* Request Header */}
             <View className="flex-row justify-between items-center px-5 py-3 mb-1">
@@ -395,9 +396,6 @@ export default function People() {
                   {activeRequests.filter((r) => requestStates[r.id] !== "confirmed").length}
                 </Text>
               </Text>
-              <TouchableOpacity activeOpacity={0.7}>
-                <Text className="text-sm font-medium text-gray-600">Sort</Text>
-              </TouchableOpacity>
             </View>
 
             {/* Loading State */}
@@ -525,62 +523,12 @@ export default function People() {
                 })}
               </View>
             )}
-
-            {/* -------------------- FRIENDS LIST SECTION -------------------- */}
-            <View className="flex-row justify-between items-center px-5 py-3 mb-1 mt-2">
-              <Text className="text-lg font-semibold text-gray-900">
-                Friends{" "}
-                <Text className="text-[#72AF5B] font-bold">
-                  {friends.length}
-                </Text>
-              </Text>
-            </View>
-
-            {friends.length === 0 ? (
-              <View className="py-10 items-center justify-center px-6">
-                <View className="w-14 h-14 rounded-full bg-gray-100 items-center justify-center mb-3">
-                  <Ionicons name="people-outline" size={28} color="#9CA3AF" />
-                </View>
-                <Text className="text-sm font-bold text-gray-800 mb-1">
-                  No Friends Yet
-                </Text>
-                <Text className="text-xs text-gray-500 text-center">
-                  Accept connection requests to see them here.
-                </Text>
-              </View>
-            ) : (
-              <View className="px-5">
-                {friends.map((friend) => (
-                  <View
-                    key={friend.connectionId}
-                    className="py-3.5 border-b border-gray-100 flex-row items-center justify-between"
-                  >
-                    {/* Avatar */}
-                    <View className="h-12 w-12 rounded-full bg-gray-200 items-center justify-center mr-3 border border-gray-200 overflow-hidden">
-                      {friend.avatarUrl ? (
-                        <Image
-                          source={{ uri: friend.avatarUrl }}
-                          className="w-full h-full"
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <Ionicons name="person" size={24} color="#6B7280" />
-                      )}
-                    </View>
-
-                    {/* Name */}
-                    <View className="flex-1 pr-2">
-                      <Text className="font-bold text-gray-900 text-sm leading-tight">
-                        {friend.name}
-                      </Text>
-                    </View>
-                  </View>
-                ))}
-              </View>
-            )}
           </>
         )}
       </ScrollView>
+
+      {/* Bottom Navigation Component */}
+      <BottomNavBar activeTab="Connection" showFab={false} />
 
       {/* Sidebar Navigation Menu */}
       <SidebarMenu
@@ -589,9 +537,6 @@ export default function People() {
         activeTab={activeTab}
         onSelectTab={setActiveTab}
       />
-
-      {/* Bottom Navigation Component */}
-      <BottomNavBar activeTab="Connection" showFab={false} />
     </SafeAreaView>
   );
 }

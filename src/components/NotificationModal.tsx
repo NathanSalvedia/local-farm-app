@@ -2,12 +2,12 @@ import { Ionicons } from "@expo/vector-icons";
 import React, { useState } from "react";
 import {
   Modal,
-  SafeAreaView,
   ScrollView,
   Text,
   TouchableOpacity,
   View,
 } from "react-native";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 
 export interface NotificationItem {
   id: string;
@@ -149,25 +149,37 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
     switch (type) {
       case "group_invite":
         return (
-          <View className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#1877f2] items-center justify-center border-2 border-white shadow-xs">
+          <View
+            className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#1877f2] items-center justify-center border-2 border-white"
+            style={{ elevation: 2 }}
+          >
             <Ionicons name="people" size={14} color="white" />
           </View>
         );
       case "mention":
         return (
-          <View className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#2e7d32] items-center justify-center border-2 border-white shadow-xs">
+          <View
+            className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#2e7d32] items-center justify-center border-2 border-white"
+            style={{ elevation: 2 }}
+          >
             <Ionicons name="chatbubble" size={13} color="white" />
           </View>
         );
       case "system":
         return (
-          <View className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-gray-600 items-center justify-center border-2 border-white shadow-xs">
+          <View
+            className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-gray-600 items-center justify-center border-2 border-white"
+            style={{ elevation: 2 }}
+          >
             <Ionicons name="notifications" size={13} color="white" />
           </View>
         );
       case "challenge":
         return (
-          <View className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#f59e0b] items-center justify-center border-2 border-white shadow-xs">
+          <View
+            className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-[#f59e0b] items-center justify-center border-2 border-white"
+            style={{ elevation: 2 }}
+          >
             <Ionicons name="trophy" size={13} color="white" />
           </View>
         );
@@ -179,158 +191,170 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
   return (
     <Modal
       visible={visible}
-      transparent={false}
+      transparent={true}
       animationType="fade"
+      statusBarTranslucent={true}
       onRequestClose={onClose}
     >
-      <SafeAreaView className="flex-1 bg-white">
-        {/* 1. Top Navigation Bar */}
-        <View className="flex-row justify-between items-center px-4 py-3 bg-white border-b border-gray-100">
-          {/*  Hamburger Menu Icon */}
-          <TouchableOpacity
-            onPress={onClose}
-            className="p-1 -ml-1 active:opacity-70 flex-row items-center"
-            accessibilityRole="button"
-            accessibilityLabel="Close notifications"
-          >
-            <Ionicons name="menu" size={32} color="#72AF5B" />
-          </TouchableOpacity>
-
-          {/* Center/Left: Title Displaying 'Notifications' */}
-          <Text className="text-2xl font-bold text-black ml-4 flex-1">
-            Notifications
-          </Text>
-
-          {/* Right Action Icons: Search Icon & Close Icon */}
-          <View className="flex-row items-center gap-3">
-            <TouchableOpacity
-              className="p-1 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Search notifications"
-            >
-              <Ionicons name="search" size={28} color="black" />
-            </TouchableOpacity>
-            <TouchableOpacity
-              onPress={onClose}
-              className="p-1 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Close notifications"
-            >
-              <Ionicons name="close" size={28} color="black" />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        {/*  Section Header */}
-        <View className="px-4 py-2 bg-white">
-          <Text className="text-lg font-bold text-gray-900">Earlier</Text>
-        </View>
-
-        {/*  Notification List */}
-        <ScrollView
+      <SafeAreaProvider>
+        <View
           className="flex-1 bg-white"
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={{ paddingBottom: 40 }}
+          style={{ flex: 1, backgroundColor: "#ffffff" }}
         >
-          {notifications.length === 0 ? (
-            <View className="p-12 items-center justify-center">
-              <Ionicons
-                name="notifications-off-outline"
-                size={48}
-                color="#9CA3AF"
-              />
-              <Text className="text-gray-500 text-base mt-3">
-                No notifications to show
-              </Text>
-            </View>
-          ) : (
-            notifications.map((item) => (
+          <SafeAreaView
+            className="flex-1 bg-white"
+            style={{ flex: 1, backgroundColor: "#ffffff" }}
+            edges={["top", "bottom", "left", "right"]}
+          >
+            {/* 1. Top Navigation Bar */}
+            <View className="flex-row justify-between items-center px-4 py-3 bg-white border-b border-gray-100">
+              {/* Hamburger Menu / Back Icon */}
               <TouchableOpacity
-                key={item.id}
-                onPress={() => handleNotificationPress(item.id)}
-                className={`flex-row px-4 py-3.5 border-b border-gray-100/60 items-start ${
-                  item.isUnread ? "bg-[#e7f3ff]" : "bg-white"
-                }`}
-                activeOpacity={0.8}
+                onPress={onClose}
+                className="p-1 -ml-1 active:opacity-70 flex-row items-center"
+                accessibilityRole="button"
+                accessibilityLabel="Close notifications"
               >
-                {/* Left Column (Avatar Person Icon & Badge) */}
-                <View className="relative mr-3.5">
-                  <View className="w-16 h-16 rounded-full bg-gray-200 border border-gray-300 items-center justify-center">
-                    <Ionicons name="person" size={32} color="#6B7280" />
-                  </View>
-                  {getReactionBadge(item.type)}
-                </View>
-
-                {/* Middle Column (Text Content & Actions) */}
-                <View className="flex-1 pr-2">
-                  {/* Main Text Content with Nested Bolds */}
-                  <Text className="text-[15px] text-gray-900 leading-snug">
-                    <Text className="font-bold text-black">
-                      {item.user.name}
-                    </Text>{" "}
-                    {item.content}{" "}
-                    {item.entityName ? (
-                      <Text className="font-bold text-black">
-                        {item.entityName}
-                      </Text>
-                    ) : null}
-                  </Text>
-
-                  {/* Timestamp */}
-                  <Text className="text-sm text-gray-500 mt-1">
-                    {item.time}
-                  </Text>
-
-                  {/* Action Buttons (Join / Delete) */}
-                  {item.hasActionButtons && (
-                    <View className="flex-row gap-2 mt-3">
-                      {/* 'Join' Button */}
-                      <TouchableOpacity
-                        onPress={() => handleJoinGroup(item.id)}
-                        className="flex-1 bg-[#72AF5B] rounded-lg py-2 items-center justify-center active:opacity-85 shadow-2xs"
-                        activeOpacity={0.8}
-                        accessibilityRole="button"
-                        accessibilityLabel="Join group"
-                      >
-                        <Text className="text-white font-bold text-[14px]">
-                          Join
-                        </Text>
-                      </TouchableOpacity>
-
-                      {/* 'Delete' Button */}
-                      <TouchableOpacity
-                        onPress={() => handleDeleteInvite(item.id)}
-                        className="flex-1 bg-gray-50 border border-[#E63946] rounded-lg py-2 items-center justify-center active:bg-gray-300"
-                        activeOpacity={0.8}
-                        accessibilityRole="button"
-                        accessibilityLabel="Delete invitation"
-                      >
-                        <Text className="text-[#E63946] font-bold text-[14px]">
-                          Delete
-                        </Text>
-                      </TouchableOpacity>
-                    </View>
-                  )}
-                </View>
-
-                {/* Right Column (Options: Horizontal Ellipsis) */}
-                <TouchableOpacity
-                  className="p-1 -mr-1 self-start"
-                  activeOpacity={0.7}
-                  accessibilityRole="button"
-                  accessibilityLabel="Notification options"
-                >
-                  <Ionicons
-                    name="ellipsis-horizontal"
-                    size={20}
-                    color="#65676B"
-                  />
-                </TouchableOpacity>
+                <Ionicons name="arrow-back" size={28} color="#72AF5B" />
               </TouchableOpacity>
-            ))
-          )}
-        </ScrollView>
-      </SafeAreaView>
+
+              {/* Center/Left: Title Displaying 'Notifications' */}
+              <Text className="text-2xl font-bold text-black ml-4 flex-1">
+                Notifications
+              </Text>
+
+              {/* Right Action Icons: Search Icon & Close Icon */}
+              <View className="flex-row items-center gap-3">
+                <TouchableOpacity
+                  className="p-1 active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel="Search notifications"
+                >
+                  <Ionicons name="search" size={26} color="black" />
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={onClose}
+                  className="p-1 active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel="Close notifications"
+                >
+                  <Ionicons name="close" size={28} color="black" />
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Section Header */}
+            <View className="px-4 py-2 bg-white">
+              <Text className="text-lg font-bold text-gray-900">Earlier</Text>
+            </View>
+
+            {/* Notification List */}
+            <ScrollView
+              className="flex-1 bg-white"
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingBottom: 40 }}
+            >
+              {notifications.length === 0 ? (
+                <View className="p-12 items-center justify-center">
+                  <Ionicons
+                    name="notifications-off-outline"
+                    size={48}
+                    color="#9CA3AF"
+                  />
+                  <Text className="text-gray-500 text-base mt-3">
+                    No notifications to show
+                  </Text>
+                </View>
+              ) : (
+                notifications.map((item) => (
+                  <TouchableOpacity
+                    key={item.id}
+                    onPress={() => handleNotificationPress(item.id)}
+                    className={`flex-row px-4 py-3.5 border-b border-gray-100 items-start ${
+                      item.isUnread ? "bg-[#e7f3ff]" : "bg-white"
+                    }`}
+                    activeOpacity={0.8}
+                  >
+                    {/* Left Column (Avatar Person Icon & Badge) */}
+                    <View className="relative mr-3.5">
+                      <View className="w-16 h-16 rounded-full bg-gray-200 border border-gray-300 items-center justify-center">
+                        <Ionicons name="person" size={32} color="#6B7280" />
+                      </View>
+                      {getReactionBadge(item.type)}
+                    </View>
+
+                    {/* Middle Column (Text Content & Actions) */}
+                    <View className="flex-1 pr-2">
+                      {/* Main Text Content with Nested Bolds */}
+                      <Text className="text-[15px] text-gray-900 leading-snug">
+                        <Text className="font-bold text-black">
+                          {item.user.name}
+                        </Text>{" "}
+                        {item.content}{" "}
+                        {item.entityName ? (
+                          <Text className="font-bold text-black">
+                            {item.entityName}
+                          </Text>
+                        ) : null}
+                      </Text>
+
+                      {/* Timestamp */}
+                      <Text className="text-sm text-gray-500 mt-1">
+                        {item.time}
+                      </Text>
+
+                      {/* Action Buttons (Join / Delete) */}
+                      {item.hasActionButtons && (
+                        <View className="flex-row gap-2 mt-3">
+                          {/* 'Join' Button */}
+                          <TouchableOpacity
+                            onPress={() => handleJoinGroup(item.id)}
+                            className="flex-1 bg-[#72AF5B] rounded-lg py-2 items-center justify-center active:opacity-85"
+                            activeOpacity={0.8}
+                            accessibilityRole="button"
+                            accessibilityLabel="Join group"
+                          >
+                            <Text className="text-white font-bold text-[14px]">
+                              Join
+                            </Text>
+                          </TouchableOpacity>
+
+                          {/* 'Delete' Button */}
+                          <TouchableOpacity
+                            onPress={() => handleDeleteInvite(item.id)}
+                            className="flex-1 bg-gray-50 border border-[#E63946] rounded-lg py-2 items-center justify-center active:bg-gray-300"
+                            activeOpacity={0.8}
+                            accessibilityRole="button"
+                            accessibilityLabel="Delete invitation"
+                          >
+                            <Text className="text-[#E63946] font-bold text-[14px]">
+                              Delete
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+                      )}
+                    </View>
+
+                    {/* Right Column (Options: Horizontal Ellipsis) */}
+                    <TouchableOpacity
+                      className="p-1 -mr-1 self-start"
+                      activeOpacity={0.7}
+                      accessibilityRole="button"
+                      accessibilityLabel="Notification options"
+                    >
+                      <Ionicons
+                        name="ellipsis-horizontal"
+                        size={20}
+                        color="#65676B"
+                      />
+                    </TouchableOpacity>
+                  </TouchableOpacity>
+                ))
+              )}
+            </ScrollView>
+          </SafeAreaView>
+        </View>
+      </SafeAreaProvider>
     </Modal>
   );
 };

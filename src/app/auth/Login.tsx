@@ -45,7 +45,10 @@ export default function LoginScreen() {
     setPasswordError(passVal.error || "");
 
     if (!emailVal.isValid) {
-      showToast(emailVal.error || "Please enter a valid email address.", "warning");
+      showToast(
+        emailVal.error || "Please enter a valid email address.",
+        "warning",
+      );
       return;
     }
 
@@ -59,7 +62,9 @@ export default function LoginScreen() {
       await signIn(email.trim(), password);
       showToast("Signed in successfully! Welcome back.", "success");
     } catch (err: any) {
-      const msg = err?.message || "Invalid email or password. Please check your credentials.";
+      const msg =
+        err?.message ||
+        "Invalid email or password. Please check your credentials.";
       setGeneralError(msg);
       showToast(msg, "error");
     } finally {
@@ -139,7 +144,9 @@ export default function LoginScreen() {
             <View className="w-full relative justify-center">
               <RNTextInput
                 className={`w-full h-[52px] bg-white/95 border ${
-                  passwordError ? "border-[#FF3B30] bg-[#FFF8F8]" : "border-gray-200"
+                  passwordError
+                    ? "border-[#FF3B30] bg-[#FFF8F8]"
+                    : "border-gray-200"
                 } rounded-2xl pl-4 pr-12 text-base text-gray-900 shadow-sm`}
                 placeholder="Enter your password"
                 placeholderTextColor="#9CA3AF"
@@ -178,7 +185,7 @@ export default function LoginScreen() {
             onPress={() => router.push("/auth/ForgotPassword" as any)}
             activeOpacity={0.7}
           >
-            <Text className="text-sm font-medium text-neutral-700">
+            <Text className="text-md font-medium text-neutral-700">
               Forgot Password?
             </Text>
           </TouchableOpacity>
@@ -202,7 +209,7 @@ export default function LoginScreen() {
 
           {/* Footer */}
           <View className="flex-row justify-center items-center mt-6 w-full">
-            <Text className="text-sm text-neutral-600">
+            <Text className="text-md text-neutral-600">
               Don't have an account?{" "}
             </Text>
             <TouchableOpacity
@@ -210,9 +217,7 @@ export default function LoginScreen() {
               activeOpacity={0.7}
               className="py-1"
             >
-              <Text className="text-sm font-bold text-[#72AF5B]">
-                Sign Up
-              </Text>
+              <Text className="text-md font-bold text-[#72AF5B]">Sign Up</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -220,4 +225,3 @@ export default function LoginScreen() {
     </ImageBackground>
   );
 }
-

@@ -13,18 +13,25 @@ import {
   toggleSavePostApi,
   updatePostApi,
 } from "@/services/post-service";
+import {
+  getRSBSAApplication,
+  RSBSAApplication,
+} from "@/services/rsbsa-service";
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useRef, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
+  Dimensions,
   Easing,
   Image,
+  KeyboardAvoidingView,
   Modal,
   PanResponder,
+  Platform,
   Pressable,
   RefreshControl,
-  SafeAreaView,
   ScrollView,
   Switch,
   Text,
@@ -32,8 +39,15 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 
-import CreatePostModal from "../../components/CreatePostModal";
+import CreatePostModal, {
+  STATIC_POST_LOCATIONS,
+} from "../../components/CreatePostModal";
+import LeafletMap from "../../components/LeafletMap";
 import BottomNavBar from "../../components/Navigation";
 import UserHeader from "../../components/UserHeader";
 
@@ -65,6 +79,9 @@ interface Post {
   likes: number;
   comments: number;
   shares: number;
+  category?: string;
+  expiresAt?: number | string | null;
+  durationLabel?: string;
 }
 
 type ReactionType = "like" | "heart" | "care" | "wow";
@@ -109,6 +126,49 @@ interface BookmarkCollection {
 const DEFAULT_BOOKMARK_COLLECTIONS: BookmarkCollection[] = [
   { id: "saved", name: "Saved Items", icon: "bookmark" },
 ];
+
+const getStaticLocationCoords = (locationName?: string) => {
+  if (!locationName) {
+    return { latitude: 8.2283, longitude: 124.2452 };
+  }
+  const match = STATIC_POST_LOCATIONS.find(
+    (loc) =>
+      locationName.toLowerCase().includes(loc.barangay.toLowerCase()) ||
+      loc.name.toLowerCase().includes(locationName.toLowerCase()),
+  );
+  if (match) {
+    return { latitude: match.latitude, longitude: match.longitude };
+  }
+  return { latitude: 8.2283, longitude: 124.2452 };
+};
+
+const formatTemporaryRemainingTime = (expiresAt?: number | string | null) => {
+  if (!expiresAt) return "24h left";
+  const exp =
+    typeof expiresAt === "number" ? expiresAt : new Date(expiresAt).getTime();
+  const diff = exp - Date.now();
+  if (diff <= 0) return "Expired";
+  const totalSeconds = Math.floor(diff / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s left`;
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes < 60) return `${minutes}m ${seconds}s left`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMins = minutes % 60;
+  if (hours < 24) return `${hours}h ${remainingMins}m left`;
+  const days = Math.floor(hours / 24);
+  return `${days}d left`;
+};
+
+const isPostExpired = (post: PostItem | Post) => {
+  if (post.category !== "Temporary") return false;
+  if (!post.expiresAt) return false;
+  const exp =
+    typeof post.expiresAt === "number"
+      ? post.expiresAt
+      : new Date(post.expiresAt).getTime();
+  return Date.now() >= exp;
+};
 
 const mockUserStories: UserStory[] = [
   {
@@ -296,7 +356,7 @@ const POSTS: Post[] = [
     authorName: "Paulbert Landicho",
     authorRole: "Wholesaler",
     avatarUri: "https://i.pravatar.cc/150?img=11",
-    location: "Iligan City, Philippines",
+    location: "Pala-o, Iligan City",
     timeAgo: "2h ago",
     content:
       "Mga suki! Naa tay presko ug tam-is nga apple karon.🍎 Puno sa vitamins ug perfect para sa tibuok pamilya!",
@@ -308,10 +368,13 @@ const POSTS: Post[] = [
   {
     id: "2",
     authorName: "Nez Uy",
-    authorRole: "Temprary",
+    authorRole: "Temporary",
     avatarUri: "https://i.pravatar.cc/150?img=5",
-    location: "Iligan City, Philippines",
+    location: "",
     timeAgo: "4h ago",
+    category: "Temporary",
+    expiresAt: Date.now() + 20 * 3600 * 1000,
+    durationLabel: "24 Hours (Default)",
     content:
       "Mga suki! Naa tay presko nga durian karon. Puno sa vitamins ug perfect para sa tibuok pamilya!",
     imageSource: require("../../../assets/images/products/durian.jpg"),
@@ -324,7 +387,7 @@ const POSTS: Post[] = [
     authorName: "Juan Dela Cruz",
     authorRole: "Wholesaler",
     avatarUri: "https://i.pravatar.cc/150?img=8",
-    location: "Iligan City, Philippines",
+    location: "Tubod, Iligan City",
     timeAgo: "6h ago",
     content:
       "Mga suki! Naa tay presko ug tam-is nga mga orange karon. 🍊 Puno sa vitamins ug perfect para sa tibuok pamilya!",
@@ -338,7 +401,7 @@ const POSTS: Post[] = [
     authorName: "Kent Zorel Elnas",
     authorRole: "field",
     avatarUri: "https://i.pravatar.cc/150?img=9",
-    location: "Iligan City, Philippines",
+    location: "",
     timeAgo: "1d ago",
     content:
       "Mga suki! Naa tay presko ug tam-is nga mga pineapple karon. 🍍 Puno sa vitamins ug perfect para sa tibuok pamilya!",
@@ -352,7 +415,54 @@ const POSTS: Post[] = [
 const STORY_DURATION = 4000;
 
 export default function NewsFeed() {
+  const router = useRouter();
+  const insets = useSafeAreaInsets();
   const { user } = useAuth();
+  const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
+  const [, setCurrentTime] = useState(() => Date.now());
+
+  // 1-second countdown ticker for temporary flash posts
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // Fullscreen Image Lightbox Modal State
+  const [previewImage, setPreviewImage] = useState<{
+    uri?: string;
+    source?: any;
+    caption?: string;
+    authorName?: string;
+    authorRole?: string;
+    avatarUri?: string;
+    timeAgo?: string;
+    postId?: string;
+    isVerified?: boolean;
+    likes?: number;
+    comments?: number;
+    shares?: number;
+    isLiked?: boolean;
+    isSaved?: boolean;
+  } | null>(null);
+  const [activeCommentsPostId, setActiveCommentsPostId] = useState<
+    string | null
+  >(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    getRSBSAApplication()
+      .then((app) => {
+        if (isMounted) setRsbsaApp(app);
+      })
+      .catch((err) => console.log("[NewsFeed] Failed to load RSBSA:", err));
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  const isRSBSAVerified = rsbsaApp?.status === "verified";
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeSubStoryIndex, setActiveSubStoryIndex] = useState<number>(0);
   const [isStoryModalVisible, setStoryModalVisible] = useState(false);
@@ -362,9 +472,9 @@ export default function NewsFeed() {
   const [selectedStoryImage, setSelectedStoryImage] = useState<string | null>(
     null,
   );
-  const [storyPrivacy, setStoryPrivacy] = useState<"Public" | "Friends" | "Only me">(
-    "Public",
-  );
+  const [storyPrivacy, setStoryPrivacy] = useState<
+    "Public" | "Friends" | "Only me"
+  >("Public");
   const [isDefaultStoryAudience, setIsDefaultStoryAudience] = useState(false);
   const [isCreatePostVisible, setCreatePostVisible] = useState(false);
   const [expandedPostId, setExpandedPostId] = useState<string | null>(null);
@@ -409,9 +519,79 @@ export default function NewsFeed() {
     Record<string, boolean>
   >({});
   const { showToast } = useToast();
-  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>({});
-  const [loadingComments, setLoadingComments] = useState<Record<string, boolean>>({});
-  const [submittingComments, setSubmittingComments] = useState<Record<string, boolean>>({});
+  const [postComments, setPostComments] = useState<
+    Record<string, CommentItem[]>
+  >({});
+  const [loadingComments, setLoadingComments] = useState<
+    Record<string, boolean>
+  >({});
+  const [submittingComments, setSubmittingComments] = useState<
+    Record<string, boolean>
+  >({});
+
+  // Swipe-to-dismiss gesture handling for comments sheets
+  const standaloneCommentsTranslateY = useRef(new Animated.Value(0)).current;
+  const standaloneCommentsPanResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: (_, gestureState) => {
+        return gestureState.dy > 5;
+      },
+      onPanResponderMove: (_, gestureState) => {
+        if (gestureState.dy > 0) {
+          standaloneCommentsTranslateY.setValue(gestureState.dy);
+        }
+      },
+      onPanResponderRelease: (_, gestureState) => {
+        if (gestureState.dy > 70 || gestureState.vy > 0.5) {
+          Animated.timing(standaloneCommentsTranslateY, {
+            toValue: Dimensions.get("window").height,
+            duration: 180,
+            useNativeDriver: true,
+          }).start(() => {
+            setActiveCommentsPostId(null);
+            setReplyingTo(null);
+            standaloneCommentsTranslateY.setValue(0);
+          });
+        } else {
+          Animated.spring(standaloneCommentsTranslateY, {
+            toValue: 0,
+            bounciness: 4,
+            useNativeDriver: true,
+          }).start();
+        }
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(standaloneCommentsTranslateY, {
+          toValue: 0,
+          useNativeDriver: true,
+        }).start();
+      },
+    }),
+  ).current;
+
+  const handleCloseLightbox = () => {
+    setPreviewImage(null);
+  };
+
+  const handleOpenPreview = (data: {
+    uri?: string;
+    source?: any;
+    caption?: string;
+    authorName?: string;
+    authorRole?: string;
+    avatarUri?: string;
+    timeAgo?: string;
+    postId?: string;
+    isVerified?: boolean;
+    likes?: number;
+    comments?: number;
+    shares?: number;
+    isLiked?: boolean;
+    isSaved?: boolean;
+  }) => {
+    setPreviewImage(data);
+  };
 
   const [posts, setPosts] = useState<PostItem[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState(true);
@@ -422,7 +602,7 @@ export default function NewsFeed() {
       const data = await getPostsApi();
       setPosts(data);
     } catch (err) {
-      console.warn("Failed to fetch posts:", err);
+      console.log("[NewsFeed] Failed to fetch posts:", err);
     } finally {
       setIsLoadingPosts(false);
       setIsRefreshingPosts(false);
@@ -432,6 +612,12 @@ export default function NewsFeed() {
   useEffect(() => {
     fetchFeedPosts();
   }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      fetchFeedPosts();
+    }, [])
+  );
 
   const handleNewPostCreated = (newPost: PostItem) => {
     setPosts((prev) => [newPost, ...prev]);
@@ -452,7 +638,7 @@ export default function NewsFeed() {
           };
         }
         return p;
-      })
+      }),
     );
 
     setSelectedReactions((prev) => {
@@ -467,11 +653,13 @@ export default function NewsFeed() {
       const res = await toggleLikePostApi(postId);
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === postId ? { ...p, isLiked: res.isLiked, likes: res.likesCount } : p
-        )
+          p.id === postId
+            ? { ...p, isLiked: res.isLiked, likes: res.likesCount }
+            : p,
+        ),
       );
     } catch (err) {
-      console.warn("Error toggling like:", err);
+      console.log("[NewsFeed] Error toggling like:", err);
     }
   };
 
@@ -483,32 +671,80 @@ export default function NewsFeed() {
     setActiveReactionPostId(null);
   };
 
+  // Share to Feed Dialog Modal State
+  const [shareDialogPost, setShareDialogPost] = useState<PostItem | null>(null);
+  const [shareCaption, setShareCaption] = useState("");
+  const [isSharingPost, setIsSharingPost] = useState(false);
+
   const handleToggleShare = (postId: string) => {
     if (activeReactionPostId) setActiveReactionPostId(null);
     setActiveSharePostId((prev) => (prev === postId ? null : postId));
   };
 
+  const handleOpenShareDialog = (post: PostItem) => {
+    setActiveSharePostId(null);
+    setShareCaption("");
+    setShareDialogPost(post);
+  };
+
   const handleShareOptionClick = async (postId: string, optionId: string) => {
     setActiveSharePostId(null);
+    const targetPost = posts.find((p) => p.id === postId);
+
+    if (optionId === "public" || optionId === "feed") {
+      if (targetPost) {
+        handleOpenShareDialog(targetPost);
+      }
+      return;
+    }
+
+    if (optionId === "copy") {
+      showToast("Post link copied to clipboard!", "success");
+      return;
+    }
+
     try {
       const res = await sharePostApi(postId, optionId);
       setPosts((prev) => {
         const updated = prev.map((p) =>
-          p.id === postId ? { ...p, shares: res.sharesCount } : p
+          p.id === postId ? { ...p, shares: res.sharesCount } : p,
         );
         if (res.sharedPost) {
           return [res.sharedPost, ...updated];
         }
         return updated;
       });
-      showToast(
-        optionId === "public"
-          ? "Post shared to your feed!"
-          : `Post shared! (${optionId})`,
-        "success"
-      );
+      showToast(`Post shared! (${optionId})`, "success");
     } catch (err: any) {
       showToast(err?.message || "Failed to share post.", "error");
+    }
+  };
+
+  const handleConfirmShare = async () => {
+    if (!shareDialogPost) return;
+    setIsSharingPost(true);
+    try {
+      const res = await sharePostApi(
+        shareDialogPost.id,
+        "public",
+        shareCaption.trim(),
+      );
+      setPosts((prev) => {
+        const updated = prev.map((p) =>
+          p.id === shareDialogPost.id ? { ...p, shares: res.sharesCount } : p,
+        );
+        if (res.sharedPost) {
+          return [res.sharedPost, ...updated];
+        }
+        return updated;
+      });
+      showToast("Post shared to your feed!", "success");
+      setShareDialogPost(null);
+      setShareCaption("");
+    } catch (err: any) {
+      showToast(err?.message || "Failed to share post.", "error");
+    } finally {
+      setIsSharingPost(false);
     }
   };
 
@@ -516,23 +752,17 @@ export default function NewsFeed() {
     if (activeReactionPostId) setActiveReactionPostId(null);
     if (activeSharePostId) setActiveSharePostId(null);
 
-    if (expandedPostId === postId) {
-      setExpandedPostId(null);
-      return;
-    }
-
-    setExpandedPostId(postId);
-
+    setActiveCommentsPostId(postId);
     if (!postComments[postId]) {
       setLoadingComments((prev) => ({ ...prev, [postId]: true }));
-      try {
-        const data = await getPostCommentsApi(postId);
-        setPostComments((prev) => ({ ...prev, [postId]: data }));
-      } catch (err) {
-        console.warn("Failed to load comments:", err);
-      } finally {
-        setLoadingComments((prev) => ({ ...prev, [postId]: false }));
-      }
+      getPostCommentsApi(postId)
+        .then((items) =>
+          setPostComments((prev) => ({ ...prev, [postId]: items })),
+        )
+        .catch((err) => console.log("[NewsFeed] Failed to load comments:", err))
+        .finally(() =>
+          setLoadingComments((prev) => ({ ...prev, [postId]: false })),
+        );
     }
   };
 
@@ -545,11 +775,19 @@ export default function NewsFeed() {
     const currentReply = replyingTo;
     setReplyingTo(null);
 
+    // Determine parent thread id to auto-expand replies
+    const allComments = postComments[postId] || [];
+    const parentComment = currentReply?.commentId
+      ? allComments.find((c) => c.id === currentReply.commentId)
+      : null;
+    const threadRootId =
+      parentComment?.parentId || currentReply?.commentId || null;
+
     try {
       const newComment = await addPostCommentApi(
         postId,
         text,
-        currentReply?.commentId || null
+        currentReply?.commentId || null,
       );
 
       setPostComments((prev) => ({
@@ -557,15 +795,51 @@ export default function NewsFeed() {
         [postId]: [...(prev[postId] || []), newComment],
       }));
 
+      if (threadRootId) {
+        setExpandedReplyCommentIds((prev) => ({
+          ...prev,
+          [threadRootId]: true,
+        }));
+      }
+
       setPosts((prev) =>
         prev.map((p) =>
-          p.id === postId ? { ...p, comments: p.comments + 1 } : p
-        )
+          p.id === postId ? { ...p, comments: p.comments + 1 } : p,
+        ),
       );
 
       showToast("Comment posted!", "success");
-    } catch (err: any) {
-      showToast(err?.message || "Failed to post comment.", "error");
+    } catch {
+      const fallbackComment: CommentItem = {
+        id: Date.now().toString(),
+        postId,
+        parentId: currentReply?.commentId || null,
+        userId: String(user?.id || "me"),
+        authorName: user?.name || user?.username || "You",
+        avatarUri:
+          user?.avatarUrl ||
+          "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
+        timeAgo: "Just now",
+        content: text,
+        likes: 0,
+        isLiked: false,
+      };
+      setPostComments((prev) => ({
+        ...prev,
+        [postId]: [...(prev[postId] || []), fallbackComment],
+      }));
+      if (threadRootId) {
+        setExpandedReplyCommentIds((prev) => ({
+          ...prev,
+          [threadRootId]: true,
+        }));
+      }
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId ? { ...p, comments: p.comments + 1 } : p,
+        ),
+      );
+      showToast("Comment posted!", "success");
     } finally {
       setSubmittingComments((prev) => ({ ...prev, [postId]: false }));
     }
@@ -602,17 +876,63 @@ export default function NewsFeed() {
         [postId]: (prev[postId] || []).map((c) =>
           c.id === commentId
             ? { ...c, isLiked: res.isLiked, likes: res.likesCount }
-            : c
+            : c,
         ),
       }));
     } catch (err) {
-      console.warn("Failed to toggle comment like:", err);
+      console.log("[NewsFeed] Failed to toggle comment like:", err);
     }
   };
 
   // Post Options Menu & Edit / Delete / Privacy Modals
-  const [selectedPostForMenu, setSelectedPostForMenu] = useState<PostItem | null>(null);
+  const [selectedPostForMenu, setSelectedPostForMenu] =
+    useState<PostItem | null>(null);
   const [isPostMenuVisible, setIsPostMenuVisible] = useState(false);
+
+  // Swipe-to-dismiss gesture handling for post options sheet
+  const [postOptionsMenuTranslateY] = useState(() => new Animated.Value(0));
+  const postOptionsMenuPanResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+          return (
+            gestureState.dy > 5 &&
+            Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
+          );
+        },
+        onPanResponderMove: (_, gestureState) => {
+          if (gestureState.dy > 0) {
+            postOptionsMenuTranslateY.setValue(gestureState.dy);
+          }
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          if (gestureState.dy > 60 || gestureState.vy > 0.5) {
+            Animated.timing(postOptionsMenuTranslateY, {
+              toValue: Dimensions.get("window").height,
+              duration: 180,
+              useNativeDriver: true,
+            }).start(() => {
+              setIsPostMenuVisible(false);
+              postOptionsMenuTranslateY.setValue(0);
+            });
+          } else {
+            Animated.spring(postOptionsMenuTranslateY, {
+              toValue: 0,
+              bounciness: 4,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(postOptionsMenuTranslateY, {
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+        },
+      }),
+    [postOptionsMenuTranslateY],
+  );
 
   // Edit Modal State
   const [isEditModalVisible, setIsEditModalVisible] = useState(false);
@@ -634,6 +954,7 @@ export default function NewsFeed() {
   };
 
   const handleOpenPostMenu = (post: PostItem) => {
+    postOptionsMenuTranslateY.setValue(0);
     setSelectedPostForMenu(post);
     setIsPostMenuVisible(true);
   };
@@ -667,8 +988,8 @@ export default function NewsFeed() {
                 privacy: res.post.privacy,
                 authorRole: res.post.category,
               }
-            : p
-        )
+            : p,
+        ),
       );
 
       showToast("Post updated successfully!", "success");
@@ -691,8 +1012,8 @@ export default function NewsFeed() {
         prev.map((p) =>
           p.id === selectedPostForMenu.id
             ? { ...p, privacy: res.post.privacy }
-            : p
-        )
+            : p,
+        ),
       );
       showToast(`Privacy changed to ${privacy}!`, "success");
       setIsPrivacyModalVisible(false);
@@ -719,11 +1040,14 @@ export default function NewsFeed() {
     }
   };
 
-  const handleToggleSavePost = async (postId: string, collectionName: string = "All Saved") => {
+  const handleToggleSavePost = async (
+    postId: string,
+    collectionName: string = "All Saved",
+  ) => {
     try {
       const res = await toggleSavePostApi(postId, collectionName);
       setPosts((prev) =>
-        prev.map((p) => (p.id === postId ? { ...p, isSaved: res.isSaved } : p))
+        prev.map((p) => (p.id === postId ? { ...p, isSaved: res.isSaved } : p)),
       );
       setBookmarkedPosts((prev) => ({
         ...prev,
@@ -1001,7 +1325,11 @@ export default function NewsFeed() {
               ) : posts.length === 0 ? (
                 <View className="py-16 items-center justify-center px-6">
                   <View className="w-16 h-16 rounded-full bg-green-50 items-center justify-center mb-3">
-                    <Ionicons name="newspaper-outline" size={32} color="#72AF5B" />
+                    <Ionicons
+                      name="newspaper-outline"
+                      size={32}
+                      color="#72AF5B"
+                    />
                   </View>
                   <Text className="text-base font-bold text-gray-800 mb-1">
                     No posts yet
@@ -1011,671 +1339,903 @@ export default function NewsFeed() {
                   </Text>
                 </View>
               ) : (
-                posts.map((post) => {
-                const isExpanded = expandedPostId === post.id;
-                const isReactionMenuOpen = activeReactionPostId === post.id;
-                const isShareMenuOpen = activeSharePostId === post.id;
-                const isCardElevated = isReactionMenuOpen || isShareMenuOpen;
+                posts
+                  .filter((p) => !isPostExpired(p))
+                  .map((post) => {
+                    const isExpanded = expandedPostId === post.id;
+                    const isReactionMenuOpen = activeReactionPostId === post.id;
+                    const isShareMenuOpen = activeSharePostId === post.id;
+                    const isCardElevated =
+                      isReactionMenuOpen || isShareMenuOpen;
 
-                const currentReaction = selectedReactions[post.id];
-                const currentReactionConfig = REACTIONS.find(
-                  (r) => r.type === currentReaction,
-                );
+                    const currentReaction = selectedReactions[post.id];
+                    const currentReactionConfig = REACTIONS.find(
+                      (r) => r.type === currentReaction,
+                    );
 
-                const isBookmarked = Boolean(post.isSaved || bookmarkedPosts[post.id]);
+                    const isBookmarked = Boolean(
+                      post.isSaved || bookmarkedPosts[post.id],
+                    );
 
-                return (
-                  <View
-                    key={post.id}
-                    className={`bg-white mx-2 mb-4 rounded-xl shadow-sm border border-gray-100 relative ${
-                      isCardElevated ? "z-50" : "z-0"
-                    }`}
-                    style={{
-                      zIndex: isCardElevated ? 50 : 1,
-                      elevation: isCardElevated ? 10 : 1,
-                    }}
-                  >
-                    {/* Inline Reaction Popover (Absolute Positioning) */}
-                    {isReactionMenuOpen && (
+                    return (
                       <View
-                        className="absolute bottom-12 left-4 z-50 bg-white rounded-full shadow-lg border border-gray-100 flex-row items-center px-4 py-2 gap-4"
+                        key={post.id}
+                        className={`bg-white mx-2 mb-4 rounded-xl shadow-sm border border-gray-100 relative ${
+                          isCardElevated ? "z-50" : "z-0"
+                        }`}
                         style={{
-                          elevation: 8,
-                          boxShadow: "0 4px 10px rgba(0, 0, 0, 0.15)",
+                          zIndex: isCardElevated ? 50 : 1,
+                          elevation: isCardElevated ? 10 : 1,
                         }}
                       >
-                        {REACTIONS.map((r) => (
-                          <TouchableOpacity
-                            key={r.type}
-                            onPress={() =>
-                              handleSelectReaction(post.id, r.type)
-                            }
-                            className="items-center justify-center active:scale-125"
-                            activeOpacity={0.7}
+                        {/* Inline Reaction Popover (Absolute Positioning) */}
+                        {isReactionMenuOpen && (
+                          <View
+                            className="absolute bottom-12 left-4 z-50 bg-white rounded-full shadow-lg border border-gray-100 flex-row items-center px-4 py-2 gap-4"
+                            style={{
+                              elevation: 8,
+                              boxShadow: "0 4px 10px rgba(0, 0, 0, 0.15)",
+                            }}
                           >
-                            <Text className="text-2xl">{r.emoji}</Text>
-                          </TouchableOpacity>
-                        ))}
-                      </View>
-                    )}
-
-                    {/* Inline Share Popover Menu (Absolute Positioning) */}
-                    {isShareMenuOpen && (
-                      <View
-                        className="absolute bottom-12 right-4 z-50 w-56 bg-white rounded-xl shadow-lg border border-gray-100 py-1"
-                        style={{
-                          elevation: 8,
-                          boxShadow: "0 4px 10px rgba(0, 0, 0, 0.15)",
-                        }}
-                      >
-                        {SHARE_OPTIONS.map((option, idx) => {
-                          const isLast = idx === SHARE_OPTIONS.length - 1;
-
-                          return (
-                            <TouchableOpacity
-                              key={option.id}
-                              onPress={() =>
-                                handleShareOptionClick(post.id, option.id)
-                              }
-                              className={`flex-row items-center px-4 py-3 active:bg-gray-50 ${
-                                !isLast ? "border-b border-gray-100" : ""
-                              }`}
-                              activeOpacity={0.7}
-                            >
-                              <Ionicons
-                                name={option.icon}
-                                size={20}
-                                color="#374151"
-                              />
-                              <Text className="text-sm font-medium text-gray-800 ml-3">
-                                {option.title}
-                              </Text>
-                            </TouchableOpacity>
-                          );
-                        })}
-                      </View>
-                    )}
-
-                    <View className="p-4">
-                      {/* Shared Post Header Banner */}
-                      {post.isShared && post.originalPost && (
-                        <View className="flex-row items-center mb-2.5 px-0.5">
-                          <Ionicons name="arrow-redo" size={15} color="#72AF5B" />
-                          <Text className="text-xs text-gray-500 font-medium ml-1.5">
-                            <Text className="font-bold text-gray-900">
-                              {post.authorName}
-                            </Text>{" "}
-                            shared a post
-                          </Text>
-                        </View>
-                      )}
-
-                      {/* Post Header */}
-                      <View className="flex-row justify-between items-start mb-3">
-                        <View className="flex-row items-center">
-                          <View className="h-10 w-10 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
-                            {post.avatarUri ? (
-                              <Image
-                                source={{ uri: post.avatarUri }}
-                                style={{ width: "100%", height: "100%" }}
-                                resizeMode="cover"
-                              />
-                            ) : (
-                              <Ionicons name="person" size={20} color="#72AF5B" />
-                            )}
-                          </View>
-                          <View>
-                            <View className="flex-row items-center">
-                              <Text className="font-bold text-gray-900 mr-2 text-base">
-                                {post.authorName}
-                              </Text>
-                              <Text className="text-green-600 text-xs font-bold bg-green-50 px-1.5 py-0.5 rounded">
-                                {post.authorRole}
-                              </Text>
-                            </View>
-                            <View className="flex-row items-center mt-0.5">
-                              <Ionicons
-                                name="location"
-                                size={12}
-                                color="#72AF5B"
-                              />
-                              <Text className="text-xs text-gray-500 ml-1 mr-2">
-                                {post.location} • {post.timeAgo}
-                              </Text>
-                              <Ionicons
-                                name={
-                                  post.privacy === "Friends"
-                                    ? "people-outline"
-                                    : post.privacy === "Only me"
-                                    ? "lock-closed-outline"
-                                    : "globe-outline"
+                            {REACTIONS.map((r) => (
+                              <TouchableOpacity
+                                key={r.type}
+                                onPress={() =>
+                                  handleSelectReaction(post.id, r.type)
                                 }
-                                size={12}
-                                color="#9ca3af"
-                              />
-                            </View>
+                                className="items-center justify-center active:scale-125"
+                                activeOpacity={0.7}
+                              >
+                                <Text className="text-2xl">{r.emoji}</Text>
+                              </TouchableOpacity>
+                            ))}
                           </View>
-                        </View>
-                        <TouchableOpacity
-                          onPress={() => handleOpenPostMenu(post)}
-                          className="p-1.5 active:opacity-60"
-                          accessibilityRole="button"
-                          accessibilityLabel="Post options"
-                        >
-                          <Ionicons
-                            name="ellipsis-horizontal"
-                            size={20}
-                            color="#9ca3af"
-                          />
-                        </TouchableOpacity>
-                      </View>
+                        )}
 
-                      {/* Post Content (Sharer's caption or post content) */}
-                      {!!post.content && (
-                        <Text className="text-gray-800 text-sm mb-3 leading-5">
-                          {post.content}
-                        </Text>
-                      )}
+                        {/* Inline Share Popover Menu (Absolute Positioning) */}
+                        {isShareMenuOpen && (
+                          <View
+                            className="absolute bottom-12 right-4 z-50 w-56 bg-white rounded-xl shadow-lg border border-gray-100 py-1"
+                            style={{
+                              elevation: 8,
+                              boxShadow: "0 4px 10px rgba(0, 0, 0, 0.15)",
+                            }}
+                          >
+                            {SHARE_OPTIONS.map((option, idx) => {
+                              const isLast = idx === SHARE_OPTIONS.length - 1;
 
-                      {/* Shared Post: Embedded Original Post Card */}
-                      {post.isShared && post.originalPost ? (
-                        <View className="border border-gray-200 rounded-xl p-3 bg-gray-50/80 mb-3">
-                          {/* Original Author Info */}
-                          <View className="flex-row items-center mb-2">
-                            <View className="h-8 w-8 rounded-full border border-gray-300 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
-                              {post.originalPost.avatarUri ? (
-                                <Image
-                                  source={{ uri: post.originalPost.avatarUri }}
-                                  style={{ width: "100%", height: "100%" }}
-                                  resizeMode="cover"
-                                />
-                              ) : (
+                              return (
+                                <TouchableOpacity
+                                  key={option.id}
+                                  onPress={() =>
+                                    handleShareOptionClick(post.id, option.id)
+                                  }
+                                  className={`flex-row items-center px-4 py-3 active:bg-gray-50 ${
+                                    !isLast ? "border-b border-gray-100" : ""
+                                  }`}
+                                  activeOpacity={0.7}
+                                >
+                                  <Ionicons
+                                    name={option.icon}
+                                    size={20}
+                                    color="#374151"
+                                  />
+                                  <Text className="text-sm font-medium text-gray-800 ml-3">
+                                    {option.title}
+                                  </Text>
+                                </TouchableOpacity>
+                              );
+                            })}
+                          </View>
+                        )}
+
+                        <View className="p-4">
+                          {/* Temporary Flash Post Urgency Banner */}
+                          {post.category === "Temporary" && (
+                            <View className="flex-row items-center justify-between px-3 py-2 mb-3 bg-amber-50 border border-amber-200/90 rounded-xl">
+                              <View className="flex-row items-center gap-1.5 flex-1 mr-2">
                                 <Ionicons
-                                  name="person"
-                                  size={16}
-                                  color="#6b7280"
+                                  name="flash"
+                                  size={13}
+                                  color="#D97706"
                                 />
-                              )}
-                            </View>
-                            <View>
-                              <View className="flex-row items-center">
-                                <Text className="font-bold text-gray-900 text-sm mr-1.5">
-                                  {post.originalPost.authorName}
+                                <Text
+                                  className="text-xs font-bold text-amber-900"
+                                  numberOfLines={1}
+                                >
+                                  Flash Post
                                 </Text>
-                                <Text className="text-gray-500 text-[10px] font-semibold bg-gray-200 px-1.5 py-0.5 rounded">
-                                  {post.originalPost.authorRole}
+                                {Boolean(post.durationLabel) && (
+                                  <Text className="text-[11px] text-amber-700 font-medium">
+                                    • {post.durationLabel}
+                                  </Text>
+                                )}
+                              </View>
+                              <View className="flex-row items-center gap-1 bg-amber-100/90 px-2.5 py-0.5 rounded-full border border-amber-200">
+                                <Ionicons
+                                  name="time"
+                                  size={12}
+                                  color="#B45309"
+                                />
+                                <Text className="text-[11px] font-bold text-amber-900">
+                                  {formatTemporaryRemainingTime(post.expiresAt)}
                                 </Text>
                               </View>
-                              <Text className="text-[11px] text-gray-400 mt-0.5">
-                                {post.originalPost.location} • {post.originalPost.timeAgo}
-                              </Text>
                             </View>
+                          )}
+
+                          {/* Shared Post Header Banner */}
+                          {post.isShared && post.originalPost && (
+                            <View className="flex-row items-center mb-2.5 px-0.5">
+                              <Ionicons
+                                name="arrow-redo"
+                                size={15}
+                                color="#72AF5B"
+                              />
+                              <View className="flex-row items-center ml-1.5 flex-wrap">
+                                <Text className="font-bold text-gray-900 text-xs">
+                                  {post.authorName}
+                                </Text>
+                                {(post.isVerified ||
+                                  ((Boolean(
+                                    user?.id && post.userId === String(user.id),
+                                  ) ||
+                                    post.authorName === user?.name ||
+                                    post.authorName === user?.username) &&
+                                    isRSBSAVerified)) && (
+                                  <Ionicons
+                                    name="checkmark-circle"
+                                    size={13}
+                                    color="#10B981"
+                                    style={{ marginHorizontal: 3 }}
+                                  />
+                                )}
+                                <Text className="text-xs text-gray-500 font-medium ml-1">
+                                  shared a post
+                                </Text>
+                              </View>
+                            </View>
+                          )}
+
+                          {/* Post Header */}
+                          <View className="flex-row justify-between items-start mb-3">
+                            <TouchableOpacity
+                              activeOpacity={0.85}
+                              onPress={() => {
+                                const isCurrentUser =
+                                  Boolean(
+                                    user?.id && post.userId === String(user.id),
+                                  ) ||
+                                  post.authorName === user?.name ||
+                                  post.authorName === user?.username;
+                                const isVerifiedUser =
+                                  Boolean(post.isVerified) ||
+                                  (isCurrentUser && isRSBSAVerified);
+
+                                router.push({
+                                  pathname: "/user/UserProfile",
+                                  params: {
+                                    userId: post.userId,
+                                    userName: post.authorName,
+                                    userAvatar: post.avatarUri,
+                                    userRole:
+                                      isCurrentUser && isRSBSAVerified
+                                        ? "RSBSA Verified Farmer"
+                                        : post.authorRole,
+                                    isVerified: isVerifiedUser
+                                      ? "true"
+                                      : "false",
+                                  },
+                                } as any);
+                              }}
+                              className="flex-row items-center flex-1 pr-2"
+                            >
+                              <View className="h-10 w-10 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
+                                {post.avatarUri ? (
+                                  <Image
+                                    source={{ uri: post.avatarUri }}
+                                    style={{ width: "100%", height: "100%" }}
+                                    resizeMode="cover"
+                                  />
+                                ) : (
+                                  <Ionicons
+                                    name="person"
+                                    size={20}
+                                    color="#72AF5B"
+                                  />
+                                )}
+                              </View>
+                              <View className="flex-1">
+                                <View className="flex-row items-center flex-wrap">
+                                  <Text className="font-bold text-gray-900 mr-1.5 text-base">
+                                    {post.authorName}
+                                  </Text>
+                                  {(post.isVerified ||
+                                    ((Boolean(
+                                      user?.id &&
+                                      post.userId === String(user.id),
+                                    ) ||
+                                      post.authorName === user?.name ||
+                                      post.authorName === user?.username) &&
+                                      isRSBSAVerified)) && (
+                                    <Ionicons
+                                      name="checkmark-circle"
+                                      size={16}
+                                      color="#10B981"
+                                      style={{ marginRight: 6 }}
+                                    />
+                                  )}
+                                  <Text
+                                    className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+                                      (Boolean(
+                                        user?.id &&
+                                        post.userId === String(user.id),
+                                      ) ||
+                                        post.authorName === user?.name ||
+                                        post.authorName === user?.username) &&
+                                      isRSBSAVerified
+                                        ? "text-emerald-700 bg-emerald-50"
+                                        : "text-green-600 bg-green-50"
+                                    }`}
+                                  >
+                                    {(Boolean(
+                                      user?.id &&
+                                      post.userId === String(user.id),
+                                    ) ||
+                                      post.authorName === user?.name ||
+                                      post.authorName === user?.username) &&
+                                    isRSBSAVerified
+                                      ? "RSBSA Verified Farmer"
+                                      : post.authorRole}
+                                  </Text>
+                                </View>
+                                <View className="flex-row items-center mt-0.5">
+                                  {Boolean(
+                                    post.location &&
+                                    post.location.trim().length > 0 &&
+                                    post.location !==
+                                      "Iligan City, Philippines",
+                                  ) && (
+                                    <>
+                                      <Ionicons
+                                        name="location"
+                                        size={12}
+                                        color="#72AF5B"
+                                      />
+                                      <Text className="text-xs text-gray-500 ml-1 mr-1.5">
+                                        {post.location} •
+                                      </Text>
+                                    </>
+                                  )}
+                                  <Text className="text-xs text-gray-500 mr-2">
+                                    {post.timeAgo}
+                                  </Text>
+                                  <Ionicons
+                                    name={
+                                      post.privacy === "Friends"
+                                        ? "people-outline"
+                                        : post.privacy === "Only me"
+                                          ? "lock-closed-outline"
+                                          : "globe-outline"
+                                    }
+                                    size={12}
+                                    color="#9ca3af"
+                                  />
+                                </View>
+                              </View>
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              onPress={() => handleOpenPostMenu(post)}
+                              className="p-1.5 active:opacity-60"
+                              accessibilityRole="button"
+                              accessibilityLabel="Post options"
+                            >
+                              <Ionicons
+                                name="ellipsis-horizontal"
+                                size={20}
+                                color="#9ca3af"
+                              />
+                            </TouchableOpacity>
                           </View>
 
-                          {/* Original Content Text */}
-                          {!!post.originalPost.content && (
-                            <Text className="text-gray-700 text-sm mb-2 leading-5">
-                              {post.originalPost.content}
+                          {/* Post Content (Sharer's caption or post content) */}
+                          {!!post.content && (
+                            <Text className="text-gray-800 text-sm mb-3 leading-5">
+                              {post.content}
                             </Text>
                           )}
 
-                          {/* Original Image */}
-                          {post.originalPost.imageUrl ? (
-                            <Image
-                              source={{ uri: post.originalPost.imageUrl }}
-                              className="w-full rounded-lg bg-gray-100"
-                              style={{
-                                width: "100%",
-                                height: 180,
-                                borderRadius: 8,
-                              }}
-                              resizeMode="cover"
-                            />
-                          ) : null}
-                        </View>
-                      ) : (
-                        /* Standard Post Image */
-                        post.imageUrl ? (
-                          <Image
-                            source={{ uri: post.imageUrl }}
-                            className="w-full rounded-lg mb-4 bg-gray-100"
-                            style={{
-                              width: "100%",
-                              height: 224,
-                              borderRadius: 8,
-                            }}
-                            resizeMode="cover"
-                          />
-                        ) : (post as any).imageSource ? (
-                          <Image
-                            source={(post as any).imageSource}
-                            className="w-full rounded-lg mb-4 bg-gray-100"
-                            style={{
-                              width: "100%",
-                              height: 224,
-                              borderRadius: 8,
-                            }}
-                            resizeMode="cover"
-                          />
-                        ) : null
-                      )}
-
-                      {/* Post Interaction Bar */}
-                      <View className="flex-row justify-between items-center pt-1 border-t border-gray-100">
-                        <View className="flex-row gap-6">
-                          {/* Like / Reaction Button Trigger */}
-                          <TouchableOpacity
-                            onPress={() => handleQuickLike(post.id)}
-                            onLongPress={() => {
-                              if (activeSharePostId) setActiveSharePostId(null);
-                              setActiveReactionPostId(post.id);
-                            }}
-                            delayLongPress={250}
-                            className="flex-row items-center gap-1.5 active:opacity-70"
-                          >
-                            {currentReaction ? (
-                              <>
-                                <Text className="text-base leading-none">
-                                  {currentReactionConfig?.emoji}
-                                </Text>
-                                <Text
-                                  className="font-bold text-sm"
-                                  style={{
-                                    color:
-                                      currentReactionConfig?.color || "#72AF5B",
-                                  }}
-                                >
-                                  {currentReactionConfig?.label} (
-                                  {post.likes})
-                                </Text>
-                              </>
-                            ) : post.isLiked ? (
-                              <>
-                                <Ionicons
-                                  name="heart"
-                                  size={24}
-                                  color="#EF4444"
-                                />
-                                <Text className="font-bold text-sm text-[#EF4444]">
-                                  {post.likes}
-                                </Text>
-                              </>
-                            ) : (
-                              <>
-                                <Ionicons
-                                  name="heart-outline"
-                                  size={24}
-                                  color="#6b7280"
-                                />
-                                <Text className="font-medium text-gray-500">
-                                  {post.likes}
-                                </Text>
-                              </>
-                            )}
-                          </TouchableOpacity>
-
-                          {/* Comment Toggle Button */}
-                          <TouchableOpacity
-                            onPress={() => toggleExpandComments(post.id)}
-                            className="flex-row items-center gap-1.5 active:opacity-70"
-                          >
-                            <Ionicons
-                              name={
-                                isExpanded ? "chatbubble" : "chatbubble-outline"
-                              }
-                              size={22}
-                              color={isExpanded ? "#72AF5B" : "#6b7280"}
-                            />
-                            <Text
-                              className={`font-medium ${
-                                isExpanded
-                                  ? "text-[#72AF5B] font-bold"
-                                  : "text-gray-500"
-                              }`}
-                            >
-                              {post.comments}
-                            </Text>
-                          </TouchableOpacity>
-
-                          {/* Share Button Trigger */}
-                          <TouchableOpacity
-                            onPress={() => handleToggleShare(post.id)}
-                            className="flex-row items-center gap-1.5 active:opacity-70"
-                          >
-                            <Ionicons
-                              name="share-social-outline"
-                              size={22}
-                              color={isShareMenuOpen ? "#72AF5B" : "#6b7280"}
-                            />
-                            <Text
-                              className={`font-medium ${
-                                isShareMenuOpen
-                                  ? "text-[#72AF5B] font-bold"
-                                  : "text-gray-500"
-                              }`}
-                            >
-                              {post.shares}
-                            </Text>
-                          </TouchableOpacity>
-                        </View>
-
-                        {/* Bookmark / Save Button Trigger */}
-                        <TouchableOpacity
-                          onPress={() => handleToggleSavePost(post.id)}
-                          onLongPress={() => setBookmarkPostId(post.id)}
-                          className="active:opacity-70 p-0.5"
-                          accessibilityRole="button"
-                          accessibilityLabel="Save post"
-                        >
-                          <Ionicons
-                            name={
-                              isBookmarked ? "bookmark" : "bookmark-outline"
-                            }
-                            size={24}
-                            color={isBookmarked ? "#72AF5B" : "#6b7280"}
-                          />
-                        </TouchableOpacity>
-                      </View>
-                    </View>
-
-                    {/* Inline Comments Section */}
-                    {isExpanded && (
-                      <View className="bg-gray-50 border-t border-gray-200 p-4 rounded-b-xl">
-                        {/* Header */}
-                        <Text className="text-sm font-semibold text-gray-900 mb-4">
-                          {(postComments[post.id] || []).length}{" "}
-                          {(postComments[post.id] || []).length === 1
-                            ? "Comment"
-                            : "Comments"}
-                        </Text>
-
-                        {loadingComments[post.id] ? (
-                          <View className="py-6 items-center justify-center">
-                            <ActivityIndicator size="small" color="#72AF5B" />
-                            <Text className="text-xs text-gray-400 mt-2">
-                              Loading comments...
-                            </Text>
-                          </View>
-                        ) : (postComments[post.id] || []).length === 0 ? (
-                          <View className="py-4 items-center justify-center">
-                            <Text className="text-xs text-gray-400">
-                              No comments yet. Be the first to share your thoughts!
-                            </Text>
-                          </View>
-                        ) : (
-                          (postComments[post.id] || [])
-                            .filter((c) => !c.parentId)
-                            .map((rootComment) => {
-                              const childReplies = (
-                                postComments[post.id] || []
-                              ).filter((c) => c.parentId === rootComment.id);
-                              const areRepliesExpanded =
-                                !!expandedReplyCommentIds[rootComment.id];
-
-                              const renderCommentItem = (
-                                comment: CommentItem,
-                                isReply: boolean,
-                              ) => {
-                                const currentCommentReaction =
-                                  commentReactions[comment.id];
-                                const hasCommentReaction =
-                                  Boolean(currentCommentReaction) ||
-                                  comment.isLiked;
-                                const commentLikesCount = comment.likes;
-
-                                return (
-                                  <View
-                                    key={comment.id}
-                                    className={`flex-row items-start mb-3.5 relative ${
-                                      isReply
-                                        ? "ml-12 pl-3 border-l-2 border-gray-200"
-                                        : ""
-                                    }`}
-                                  >
-                                    {/* Left Column (Avatar) */}
-                                    <View
-                                      className={`${
-                                        isReply ? "h-7 w-7" : "h-8 w-8"
-                                      } rounded-full mr-3 bg-gray-300 items-center justify-center overflow-hidden`}
-                                    >
-                                      {comment.avatarUri ? (
-                                        <Image
-                                          source={{ uri: comment.avatarUri }}
-                                          style={{
-                                            width: "100%",
-                                            height: "100%",
-                                          }}
-                                          resizeMode="cover"
-                                        />
-                                      ) : (
-                                        <Ionicons
-                                          name="person"
-                                          size={isReply ? 14 : 16}
-                                          color="#FFFFFF"
-                                        />
-                                      )}
-                                    </View>
-
-                                    {/* Right Column */}
-                                    <View className="flex-1">
-                                      {/* Author Row */}
-                                      <View className="flex-row justify-between items-center mb-1">
-                                        <Text
-                                          className={`${
-                                            isReply ? "text-xs" : "text-sm"
-                                          } font-bold text-gray-800`}
-                                        >
-                                          {comment.authorName}
-                                        </Text>
-                                        <Text className="text-xs text-gray-400">
-                                          {comment.timeAgo}
-                                        </Text>
-                                      </View>
-
-                                      {/* Comment Text */}
-                                      <Text className="text-sm text-gray-700 leading-5 mb-1">
-                                        {comment.content}
-                                      </Text>
-
-                                      {/* Interaction Bar */}
-                                      <View className="flex-row items-center gap-4 mt-1">
-                                        {/* Like / Heart Button Trigger */}
-                                        <TouchableOpacity
-                                          onPress={() =>
-                                            handleToggleCommentLike(
-                                              post.id,
-                                              comment.id,
-                                            )
-                                          }
-                                          className="flex-row items-center gap-1 active:opacity-70"
-                                        >
-                                          <Ionicons
-                                            name={
-                                              hasCommentReaction
-                                                ? "heart"
-                                                : "heart-outline"
-                                            }
-                                            size={16}
-                                            color={
-                                              hasCommentReaction
-                                                ? "#EF4444"
-                                                : "#6b7280"
-                                            }
-                                          />
-                                          <Text
-                                            className={`text-xs ${
-                                              hasCommentReaction
-                                                ? "text-[#EF4444] font-bold"
-                                                : "text-gray-500 font-medium"
-                                            }`}
-                                          >
-                                            {commentLikesCount}
-                                          </Text>
-                                        </TouchableOpacity>
-
-                                        {/* Reply Action Trigger */}
-                                        <TouchableOpacity
-                                          onPress={() => {
-                                            setReplyingTo({
-                                              commentId: comment.id,
-                                              username: comment.authorName,
-                                            });
-                                            commentInputRef.current?.focus();
-                                          }}
-                                          className="active:opacity-70"
-                                        >
-                                          <Text className="text-xs text-gray-500 font-medium hover:text-[#72AF5B]">
-                                            Reply
-                                          </Text>
-                                        </TouchableOpacity>
-                                      </View>
-                                    </View>
-                                  </View>
-                                );
-                              };
-
-                              return (
-                                <View key={rootComment.id}>
-                                  {/* Top-level Comment */}
-                                  {renderCommentItem(rootComment, false)}
-
-                                  {/* View Replies Toggle Button */}
-                                  {childReplies.length > 0 &&
-                                    !areRepliesExpanded && (
-                                      <TouchableOpacity
-                                        onPress={() =>
-                                          toggleRepliesVisibility(
-                                            rootComment.id,
-                                          )
-                                        }
-                                        className="flex-row items-center ml-12 mb-3.5 active:opacity-70"
-                                        activeOpacity={0.7}
-                                      >
-                                        <View className="w-5 h-[1.5px] bg-gray-300 mr-2 rounded-full" />
-                                        <Text className="text-xs font-semibold text-gray-600 ml-1 hover:text-[#72AF5B]">
-                                          View {childReplies.length}{" "}
-                                          {childReplies.length === 1
-                                            ? "reply"
-                                            : "replies"}
-                                        </Text>
-                                      </TouchableOpacity>
-                                    )}
-
-                                  {/* Expanded Replies List */}
-                                  {childReplies.length > 0 &&
-                                    areRepliesExpanded && (
-                                      <View className="mb-1">
-                                        {childReplies.map((reply) =>
-                                          renderCommentItem(reply, true),
-                                        )}
-
-                                        {/* Hide Replies Button */}
-                                        <TouchableOpacity
-                                          onPress={() =>
-                                            toggleRepliesVisibility(
-                                              rootComment.id,
-                                            )
-                                          }
-                                          className="flex-row items-center ml-12 mb-3.5 active:opacity-70"
-                                          activeOpacity={0.7}
-                                        >
-                                          <View className="w-5 h-[1.5px] bg-gray-300 mr-2 rounded-full" />
-                                          <Text className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]">
-                                            Hide replies
-                                          </Text>
-                                        </TouchableOpacity>
-                                      </View>
-                                    )}
-                                </View>
-                              );
-                            })
-                        )}
-
-                        {/* Bottom 'Add a comment...' Input Section */}
-                        <View className="mt-3 pt-2">
-                          {/* Replying Indicator (Conditional) */}
-                          {replyingTo && (
-                            <View className="bg-gray-100 px-4 py-2 flex-row justify-between items-center rounded-t-lg border-b border-gray-200">
-                              <Text className="text-xs text-gray-600">
-                                Replying to{" "}
-                                <Text className="font-bold text-gray-900">
-                                  @{replyingTo.username}
-                                </Text>
-                              </Text>
+                          {/* Shared Post: Embedded Original Post Card */}
+                          {post.isShared && post.originalPost ? (
+                            <View className="border border-gray-200 rounded-xl p-3 bg-gray-50/80 mb-3">
+                              {/* Original Author Info */}
                               <TouchableOpacity
-                                onPress={() => setReplyingTo(null)}
-                                className="p-0.5 active:opacity-70"
-                                accessibilityRole="button"
-                                accessibilityLabel="Cancel reply"
+                                activeOpacity={0.85}
+                                onPress={() => {
+                                  router.push({
+                                    pathname: "/user/UserProfile",
+                                    params: {
+                                      userId: post.originalPost?.userId,
+                                      userName: post.originalPost?.authorName,
+                                      userAvatar: post.originalPost?.avatarUri,
+                                      userRole: post.originalPost?.authorRole,
+                                      isVerified: post.originalPost?.isVerified
+                                        ? "true"
+                                        : "false",
+                                    },
+                                  } as any);
+                                }}
+                                className="flex-row items-center mb-2"
                               >
-                                <Ionicons
-                                  name="close-circle"
-                                  size={16}
-                                  color="#6B7280"
-                                />
+                                <View className="h-8 w-8 rounded-full border border-gray-300 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
+                                  {post.originalPost.avatarUri ? (
+                                    <Image
+                                      source={{
+                                        uri: post.originalPost.avatarUri,
+                                      }}
+                                      style={{ width: "100%", height: "100%" }}
+                                      resizeMode="cover"
+                                    />
+                                  ) : (
+                                    <Ionicons
+                                      name="person"
+                                      size={16}
+                                      color="#6b7280"
+                                    />
+                                  )}
+                                </View>
+                                <View>
+                                  <View className="flex-row items-center flex-wrap">
+                                    <Text className="font-bold text-gray-900 text-sm mr-1.5">
+                                      {post.originalPost.authorName}
+                                    </Text>
+                                    {post.originalPost.isVerified && (
+                                      <Ionicons
+                                        name="checkmark-circle"
+                                        size={13}
+                                        color="#10B981"
+                                        style={{ marginRight: 4 }}
+                                      />
+                                    )}
+                                    <Text className="text-gray-500 text-[10px] font-semibold bg-gray-200 px-1.5 py-0.5 rounded">
+                                      {post.originalPost.authorRole}
+                                    </Text>
+                                  </View>
+                                  <Text className="text-[11px] text-gray-400 mt-0.5">
+                                    {Boolean(
+                                      post.originalPost.location &&
+                                      post.originalPost.location.trim().length >
+                                        0 &&
+                                      post.originalPost.location !==
+                                        "Iligan City, Philippines",
+                                    )
+                                      ? `${post.originalPost.location} • `
+                                      : ""}
+                                    {post.originalPost.timeAgo}
+                                  </Text>
+                                </View>
+                              </TouchableOpacity>
+
+                              {/* Original Content Text */}
+                              {!!post.originalPost.content && (
+                                <Text className="text-gray-700 text-sm mb-2 leading-5">
+                                  {post.originalPost.content}
+                                </Text>
+                              )}
+
+                              {/* Original Image */}
+                              {post.originalPost.imageUrl ? (
+                                <TouchableOpacity
+                                  activeOpacity={0.9}
+                                  onPress={() =>
+                                    handleOpenPreview({
+                                      uri: post.originalPost!.imageUrl,
+                                      caption: post.originalPost!.content,
+                                      authorName: post.originalPost!.authorName,
+                                      timeAgo: post.originalPost!.timeAgo,
+                                      postId: post.id,
+                                      authorRole: post.authorRole,
+                                      avatarUri: post.avatarUri,
+                                      isVerified: post.isVerified,
+                                      likes: post.likes,
+                                      comments: post.comments,
+                                      shares: post.shares,
+                                      isLiked: post.isLiked,
+                                      isSaved: Boolean(
+                                        post.isSaved ||
+                                        bookmarkedPosts[post.id],
+                                      ),
+                                    })
+                                  }
+                                >
+                                  <Image
+                                    source={{ uri: post.originalPost.imageUrl }}
+                                    className="w-full rounded-lg bg-gray-100"
+                                    style={{
+                                      width: "100%",
+                                      height: 180,
+                                      borderRadius: 8,
+                                    }}
+                                    resizeMode="cover"
+                                  />
+                                </TouchableOpacity>
+                              ) : null}
+                            </View>
+                          ) : /* Standard Post Image */
+                          post.imageUrl ? (
+                            <TouchableOpacity
+                              activeOpacity={0.9}
+                              onPress={() =>
+                                handleOpenPreview({
+                                  uri: post.imageUrl,
+                                  caption: post.content,
+                                  authorName: post.authorName,
+                                  timeAgo: post.timeAgo,
+                                  postId: post.id,
+                                  authorRole: post.authorRole,
+                                  avatarUri: post.avatarUri,
+                                  isVerified: post.isVerified,
+                                  likes: post.likes,
+                                  comments: post.comments,
+                                  shares: post.shares,
+                                  isLiked: post.isLiked,
+                                  isSaved: Boolean(
+                                    post.isSaved || bookmarkedPosts[post.id],
+                                  ),
+                                })
+                              }
+                            >
+                              <Image
+                                source={{ uri: post.imageUrl }}
+                                className="w-full rounded-lg mb-4 bg-gray-100"
+                                style={{
+                                  width: "100%",
+                                  height: 224,
+                                  borderRadius: 8,
+                                }}
+                                resizeMode="cover"
+                              />
+                            </TouchableOpacity>
+                          ) : (post as any).imageSource ? (
+                            <TouchableOpacity
+                              activeOpacity={0.9}
+                              onPress={() =>
+                                handleOpenPreview({
+                                  source: (post as any).imageSource,
+                                  caption: post.content,
+                                  authorName: post.authorName,
+                                  timeAgo: post.timeAgo,
+                                  postId: post.id,
+                                  authorRole: post.authorRole,
+                                  avatarUri: post.avatarUri,
+                                  isVerified: post.isVerified,
+                                  likes: post.likes,
+                                  comments: post.comments,
+                                  shares: post.shares,
+                                  isLiked: post.isLiked,
+                                  isSaved: Boolean(
+                                    post.isSaved || bookmarkedPosts[post.id],
+                                  ),
+                                })
+                              }
+                            >
+                              <Image
+                                source={(post as any).imageSource}
+                                className="w-full rounded-lg mb-4 bg-gray-100"
+                                style={{
+                                  width: "100%",
+                                  height: 224,
+                                  borderRadius: 8,
+                                }}
+                                resizeMode="cover"
+                              />
+                            </TouchableOpacity>
+                          ) : null}
+
+                          {/* Attached Location Static Leaflet Map Card */}
+                          {Boolean(
+                            post.location &&
+                            post.location.trim().length > 0 &&
+                            post.location !== "Iligan City, Philippines",
+                          ) && (
+                            <View className="mb-3 rounded-2xl overflow-hidden border border-gray-200 bg-white shadow-2xs">
+                              <View className="flex-row items-center justify-between px-3.5 py-2 bg-gray-50/95 border-b border-gray-100">
+                                <View className="flex-row items-center gap-1.5 flex-1 mr-2">
+                                  <Ionicons
+                                    name="location-sharp"
+                                    size={14}
+                                    color="#72AF5B"
+                                  />
+                                  <Text
+                                    className="text-xs font-bold text-gray-900 flex-1"
+                                    numberOfLines={1}
+                                  >
+                                    {post.location}
+                                  </Text>
+                                </View>
+                                <TouchableOpacity
+                                  onPress={() =>
+                                    router.push("/user/ExploreMap" as any)
+                                  }
+                                  className="flex-row items-center gap-1 bg-white border border-[#72AF5B]/40 px-2.5 py-1 rounded-lg active:bg-green-50"
+                                  activeOpacity={0.7}
+                                >
+                                  <Ionicons
+                                    name="map"
+                                    size={12}
+                                    color="#72AF5B"
+                                  />
+                                  <Text className="text-[11px] font-bold text-[#72AF5B]">
+                                    Explore Map
+                                  </Text>
+                                </TouchableOpacity>
+                              </View>
+                              <TouchableOpacity
+                                activeOpacity={0.92}
+                                onPress={() =>
+                                  router.push("/user/ExploreMap" as any)
+                                }
+                                style={{ width: "100%", height: 180 }}
+                              >
+                                <View
+                                  style={{ width: "100%", height: "100%" }}
+                                  pointerEvents="none"
+                                >
+                                  <LeafletMap
+                                    latitude={
+                                      getStaticLocationCoords(post.location)
+                                        .latitude
+                                    }
+                                    longitude={
+                                      getStaticLocationCoords(post.location)
+                                        .longitude
+                                    }
+                                    zoom={14}
+                                    locationTitle={post.location}
+                                    interactive={false}
+                                  />
+                                </View>
                               </TouchableOpacity>
                             </View>
                           )}
 
-                          {/* Main Text Input Container */}
-                          <View
-                            className={`bg-white border border-gray-200 px-4 py-2.5 flex-row items-center shadow-xs ${
-                              replyingTo
-                                ? "rounded-b-xl rounded-t-none"
-                                : "rounded-xl"
-                            }`}
-                          >
-                            <TextInput
-                              ref={commentInputRef}
-                              value={commentInputs[post.id] || ""}
-                              onChangeText={(text) =>
-                                setCommentInputs((prev) => ({
-                                  ...prev,
-                                  [post.id]: text,
-                                }))
-                              }
-                              placeholder={
-                                replyingTo
-                                  ? `Reply to @${replyingTo.username}...`
-                                  : "Add a comment..."
-                              }
-                              placeholderTextColor="#9CA3AF"
-                              className="flex-1 text-sm text-gray-800 p-0"
-                              onSubmitEditing={() => handleAddComment(post.id)}
-                            />
-                            <TouchableOpacity
-                              onPress={() => handleAddComment(post.id)}
-                              disabled={
-                                !(commentInputs[post.id] || "").trim() ||
-                                submittingComments[post.id]
-                              }
-                              className="ml-2 bg-[#72AF5B] p-1.5 rounded-full items-center justify-center active:opacity-80 min-w-[28px] min-h-[28px]"
-                            >
-                              {submittingComments[post.id] ? (
-                                <ActivityIndicator
-                                  size="small"
-                                  color="#FFFFFF"
-                                />
-                              ) : (
+                          {/* Post Interaction Bar */}
+                          <View className="flex-row justify-between items-center pt-1 border-t border-gray-100">
+                            <View className="flex-row gap-6">
+                              {/* Like / Reaction Button Trigger */}
+                              <TouchableOpacity
+                                onPress={() => handleQuickLike(post.id)}
+                                onLongPress={() => {
+                                  if (activeSharePostId)
+                                    setActiveSharePostId(null);
+                                  setActiveReactionPostId(post.id);
+                                }}
+                                delayLongPress={250}
+                                className="flex-row items-center gap-1.5 active:opacity-70"
+                              >
+                                {currentReaction ? (
+                                  <>
+                                    <Text className="text-base leading-none">
+                                      {currentReactionConfig?.emoji}
+                                    </Text>
+                                    <Text
+                                      className="font-bold text-sm"
+                                      style={{
+                                        color:
+                                          currentReactionConfig?.color ||
+                                          "#72AF5B",
+                                      }}
+                                    >
+                                      {currentReactionConfig?.label} (
+                                      {post.likes})
+                                    </Text>
+                                  </>
+                                ) : post.isLiked ? (
+                                  <>
+                                    <Ionicons
+                                      name="heart"
+                                      size={24}
+                                      color="#EF4444"
+                                    />
+                                    <Text className="font-bold text-sm text-[#EF4444]">
+                                      {post.likes}
+                                    </Text>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Ionicons
+                                      name="heart-outline"
+                                      size={24}
+                                      color="#6b7280"
+                                    />
+                                    <Text className="font-medium text-gray-500">
+                                      {post.likes}
+                                    </Text>
+                                  </>
+                                )}
+                              </TouchableOpacity>
+
+                              {/* Comment Button (Opens Lightbox Modal with Comments Sheet) */}
+                              <TouchableOpacity
+                                onPress={() => toggleExpandComments(post.id)}
+                                className="flex-row items-center gap-1.5 active:opacity-70"
+                              >
                                 <Ionicons
-                                  name="send"
-                                  size={13}
-                                  color="#FFFFFF"
+                                  name="chatbubble-outline"
+                                  size={22}
+                                  color="#6b7280"
                                 />
-                              )}
+                                <Text className="font-medium text-gray-500">
+                                  {postComments[post.id] !== undefined
+                                    ? postComments[post.id].length
+                                    : post.comments}
+                                </Text>
+                              </TouchableOpacity>
+
+                              {/* Share Button Trigger */}
+                              <TouchableOpacity
+                                onPress={() => handleToggleShare(post.id)}
+                                className="flex-row items-center gap-1.5 active:opacity-70"
+                              >
+                                <Ionicons
+                                  name="share-social-outline"
+                                  size={22}
+                                  color={
+                                    isShareMenuOpen ? "#72AF5B" : "#6b7280"
+                                  }
+                                />
+                                <Text
+                                  className={`font-medium ${
+                                    isShareMenuOpen
+                                      ? "text-[#72AF5B] font-bold"
+                                      : "text-gray-500"
+                                  }`}
+                                >
+                                  {post.shares}
+                                </Text>
+                              </TouchableOpacity>
+                            </View>
+
+                            {/* Bookmark / Save Button Trigger */}
+                            <TouchableOpacity
+                              onPress={() => handleToggleSavePost(post.id)}
+                              onLongPress={() => setBookmarkPostId(post.id)}
+                              className="active:opacity-70 p-0.5"
+                              accessibilityRole="button"
+                              accessibilityLabel="Save post"
+                            >
+                              <Ionicons
+                                name={
+                                  isBookmarked ? "bookmark" : "bookmark-outline"
+                                }
+                                size={24}
+                                color={isBookmarked ? "#72AF5B" : "#6b7280"}
+                              />
                             </TouchableOpacity>
                           </View>
+
+                          {/* View all comments trigger (Opens Lightbox Modal) */}
+                          {(postComments[post.id] !== undefined
+                            ? postComments[post.id].length
+                            : post.comments) > 0 && (
+                            <TouchableOpacity
+                              onPress={() => toggleExpandComments(post.id)}
+                              className="mt-2.5 active:opacity-70"
+                            >
+                              <Text className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]">
+                                View all{" "}
+                                {postComments[post.id] !== undefined
+                                  ? postComments[post.id].length
+                                  : post.comments}{" "}
+                                {(postComments[post.id] !== undefined
+                                  ? postComments[post.id].length
+                                  : post.comments) === 1
+                                  ? "comment"
+                                  : "comments"}
+                              </Text>
+                            </TouchableOpacity>
+                          )}
                         </View>
                       </View>
-                    )}
-                  </View>
-                );
-              })
-            )}
+                    );
+                  })
+              )}
             </View>
           </ScrollView>
         </View>
       </Pressable>
+
+      {/* Facebook-style Share to Feed Dialog Modal */}
+      <Modal
+        visible={shareDialogPost !== null}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={() => {
+          if (!isSharingPost) {
+            setShareDialogPost(null);
+            setShareCaption("");
+          }
+        }}
+      >
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          className="flex-1 bg-black/60 justify-center items-center p-4"
+        >
+          <Pressable
+            className="absolute inset-0"
+            onPress={() => {
+              if (!isSharingPost) {
+                setShareDialogPost(null);
+                setShareCaption("");
+              }
+            }}
+          />
+          <View
+            className="w-full max-w-lg bg-white rounded-3xl overflow-hidden shadow-2xl z-10 max-h-[85vh] flex-col"
+            style={{
+              shadowColor: "#000",
+              shadowOffset: { width: 0, height: 10 },
+              shadowOpacity: 0.25,
+              shadowRadius: 20,
+              elevation: 10,
+            }}
+          >
+            {/* Modal Header */}
+            <View className="flex-row items-center justify-between px-5 py-4 border-b border-gray-100">
+              <Text className="text-lg font-bold text-gray-900">
+                Share to Feed
+              </Text>
+              <TouchableOpacity
+                onPress={() => {
+                  setShareDialogPost(null);
+                  setShareCaption("");
+                }}
+                disabled={isSharingPost}
+                className="w-8 h-8 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
+                accessibilityRole="button"
+                accessibilityLabel="Close share dialog"
+              >
+                <Ionicons name="close" size={20} color="#4B5563" />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              className="flex-1 px-5 py-4"
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
+              {/* Logged-in User Profile Row */}
+              <View className="flex-row items-center mb-3">
+                <View className="w-11 h-11 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
+                  {user?.avatarUrl ? (
+                    <Image
+                      source={{ uri: user.avatarUrl }}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Ionicons name="person" size={22} color="#9CA3AF" />
+                  )}
+                </View>
+                <View className="flex-1">
+                  <Text className="font-bold text-gray-900 text-base">
+                    {user?.name || user?.username || "You"}
+                  </Text>
+                  <View className="flex-row items-center mt-1 bg-green-50 self-start px-2 py-0.5 rounded-full border border-green-200/60">
+                    <Ionicons name="globe-outline" size={12} color="#166534" />
+                    <Text className="text-xs font-semibold text-green-800 ml-1">
+                      Public
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              {/* Custom Description / Thoughts Input */}
+              <TextInput
+                value={shareCaption}
+                onChangeText={setShareCaption}
+                placeholder="Say something about this post..."
+                placeholderTextColor="#9CA3AF"
+                multiline
+                className="text-base text-gray-800 min-h-[90px] text-top mb-4"
+                style={{ textAlignVertical: "top" }}
+                autoFocus={true}
+              />
+
+              {/* Original Post Preview Box (Facebook Embed Style) */}
+              {shareDialogPost && (
+                <View className="border border-gray-200 rounded-2xl p-3.5 bg-gray-50/70 mb-2">
+                  {/* Original Author Info */}
+                  <View className="flex-row items-center mb-2.5">
+                    <View className="w-8 h-8 rounded-full border border-green-400 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
+                      {shareDialogPost.originalPost?.avatarUri ||
+                      shareDialogPost.avatarUri ? (
+                        <Image
+                          source={{
+                            uri:
+                              shareDialogPost.originalPost?.avatarUri ||
+                              shareDialogPost.avatarUri,
+                          }}
+                          className="w-full h-full"
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <Ionicons name="person" size={16} color="#9CA3AF" />
+                      )}
+                    </View>
+                    <View className="flex-1">
+                      <Text
+                        className="font-bold text-gray-900 text-xs"
+                        numberOfLines={1}
+                      >
+                        {shareDialogPost.originalPost?.authorName ||
+                          shareDialogPost.authorName}
+                      </Text>
+                      <Text
+                        className="text-[11px] text-gray-500"
+                        numberOfLines={1}
+                      >
+                        {shareDialogPost.originalPost?.authorRole ||
+                          shareDialogPost.authorRole}{" "}
+                        •{" "}
+                        {shareDialogPost.originalPost?.timeAgo ||
+                          shareDialogPost.timeAgo}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Original Post Content Snippet */}
+                  {shareDialogPost.originalPost?.content ||
+                  shareDialogPost.content ? (
+                    <Text
+                      className="text-sm text-gray-700 mb-2 leading-relaxed"
+                      numberOfLines={4}
+                    >
+                      {shareDialogPost.originalPost?.content ||
+                        shareDialogPost.content}
+                    </Text>
+                  ) : null}
+
+                  {/* Original Post Image (if any) */}
+                  {shareDialogPost.originalPost?.imageUrl ||
+                  shareDialogPost.imageUrl ? (
+                    <Image
+                      source={{
+                        uri:
+                          shareDialogPost.originalPost?.imageUrl ||
+                          shareDialogPost.imageUrl,
+                      }}
+                      className="w-full h-40 rounded-xl bg-gray-200"
+                      resizeMode="cover"
+                    />
+                  ) : null}
+                </View>
+              )}
+            </ScrollView>
+
+            {/* Modal Bottom Share Button */}
+            <View className="px-5 py-3.5 border-t border-gray-100 bg-white">
+              <TouchableOpacity
+                onPress={handleConfirmShare}
+                disabled={isSharingPost}
+                className="w-full py-3.5 rounded-xl bg-[#72AF5B] items-center justify-center flex-row shadow-sm active:bg-[#5e944a]"
+                activeOpacity={0.85}
+              >
+                {isSharingPost ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <>
+                    <Ionicons name="arrow-redo" size={18} color="#ffffff" />
+                    <Text className="text-white font-bold text-base ml-2">
+                      Share Now
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
 
       {/* Bookmark / Save Post Modal (Bottom Sheet) */}
       <Modal
@@ -2221,7 +2781,8 @@ export default function NewsFeed() {
                 Who can see post ?
               </Text>
               <Text className="text-sm text-gray-500 mb-8 leading-5">
-                Your post will show up in Feed, on your profile and search result
+                Your post will show up in Feed, on your profile and search
+                result
               </Text>
 
               {/* Privacy Options List */}
@@ -2229,7 +2790,11 @@ export default function NewsFeed() {
                 {[
                   { id: "Public", title: "Public", icon: "globe" as const },
                   { id: "Friends", title: "Friends", icon: "people" as const },
-                  { id: "Only me", title: "Only me", icon: "lock-closed" as const },
+                  {
+                    id: "Only me",
+                    title: "Only me",
+                    icon: "lock-closed" as const,
+                  },
                 ].map((option) => {
                   const isSelected = storyPrivacy === option.title;
 
@@ -2373,8 +2938,8 @@ export default function NewsFeed() {
                     storyPrivacy === "Public"
                       ? "globe-outline"
                       : storyPrivacy === "Friends"
-                      ? "people-outline"
-                      : "lock-closed-outline"
+                        ? "people-outline"
+                        : "lock-closed-outline"
                   }
                   size={16}
                   color="white"
@@ -2423,147 +2988,165 @@ export default function NewsFeed() {
         visible={isPostMenuVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => setIsPostMenuVisible(false)}
+        onRequestClose={() => {
+          setIsPostMenuVisible(false);
+          postOptionsMenuTranslateY.setValue(0);
+        }}
       >
         <Pressable
-          onPress={() => setIsPostMenuVisible(false)}
+          onPress={() => {
+            setIsPostMenuVisible(false);
+            postOptionsMenuTranslateY.setValue(0);
+          }}
           className="flex-1 bg-black/50 justify-end"
         >
-          <Pressable
-            onPress={(e) => e.stopPropagation()}
-            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl"
+          <Animated.View
+            style={{
+              transform: [{ translateY: postOptionsMenuTranslateY }],
+            }}
+            {...postOptionsMenuPanResponder.panHandlers}
           >
-            {/* Header Handle */}
-            <View className="w-12 h-1.5 bg-gray-300 rounded-full self-center mb-4" />
-
-            <Text className="text-base font-bold text-gray-900 mb-3 px-1">
-              Post Options
-            </Text>
-
-            {isPostOwner(selectedPostForMenu) ? (
-              <View className="gap-1">
-                {/* Edit Post */}
-                <TouchableOpacity
-                  onPress={handleOpenEditModal}
-                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
-                >
-                  <View className="w-10 h-10 rounded-full bg-blue-50 items-center justify-center mr-3">
-                    <Ionicons name="create-outline" size={22} color="#3B82F6" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-semibold text-gray-900">
-                      Edit Post
-                    </Text>
-                    <Text className="text-xs text-gray-500">
-                      Update content, category, or privacy
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                {/* Change Privacy */}
-                <TouchableOpacity
-                  onPress={() => {
-                    setIsPostMenuVisible(false);
-                    setIsPrivacyModalVisible(true);
-                  }}
-                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
-                >
-                  <View className="w-10 h-10 rounded-full bg-green-50 items-center justify-center mr-3">
-                    <Ionicons name="globe-outline" size={22} color="#72AF5B" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-semibold text-gray-900">
-                      Change Audience
-                    </Text>
-                    <Text className="text-xs text-gray-500">
-                      Current: {selectedPostForMenu?.privacy || "Public"}
-                    </Text>
-                  </View>
-                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-                </TouchableOpacity>
-
-                {/* Delete Post */}
-                <TouchableOpacity
-                  onPress={() => {
-                    setIsPostMenuVisible(false);
-                    setIsDeleteConfirmVisible(true);
-                  }}
-                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
-                >
-                  <View className="w-10 h-10 rounded-full bg-red-50 items-center justify-center mr-3">
-                    <Ionicons name="trash-outline" size={22} color="#EF4444" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-semibold text-red-600">
-                      Delete Post
-                    </Text>
-                    <Text className="text-xs text-red-400">
-                      Remove this post permanently
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-            ) : (
-              <View className="gap-1">
-                {/* Save Post */}
-                <TouchableOpacity
-                  onPress={() => {
-                    if (selectedPostForMenu) {
-                      handleToggleSavePost(selectedPostForMenu.id);
-                    }
-                    setIsPostMenuVisible(false);
-                  }}
-                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
-                >
-                  <View className="w-10 h-10 rounded-full bg-yellow-50 items-center justify-center mr-3">
-                    <Ionicons name="bookmark-outline" size={22} color="#EAB308" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-semibold text-gray-900">
-                      Save Post
-                    </Text>
-                    <Text className="text-xs text-gray-500">
-                      Add to your saved posts
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-
-                {/* Hide Post */}
-                <TouchableOpacity
-                  onPress={() => {
-                    if (selectedPostForMenu) {
-                      setPosts((prev) => prev.filter((p) => p.id !== selectedPostForMenu.id));
-                      showToast("Post hidden from your feed.", "info");
-                    }
-                    setIsPostMenuVisible(false);
-                  }}
-                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
-                >
-                  <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center mr-3">
-                    <Ionicons name="eye-off-outline" size={22} color="#6B7280" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-semibold text-gray-900">
-                      Hide Post
-                    </Text>
-                    <Text className="text-xs text-gray-500">
-                      See fewer posts like this
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              </View>
-            )}
-
-            {/* Cancel Button */}
-            <TouchableOpacity
-              onPress={() => setIsPostMenuVisible(false)}
-              className="mt-3 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
+            <Pressable
+              onPress={(e) => e.stopPropagation()}
+              className="bg-white rounded-t-3xl p-5 pb-9 shadow-2xl"
             >
-              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
-            </TouchableOpacity>
-          </Pressable>
+              {/* Header Handle / Drag Indicator */}
+              <View className="w-full items-center pt-0 pb-3 -mt-1">
+                <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
+              </View>
+
+              <Text className="text-base font-bold text-gray-900 mb-3 px-1">
+                Post Options
+              </Text>
+
+              {isPostOwner(selectedPostForMenu) ? (
+                <View className="gap-1">
+                  {/* Edit Post */}
+                  <TouchableOpacity
+                    onPress={handleOpenEditModal}
+                    className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                  >
+                    <View className="w-10 h-10 rounded-full bg-[#72AF5B] items-center justify-center mr-3">
+                      <Ionicons name="create-outline" size={22} color="#ffffff" />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm font-semibold text-gray-900">
+                        Edit Post
+                      </Text>
+                      <Text className="text-xs text-gray-500">
+                        Update content, category, or privacy
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Change Privacy */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      setIsPostMenuVisible(false);
+                      setIsPrivacyModalVisible(true);
+                    }}
+                    className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                  >
+                    <View className="w-10 h-10 rounded-full bg-[#72AF5B] items-center justify-center mr-3">
+                      <Ionicons name="globe-outline" size={22} color="#ffffff" />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm font-semibold text-gray-900">
+                        Change Audience
+                      </Text>
+                      <Text className="text-xs text-gray-500">
+                        Current: {selectedPostForMenu?.privacy || "Public"}
+                      </Text>
+                    </View>
+                    <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                  </TouchableOpacity>
+
+                  {/* Delete Post */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      setIsPostMenuVisible(false);
+                      setIsDeleteConfirmVisible(true);
+                    }}
+                    className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
+                  >
+                    <View className="w-10 h-10 rounded-full bg-[#E45742] items-center justify-center mr-3">
+                      <Ionicons name="trash-outline" size={22} color="#ffffff" />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm font-semibold text-red-600">
+                        Delete Post
+                      </Text>
+                      <Text className="text-xs text-red-400">
+                        Remove this post permanently
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View className="gap-1">
+                  {/* Save Post */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (selectedPostForMenu) {
+                        handleToggleSavePost(selectedPostForMenu.id);
+                      }
+                      setIsPostMenuVisible(false);
+                    }}
+                    className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                  >
+                    <View className="w-10 h-10 rounded-full bg-yellow-50 items-center justify-center mr-3">
+                      <Ionicons
+                        name="bookmark-outline"
+                        size={22}
+                        color="#EAB308"
+                      />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm font-semibold text-gray-900">
+                        Save Post
+                      </Text>
+                      <Text className="text-xs text-gray-500">
+                        Add to your saved posts
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+
+                  {/* Hide Post */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      if (selectedPostForMenu) {
+                        setPosts((prev) =>
+                          prev.filter((p) => p.id !== selectedPostForMenu.id),
+                        );
+                        showToast("Post hidden from your feed.", "info");
+                      }
+                      setIsPostMenuVisible(false);
+                    }}
+                    className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                  >
+                    <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center mr-3">
+                      <Ionicons
+                        name="eye-off-outline"
+                        size={22}
+                        color="#6B7280"
+                      />
+                    </View>
+                    <View className="flex-1">
+                      <Text className="text-sm font-semibold text-gray-900">
+                        Hide Post
+                      </Text>
+                      <Text className="text-xs text-gray-500">
+                        See fewer posts like this
+                      </Text>
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </Pressable>
+          </Animated.View>
         </Pressable>
       </Modal>
+
 
       {/* 2. Edit Post Modal */}
       <Modal
@@ -2595,31 +3178,38 @@ export default function NewsFeed() {
             </TouchableOpacity>
           </View>
 
-          <ScrollView className="flex-1 p-4" keyboardShouldPersistTaps="handled">
+          <ScrollView
+            className="flex-1 p-4"
+            keyboardShouldPersistTaps="handled"
+          >
             {/* Category Selector */}
             <Text className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">
               Category
             </Text>
             <View className="flex-row flex-wrap gap-2 mb-4">
-              {(["Field", "Wholesaler", "Temporary", "General"] as const).map((cat) => (
-                <TouchableOpacity
-                  key={cat}
-                  onPress={() => setEditPostCategory(cat)}
-                  className={`px-3 py-1.5 rounded-full border ${
-                    editPostCategory === cat
-                      ? "bg-[#72AF5B] border-[#72AF5B]"
-                      : "bg-gray-50 border-gray-200"
-                  }`}
-                >
-                  <Text
-                    className={`text-xs font-semibold ${
-                      editPostCategory === cat ? "text-white" : "text-gray-700"
+              {(["Field", "Wholesaler", "Temporary", "General"] as const).map(
+                (cat) => (
+                  <TouchableOpacity
+                    key={cat}
+                    onPress={() => setEditPostCategory(cat)}
+                    className={`px-3 py-1.5 rounded-full border ${
+                      editPostCategory === cat
+                        ? "bg-[#72AF5B] border-[#72AF5B]"
+                        : "bg-gray-50 border-gray-200"
                     }`}
                   >
-                    {cat}
-                  </Text>
-                </TouchableOpacity>
-              ))}
+                    <Text
+                      className={`text-xs font-semibold ${
+                        editPostCategory === cat
+                          ? "text-white"
+                          : "text-gray-700"
+                      }`}
+                    >
+                      {cat}
+                    </Text>
+                  </TouchableOpacity>
+                ),
+              )}
             </View>
 
             {/* Privacy Selector */}
@@ -2642,8 +3232,8 @@ export default function NewsFeed() {
                       priv === "Public"
                         ? "globe-outline"
                         : priv === "Friends"
-                        ? "people-outline"
-                        : "lock-closed-outline"
+                          ? "people-outline"
+                          : "lock-closed-outline"
                     }
                     size={14}
                     color={editPostPrivacy === priv ? "#FFFFFF" : "#6B7280"}
@@ -2732,7 +3322,11 @@ export default function NewsFeed() {
                   } active:opacity-80`}
                 >
                   <View className="w-10 h-10 rounded-full bg-white items-center justify-center mr-3 border border-gray-100 shadow-xs">
-                    <Ionicons name={item.icon as any} size={20} color="#72AF5B" />
+                    <Ionicons
+                      name={item.icon as any}
+                      size={20}
+                      color="#72AF5B"
+                    />
                   </View>
                   <View className="flex-1">
                     <Text className="text-sm font-bold text-gray-900">
@@ -2741,7 +3335,11 @@ export default function NewsFeed() {
                     <Text className="text-xs text-gray-500">{item.desc}</Text>
                   </View>
                   {selectedPostForMenu?.privacy === item.type && (
-                    <Ionicons name="checkmark-circle" size={22} color="#72AF5B" />
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={22}
+                      color="#72AF5B"
+                    />
                   )}
                 </TouchableOpacity>
               ))}
@@ -2751,7 +3349,9 @@ export default function NewsFeed() {
               onPress={() => setIsPrivacyModalVisible(false)}
               className="mt-4 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
             >
-              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+              <Text className="text-sm font-semibold text-gray-700">
+                Cancel
+              </Text>
             </TouchableOpacity>
           </Pressable>
         </Pressable>
@@ -2779,7 +3379,8 @@ export default function NewsFeed() {
               Delete Post?
             </Text>
             <Text className="text-xs text-gray-500 text-center mb-6 leading-4">
-              Are you sure you want to delete this post? This action cannot be undone.
+              Are you sure you want to delete this post? This action cannot be
+              undone.
             </Text>
 
             <View className="flex-row gap-3 w-full">
@@ -2787,7 +3388,9 @@ export default function NewsFeed() {
                 onPress={() => setIsDeleteConfirmVisible(false)}
                 className="flex-1 py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
               >
-                <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+                <Text className="text-sm font-semibold text-gray-700">
+                  Cancel
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 onPress={handleDeletePost}
@@ -2803,6 +3406,528 @@ export default function NewsFeed() {
             </View>
           </Pressable>
         </Pressable>
+      </Modal>
+
+      {/* 5. Standalone Comments Bottom Sheet Modal */}
+      {(() => {
+        if (!activeCommentsPostId) return null;
+        const currentPost = posts.find((p) => p.id === activeCommentsPostId);
+        const currentComments = postComments[activeCommentsPostId] || [];
+        const commentsCount =
+          postComments[activeCommentsPostId] !== undefined
+            ? postComments[activeCommentsPostId].length
+            : currentPost?.comments || 0;
+
+        return (
+          <Modal
+            visible={activeCommentsPostId !== null}
+            transparent={true}
+            animationType="slide"
+            statusBarTranslucent={true}
+            onRequestClose={() => {
+              setActiveCommentsPostId(null);
+              setReplyingTo(null);
+            }}
+          >
+            <View className="flex-1 bg-black/60 justify-end">
+              {/* Backdrop Pressable */}
+              <Pressable
+                className="absolute inset-0"
+                onPress={() => {
+                  setActiveCommentsPostId(null);
+                  setReplyingTo(null);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Close comments backdrop"
+              />
+
+              <Animated.View
+                style={{
+                  height: Dimensions.get("window").height * 0.72,
+                  maxHeight: "85%",
+                  elevation: 25,
+                  shadowColor: "#000000",
+                  shadowOffset: { width: 0, height: -6 },
+                  shadowOpacity: 0.35,
+                  shadowRadius: 16,
+                  transform: [{ translateY: standaloneCommentsTranslateY }],
+                }}
+                className="bg-white rounded-t-3xl flex-col overflow-hidden w-full"
+              >
+                <KeyboardAvoidingView
+                  behavior={Platform.OS === "ios" ? "padding" : undefined}
+                  keyboardVerticalOffset={Platform.OS === "ios" ? 10 : 0}
+                  className="flex-1 flex-col"
+                >
+                  {/* Drawer Drag Handle & Header (Swipe down to close) */}
+                  <View
+                    {...standaloneCommentsPanResponder.panHandlers}
+                    className="pt-3 pb-2.5 px-5 border-b border-gray-100 bg-white"
+                  >
+                    <View className="w-12 h-1.5 bg-gray-300 rounded-full mx-auto mb-2" />
+                    <Text className="text-base font-bold text-gray-900 text-center">
+                      Comments
+                    </Text>
+                  </View>
+
+                  {/* Comments List */}
+                  <ScrollView
+                    className="flex-1 px-4 py-3"
+                    showsVerticalScrollIndicator={true}
+                    keyboardShouldPersistTaps="handled"
+                    contentContainerStyle={{ paddingBottom: 24 }}
+                  >
+                    {loadingComments[activeCommentsPostId] ? (
+                      <View className="py-16 items-center justify-center">
+                        <ActivityIndicator size="small" color="#72AF5B" />
+                        <Text className="text-xs text-gray-400 mt-2 font-medium">
+                          Loading comments...
+                        </Text>
+                      </View>
+                    ) : currentComments.length === 0 ? (
+                      <View className="py-16 items-center justify-center px-6">
+                        <View className="w-14 h-14 rounded-full bg-emerald-50 items-center justify-center mb-3">
+                          <Ionicons
+                            name="chatbubbles-outline"
+                            size={28}
+                            color="#72AF5B"
+                          />
+                        </View>
+                        <Text className="text-sm font-bold text-gray-800">
+                          No comments yet
+                        </Text>
+                        <Text className="text-xs text-gray-400 text-center mt-1">
+                          Be the first to share your thoughts!
+                        </Text>
+                      </View>
+                    ) : (
+                      (() => {
+                        const getThreadReplies = (
+                          parentId: string,
+                          all: CommentItem[],
+                        ): CommentItem[] => {
+                          const direct = all.filter(
+                            (c) => c.parentId === parentId,
+                          );
+                          const result: CommentItem[] = [];
+                          for (const item of direct) {
+                            result.push(item);
+                            result.push(...getThreadReplies(item.id, all));
+                          }
+                          return result;
+                        };
+
+                        const rootComments = currentComments.filter(
+                          (c) =>
+                            !c.parentId ||
+                            !currentComments.some((p) => p.id === c.parentId),
+                        );
+
+                        return rootComments.map((rootComment) => {
+                          const childReplies = getThreadReplies(
+                            rootComment.id,
+                            currentComments,
+                          );
+                          const areRepliesExpanded =
+                            !!expandedReplyCommentIds[rootComment.id];
+
+                          const renderCommentItem = (
+                            comment: CommentItem,
+                            isReply: boolean,
+                          ) => {
+                            const currentCommentReaction =
+                              commentReactions[comment.id];
+                            const hasCommentReaction =
+                              Boolean(currentCommentReaction) ||
+                              comment.isLiked;
+                            const commentLikesCount = comment.likes;
+
+                            return (
+                              <View
+                                key={comment.id}
+                                className={`flex-row items-start mb-3.5 relative ${
+                                  isReply
+                                    ? "ml-10 pl-3 border-l-2 border-gray-200 mt-1"
+                                    : ""
+                                }`}
+                              >
+                                {/* Avatar */}
+                                <View
+                                  className={`${
+                                    isReply ? "h-7 w-7" : "h-8 w-8"
+                                  } rounded-full mr-2.5 bg-gray-200 items-center justify-center overflow-hidden border border-gray-100`}
+                                >
+                                  {comment.avatarUri ? (
+                                    <Image
+                                      source={{ uri: comment.avatarUri }}
+                                      style={{
+                                        width: "100%",
+                                        height: "100%",
+                                      }}
+                                      resizeMode="cover"
+                                    />
+                                  ) : (
+                                    <Ionicons
+                                      name="person"
+                                      size={isReply ? 13 : 15}
+                                      color="#9CA3AF"
+                                    />
+                                  )}
+                                </View>
+
+                                {/* Content */}
+                                <View className="flex-1">
+                                  {/* Author Row */}
+                                  <View className="flex-row justify-between items-center mb-0.5">
+                                    <View className="flex-row items-center gap-1">
+                                      <Text
+                                        className={`${
+                                          isReply ? "text-xs" : "text-sm"
+                                        } font-bold text-gray-900`}
+                                      >
+                                        {comment.authorName}
+                                      </Text>
+                                      {(comment.isVerified ||
+                                        ((Boolean(
+                                          user?.id &&
+                                          comment.userId === String(user.id),
+                                        ) ||
+                                          comment.authorName === user?.name ||
+                                          comment.authorName ===
+                                            user?.username) &&
+                                          isRSBSAVerified)) && (
+                                        <Ionicons
+                                          name="checkmark-circle"
+                                          size={13}
+                                          color="#10B981"
+                                        />
+                                      )}
+                                    </View>
+                                    <Text className="text-[11px] text-gray-400">
+                                      {comment.timeAgo}
+                                    </Text>
+                                  </View>
+
+                                  {/* Comment Text */}
+                                  <Text className="text-sm text-gray-700 leading-5">
+                                    {comment.content}
+                                  </Text>
+
+                                  {/* Interaction Row */}
+                                  <View className="flex-row items-center gap-4 mt-1.5">
+                                    {/* Like button */}
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        activeCommentsPostId &&
+                                        handleToggleCommentLike(
+                                          activeCommentsPostId,
+                                          comment.id,
+                                        )
+                                      }
+                                      className="flex-row items-center gap-1 active:opacity-70"
+                                      hitSlop={{
+                                        top: 6,
+                                        bottom: 6,
+                                        left: 6,
+                                        right: 6,
+                                      }}
+                                    >
+                                      <Ionicons
+                                        name={
+                                          hasCommentReaction
+                                            ? "heart"
+                                            : "heart-outline"
+                                        }
+                                        size={15}
+                                        color={
+                                          hasCommentReaction
+                                            ? "#EF4444"
+                                            : "#6B7280"
+                                        }
+                                      />
+                                      <Text
+                                        className={`text-xs ${
+                                          hasCommentReaction
+                                            ? "text-[#EF4444] font-bold"
+                                            : "text-gray-500 font-medium"
+                                        }`}
+                                      >
+                                        {commentLikesCount}
+                                      </Text>
+                                    </TouchableOpacity>
+
+                                    {/* Reply trigger */}
+                                    <TouchableOpacity
+                                      onPress={() => {
+                                        setReplyingTo({
+                                          commentId: comment.id,
+                                          username: comment.authorName,
+                                        });
+                                        commentInputRef.current?.focus();
+                                      }}
+                                      className="active:opacity-70 py-0.5"
+                                      hitSlop={{
+                                        top: 8,
+                                        bottom: 8,
+                                        left: 8,
+                                        right: 8,
+                                      }}
+                                    >
+                                      <Text
+                                        numberOfLines={1}
+                                        className="text-xs text-gray-500 font-medium hover:text-[#72AF5B]"
+                                      >
+                                        Reply
+                                      </Text>
+                                    </TouchableOpacity>
+                                  </View>
+                                </View>
+                              </View>
+                            );
+                          };
+
+                          return (
+                            <View key={rootComment.id}>
+                              {renderCommentItem(rootComment, false)}
+
+                              {childReplies.length > 0 &&
+                                !areRepliesExpanded && (
+                                  <TouchableOpacity
+                                    onPress={() =>
+                                      toggleRepliesVisibility(rootComment.id)
+                                    }
+                                    style={{ flexWrap: "nowrap" }}
+                                    className="flex-row items-center ml-10 py-1.5 mb-2 active:opacity-70 self-start"
+                                    activeOpacity={0.7}
+                                    hitSlop={{
+                                      top: 8,
+                                      bottom: 8,
+                                      left: 8,
+                                      right: 8,
+                                    }}
+                                  >
+                                    <View className="w-5 h-[1.5px] bg-[#72AF5B] mr-2 rounded-full" />
+                                    <Text
+                                      numberOfLines={1}
+                                      style={{ flexShrink: 0 }}
+                                      className="text-xs font-bold text-[#72AF5B]"
+                                    >
+                                      {childReplies.length === 1
+                                        ? "View 1 reply"
+                                        : `View all ${childReplies.length} replies`}
+                                    </Text>
+                                    <Ionicons
+                                      name="chevron-down"
+                                      size={13}
+                                      color="#72AF5B"
+                                      style={{ marginLeft: 4 }}
+                                    />
+                                  </TouchableOpacity>
+                                )}
+
+                              {childReplies.length > 0 &&
+                                areRepliesExpanded && (
+                                  <View className="mb-1">
+                                    {childReplies.map((reply) =>
+                                      renderCommentItem(reply, true),
+                                    )}
+                                    <TouchableOpacity
+                                      onPress={() =>
+                                        toggleRepliesVisibility(rootComment.id)
+                                      }
+                                      style={{ flexWrap: "nowrap" }}
+                                      className="flex-row items-center ml-10 py-1.5 mb-2 active:opacity-70 self-start"
+                                      activeOpacity={0.7}
+                                      hitSlop={{
+                                        top: 8,
+                                        bottom: 8,
+                                        left: 8,
+                                        right: 8,
+                                      }}
+                                    >
+                                      <View className="w-5 h-[1.5px] bg-gray-300 mr-2 rounded-full" />
+                                      <Text
+                                        numberOfLines={1}
+                                        style={{ flexShrink: 0 }}
+                                        className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]"
+                                      >
+                                        Hide replies
+                                      </Text>
+                                      <Ionicons
+                                        name="chevron-up"
+                                        size={13}
+                                        color="#9CA3AF"
+                                        style={{ marginLeft: 4 }}
+                                      />
+                                    </TouchableOpacity>
+                                  </View>
+                                )}
+                            </View>
+                          );
+                        });
+                      })()
+                    )}
+                  </ScrollView>
+
+                  {/* Bottom Pinned Comment Input Section */}
+                  <View
+                    style={{ paddingBottom: Math.max(insets.bottom, 16) + 6 }}
+                    className="px-4 pt-2.5 border-t border-gray-200 bg-white"
+                  >
+                    {replyingTo && (
+                      <View className="bg-emerald-50 border border-emerald-200 px-3.5 py-1.5 flex-row justify-between items-center rounded-t-xl border-b-0 mb-1">
+                        <View className="flex-row items-center gap-1.5 flex-1 pr-2">
+                          <Ionicons
+                            name="return-down-forward"
+                            size={14}
+                            color="#72AF5B"
+                          />
+                          <Text
+                            className="text-xs text-gray-700"
+                            numberOfLines={1}
+                          >
+                            Replying to{" "}
+                            <Text className="font-bold text-gray-900">
+                              @{replyingTo.username}
+                            </Text>
+                          </Text>
+                        </View>
+                        <TouchableOpacity
+                          onPress={() => setReplyingTo(null)}
+                          className="p-1 active:opacity-70"
+                          accessibilityRole="button"
+                          accessibilityLabel="Cancel reply"
+                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        >
+                          <Ionicons
+                            name="close-circle"
+                            size={16}
+                            color="#6B7280"
+                          />
+                        </TouchableOpacity>
+                      </View>
+                    )}
+
+                    <View
+                      className={`bg-gray-50 border border-gray-200 px-4 py-2 flex-row items-center shadow-xs ${
+                        replyingTo
+                          ? "rounded-b-xl rounded-t-none"
+                          : "rounded-full"
+                      }`}
+                    >
+                      <TextInput
+                        ref={commentInputRef}
+                        value={commentInputs[activeCommentsPostId] || ""}
+                        onChangeText={(text) =>
+                          setCommentInputs((prev) => ({
+                            ...prev,
+                            [activeCommentsPostId]: text,
+                          }))
+                        }
+                        placeholder={
+                          replyingTo
+                            ? `Reply to @${replyingTo.username}...`
+                            : "Add a comment..."
+                        }
+                        placeholderTextColor="#9CA3AF"
+                        className="flex-1 text-sm text-gray-800 p-0"
+                        onSubmitEditing={() =>
+                          activeCommentsPostId &&
+                          handleAddComment(activeCommentsPostId)
+                        }
+                        returnKeyType="send"
+                      />
+                      <TouchableOpacity
+                        onPress={() =>
+                          activeCommentsPostId &&
+                          handleAddComment(activeCommentsPostId)
+                        }
+                        disabled={
+                          !(commentInputs[activeCommentsPostId] || "").trim() ||
+                          submittingComments[activeCommentsPostId]
+                        }
+                        className={`ml-2 p-2 rounded-full items-center justify-center min-w-[32px] min-h-[32px] ${
+                          (commentInputs[activeCommentsPostId] || "").trim() &&
+                          !submittingComments[activeCommentsPostId]
+                            ? "bg-[#72AF5B] active:opacity-85"
+                            : "bg-gray-200 opacity-60"
+                        }`}
+                      >
+                        {submittingComments[activeCommentsPostId] ? (
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                        ) : (
+                          <Ionicons name="send" size={14} color="#FFFFFF" />
+                        )}
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+                </KeyboardAvoidingView>
+              </Animated.View>
+            </View>
+          </Modal>
+        );
+      })()}
+
+      {/* 6. Fullscreen Image Lightbox Modal */}
+      <Modal
+        visible={!!previewImage}
+        transparent={true}
+        animationType="fade"
+        statusBarTranslucent={true}
+        onRequestClose={handleCloseLightbox}
+      >
+        <View className="flex-1 bg-black/95 justify-between relative">
+          {/* Top Bar with Close Button */}
+          <View
+            style={{ paddingTop: Math.max(insets.top, 16) + 8 }}
+            className="px-4 pb-3 flex-row items-center justify-end z-20"
+          >
+            <TouchableOpacity
+              onPress={handleCloseLightbox}
+              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center active:bg-white/30"
+              accessibilityRole="button"
+              accessibilityLabel="Close image preview"
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+            >
+              <Ionicons name="close" size={24} color="#FFFFFF" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Centered Image with Tap-to-close on background */}
+          <Pressable
+            className="flex-1 items-center justify-center px-2"
+            onPress={handleCloseLightbox}
+          >
+            {previewImage && (
+              <Image
+                source={
+                  previewImage.uri
+                    ? { uri: previewImage.uri }
+                    : previewImage.source
+                }
+                style={{ width: "100%", height: "100%" }}
+                resizeMode="contain"
+              />
+            )}
+          </Pressable>
+
+          {/* Bottom Caption (if available) */}
+          {previewImage?.caption ? (
+            <View
+              style={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
+              className="bg-black/75 border-t border-white/10 z-10 px-5 pt-3 pb-2"
+            >
+              <ScrollView
+                style={{ maxHeight: 90 }}
+                showsVerticalScrollIndicator={false}
+              >
+                <Text className="text-white/95 text-sm leading-5">
+                  {previewImage.caption}
+                </Text>
+              </ScrollView>
+            </View>
+          ) : null}
+        </View>
       </Modal>
 
       {/* Create Post Modal */}

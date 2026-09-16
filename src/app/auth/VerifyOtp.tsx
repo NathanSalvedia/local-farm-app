@@ -1,4 +1,7 @@
-import { verifyOtpApi, resetPasswordForEmailApi } from "@/services/auth-service";
+import {
+  resetPasswordForEmailApi,
+  verifyOtpApi,
+} from "@/services/auth-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useRef, useState } from "react";
@@ -83,7 +86,9 @@ export default function VerifyOTPScreen() {
       setShowSuccessModal(true);
     } catch (err: any) {
       setIsSubmitting(false);
-      setErrorMsg(err?.message || "Invalid or expired OTP code. Please try again.");
+      setErrorMsg(
+        err?.message || "Invalid or expired OTP code. Please try again.",
+      );
     }
   };
 
@@ -108,9 +113,9 @@ export default function VerifyOTPScreen() {
 
   return (
     <ImageBackground source={BG_IMAGE} className="flex-1" resizeMode="cover">
-      {/* Top Header Bar */}
+      {/* Top Header Bar - Absolute overlay so it doesn't shift the centered form */}
       <View
-        className="w-full px-4 z-20"
+        className="absolute top-0 left-0 right-0 px-4 z-20"
         style={{ paddingTop: Math.max(insets.top + 8, 16) }}
       >
         <TouchableOpacity
@@ -130,6 +135,7 @@ export default function VerifyOTPScreen() {
           className="flex-1"
           contentContainerClassName="flex-grow justify-center items-center px-5"
           contentContainerStyle={{
+            paddingTop: Math.max(insets.top + 16, 24),
             paddingBottom: Math.max(insets.bottom + 16, 24),
           }}
           bounces={false}
@@ -138,13 +144,13 @@ export default function VerifyOTPScreen() {
           keyboardShouldPersistTaps="handled"
         >
           {/* Form Wrapper */}
-          <View className="w-full max-w-[380px]">
-            {/* Header Block */}
-            <View className="items-start mb-6 w-full">
-              <Text className="text-3xl font-extrabold text-neutral-900 text-left mb-1 tracking-tight">
+          <View className="w-full max-w-[380px] items-center">
+            {/* Centered Header Block */}
+            <View className="items-center mb-6 w-full">
+              <Text className="text-3xl font-extrabold text-neutral-900 text-center mb-2 tracking-tight">
                 Verification Code
               </Text>
-              <Text className="text-sm text-neutral-600 text-left">
+              <Text className="text-md text-neutral-600 text-center leading-relaxed px-2">
                 Enter the 6-digit verification code sent to your registered
                 email address.
               </Text>
@@ -160,7 +166,7 @@ export default function VerifyOTPScreen() {
 
             {resendSent ? (
               <View className="bg-[#E8F5E9] p-3.5 rounded-2xl mb-5 w-full border border-[#72AF5B]/30">
-                <Text className="text-[#72AF5B] text-sm text-center font-medium">
+                <Text className="text-[#72AF5B] text-md text-center font-medium">
                   A new OTP code has been sent to your email!
                 </Text>
               </View>
@@ -205,11 +211,11 @@ export default function VerifyOTPScreen() {
 
             {/* Resend Code Link */}
             <View className="flex-row justify-center items-center py-2">
-              <Text className="text-sm text-neutral-600">
+              <Text className="text-md text-neutral-600">
                 Didn't receive the code?{" "}
               </Text>
               <TouchableOpacity onPress={handleResendCode} activeOpacity={0.7}>
-                <Text className="text-sm font-bold text-[#72AF5B]">
+                <Text className="text-md font-bold text-[#72AF5B]">
                   Resend Code
                 </Text>
               </TouchableOpacity>
@@ -248,9 +254,7 @@ export default function VerifyOTPScreen() {
               className="w-full h-[50px] bg-[#72AF5B] rounded-2xl items-center justify-center active:opacity-90 shadow-sm"
               activeOpacity={0.85}
             >
-              <Text className="text-white text-base font-bold">
-                Continue
-              </Text>
+              <Text className="text-white text-base font-bold">Continue</Text>
             </TouchableOpacity>
           </View>
         </View>

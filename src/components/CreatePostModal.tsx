@@ -1,12 +1,20 @@
 import { useToast } from "@/context/toast-context";
 import { useAuth } from "@/hooks/use-auth";
 import { createPostApi, PostItem } from "@/services/post-service";
+import {
+  getRSBSAApplication,
+  RSBSAApplication,
+} from "@/services/rsbsa-service";
 import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { router } from "expo-router";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Animated,
+  Dimensions,
   Image,
   Modal,
+  PanResponder,
   Pressable,
   ScrollView,
   Switch,
@@ -15,6 +23,10 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  SafeAreaView,
+  useSafeAreaInsets,
+} from "react-native-safe-area-context";
 import LeafletMap from "./LeafletMap";
 
 export interface CreatePostModalProps {
@@ -47,6 +59,40 @@ interface Friend {
 }
 
 const CATEGORIES = ["Field", "Wholesaler", "Temporary"];
+
+export interface TemporaryDurationOption {
+  label: string;
+  value: number;
+  icon: keyof typeof Ionicons.glyphMap;
+  description: string;
+}
+
+export const TEMPORARY_DURATIONS: TemporaryDurationOption[] = [
+  {
+    label: "6 Hours",
+    value: 6 * 3600 * 1000,
+    icon: "sunny-outline",
+    description: "Morning market stall or short pop-up",
+  },
+  {
+    label: "10 Hours",
+    value: 10 * 3600 * 1000,
+    icon: "timer-outline",
+    description: "Day-long farm stand or fresh batch",
+  },
+  {
+    label: "12 Hours",
+    value: 12 * 3600 * 1000,
+    icon: "time-outline",
+    description: "Same-day harvest & daily clearance",
+  },
+  {
+    label: "24 Hours",
+    value: 24 * 3600 * 1000,
+    icon: "hourglass-outline",
+    description: "Full-day agricultural post",
+  },
+];
 
 const PRIVACY_OPTIONS: PrivacyOption[] = [
   {
@@ -93,12 +139,81 @@ const MOCK_GALLERY_IMAGES = [
   "https://images.unsplash.com/photo-1589923188900-85dae523342b?auto=format&fit=crop&w=600&q=80",
 ];
 
-const ILIGAN_REGION = {
-  latitude: 8.228,
-  longitude: 124.2452,
-  latitudeDelta: 0.0922,
-  longitudeDelta: 0.0421,
-};
+export interface StaticFarmingLocation {
+  id: string;
+  name: string;
+  barangay: string;
+  latitude: number;
+  longitude: number;
+  type: string;
+}
+
+export const STATIC_POST_LOCATIONS: StaticFarmingLocation[] = [
+  {
+    id: "palao",
+    name: "Pala-o, Iligan City",
+    barangay: "Pala-o",
+    latitude: 8.2283,
+    longitude: 124.2452,
+    type: "🌿 Farm Market",
+  },
+  {
+    id: "tipanoy",
+    name: "Tipanoy, Iligan City",
+    barangay: "Tipanoy",
+    latitude: 8.212,
+    longitude: 124.254,
+    type: "🥛 Dairy & Dragonfruit",
+  },
+  {
+    id: "delcarmen",
+    name: "Del Carmen, Iligan City",
+    barangay: "Del Carmen",
+    latitude: 8.2345,
+    longitude: 124.243,
+    type: "📦 Grains & Produce",
+  },
+  {
+    id: "tubod",
+    name: "Tubod, Iligan City",
+    barangay: "Tubod",
+    latitude: 8.209,
+    longitude: 124.237,
+    type: "🍌 Fruit Depot",
+  },
+  {
+    id: "luinab",
+    name: "Luinab, Iligan City",
+    barangay: "Luinab",
+    latitude: 8.2235,
+    longitude: 124.261,
+    type: "🌱 Herb Garden",
+  },
+  {
+    id: "tambo",
+    name: "Tambo, Iligan City",
+    barangay: "Tambo",
+    latitude: 8.2435,
+    longitude: 124.254,
+    type: "🚜 Wholesale Hub",
+  },
+  {
+    id: "ditucalan",
+    name: "Ditucalan, Iligan City",
+    barangay: "Ditucalan",
+    latitude: 8.1819,
+    longitude: 124.1936,
+    type: "🥚 Free-Range Poultry",
+  },
+  {
+    id: "abuno",
+    name: "Abuno, Iligan City",
+    barangay: "Abuno",
+    latitude: 8.2165,
+    longitude: 124.2495,
+    type: "🥭 Fruit Orchard",
+  },
+];
 
 export default function CreatePostModal({
   isVisible,
@@ -106,22 +221,107 @@ export default function CreatePostModal({
   onPost,
 }: CreatePostModalProps) {
   const { user } = useAuth();
+  const insets = useSafeAreaInsets();
   const [activeView, setActiveView] = useState<ViewMode>("POST_FORM");
   const [privacySetting, setPrivacySetting] = useState<PrivacyType>("Public");
   const [isDefaultAudience, setIsDefaultAudience] = useState(false);
   const [content, setContent] = useState("");
   const [selectedCategory, setSelectedCategory] = useState("Field");
+  const [temporaryDuration, setTemporaryDuration] = useState<number>(
+    24 * 3600 * 1000,
+  );
   const [taggedUserIds, setTaggedUserIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
   const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
-  const [locationSearch, setLocationSearch] = useState("Current Location");
+  const [selectedCoordinates, setSelectedCoordinates] = useState<{
+    latitude: number;
+    longitude: number;
+  } | null>(null);
+  const [mapCoords, setMapCoords] = useState<{
+    latitude: number;
+    longitude: number;
+  }>({ latitude: 8.2283, longitude: 124.2452 });
+  const [locationSearch, setLocationSearch] = useState("Pala-o, Iligan City");
   const [flashMode, setFlashMode] = useState(false);
   const [isFrontCamera, setIsFrontCamera] = useState(false);
+  const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
+  const [showRsbsaLockModal, setShowRsbsaLockModal] = useState(false);
 
-  const handleClose = () => {
+  // Swipe-down-to-dismiss animated gesture
+  const [translateY] = useState(() => new Animated.Value(0));
+
+  const handleClose = useCallback(() => {
+    setShowRsbsaLockModal(false);
     setActiveView("POST_FORM");
+    translateY.setValue(0);
     onClose();
+  }, [onClose, translateY]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_, gestureState) => {
+          return (
+            gestureState.dy > 5 &&
+            Math.abs(gestureState.dy) > Math.abs(gestureState.dx)
+          );
+        },
+        onPanResponderMove: (_, gestureState) => {
+          if (gestureState.dy > 0) {
+            translateY.setValue(gestureState.dy);
+          }
+        },
+        onPanResponderRelease: (_, gestureState) => {
+          if (gestureState.dy > 70 || gestureState.vy > 0.5) {
+            Animated.timing(translateY, {
+              toValue: Dimensions.get("window").height,
+              duration: 180,
+              useNativeDriver: true,
+            }).start(() => {
+              handleClose();
+            });
+          } else {
+            Animated.spring(translateY, {
+              toValue: 0,
+              bounciness: 4,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(translateY, {
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+        },
+      }),
+    [handleClose, translateY],
+  );
+
+  useEffect(() => {
+    if (isVisible) {
+      translateY.setValue(0);
+      getRSBSAApplication()
+        .then((app) => setRsbsaApp(app))
+        .catch((err) =>
+          console.log(
+            "[CreatePostModal] Failed to load RSBSA application:",
+            err,
+          ),
+        );
+    }
+  }, [isVisible, translateY]);
+
+  const isRSBSAVerified = rsbsaApp?.status === "verified";
+
+  const handleOpenLive = () => {
+    if (!isRSBSAVerified) {
+      setShowRsbsaLockModal(true);
+      return;
+    }
+    setActiveView("LIVE_PERMISSION");
   };
 
   const { showToast } = useToast();
@@ -136,22 +336,45 @@ export default function CreatePostModal({
 
     setIsSubmitting(true);
     try {
+      const isTemp = selectedCategory === "Temporary";
+      const expiresAt = isTemp ? Date.now() + temporaryDuration : null;
+      const durationOpt = TEMPORARY_DURATIONS.find(
+        (d) => d.value === temporaryDuration,
+      );
+
       const newPost = await createPostApi({
         content: trimmedContent,
         category: selectedCategory,
         privacy: privacySetting,
-        location: selectedLocation,
+        location: selectedLocation ? selectedLocation.trim() : null,
         photos: selectedPhotos,
+        expiresAt,
+        durationLabel: isTemp ? durationOpt?.label : undefined,
       });
 
-      showToast("Post shared to community!", "success");
+      // Augment returned post with static expiry data for client-side rendering/filtering
+      const clientPost = {
+        ...newPost,
+        category: selectedCategory,
+        expiresAt: isTemp ? expiresAt : null,
+        durationLabel: isTemp ? durationOpt?.label : undefined,
+      };
+
+      showToast(
+        isTemp
+          ? `Temporary post published (${durationOpt?.label})!`
+          : "Post shared to community!",
+        "success",
+      );
       if (onPost) {
-        onPost(newPost);
+        onPost(clientPost);
       }
       setContent("");
       setTaggedUserIds([]);
       setSelectedPhotos([]);
       setSelectedLocation(null);
+      setSelectedCoordinates(null);
+      setTemporaryDuration(24 * 3600 * 1000);
       handleClose();
     } catch (err: any) {
       showToast(err?.message || "Failed to create post.", "error");
@@ -202,44 +425,65 @@ export default function CreatePostModal({
   return (
     <Modal
       visible={isVisible}
-      transparent={activeView === "POST_FORM"}
+      transparent={true}
       animationType="slide"
-      onRequestClose={handleClose}
+      statusBarTranslucent={true}
+      onRequestClose={() => {
+        if (showRsbsaLockModal) {
+          setShowRsbsaLockModal(false);
+        } else if (activeView === "POST_FORM") {
+          handleClose();
+        } else {
+          setActiveView("POST_FORM");
+        }
+      }}
     >
       {activeView === "POST_FORM" ? (
-        /* 1. POST FORM VIEW (Bottom Sheet) */
-        <Pressable
-          onPress={handleClose}
-          className="flex-1 bg-transparent justify-end"
-        >
+        <View className="flex-1 bg-black/40 justify-end">
+          {/* Backdrop pressable to close when tapping outside */}
           <Pressable
-            onPress={(e) => e.stopPropagation()}
+            onPress={handleClose}
+            className="absolute inset-0"
+            accessibilityRole="button"
+            accessibilityLabel="Close modal backdrop"
+          />
+
+          <Animated.View
+            style={{
+              transform: [{ translateY }],
+            }}
             className="w-full bg-white rounded-t-3xl p-5 shadow-2xl border-t border-gray-100"
           >
-            {/* Header Section */}
-            <View className="flex-row justify-between items-center pb-3 mb-3 border-b border-gray-200">
-              {/* Close Button */}
-              <TouchableOpacity onPress={handleClose} className="p-1">
-                <Ionicons name="close" size={26} color="#374151" />
-              </TouchableOpacity>
+            {/* Top Drag Handle Bar & Header (Swipe down to close) */}
+            <View {...panResponder.panHandlers} className="w-full">
+              {/* Drag Handle Indicator */}
+              <View className="w-full items-center pt-0 pb-2.5 -mt-1">
+                <View className="w-12 h-1.5 bg-gray-300 rounded-full" />
+              </View>
 
-              {/* Title */}
-              <Text className="font-bold text-lg text-gray-900">
-                Create Post
-              </Text>
+              {/* Header Section */}
+              <View className="flex-row justify-between items-center pb-3 mb-3 border-b border-gray-200">
+                {/* Spacer to keep Title centered */}
+                <View className="w-[60px]" />
 
-              {/* Post Button */}
-              <TouchableOpacity
-                onPress={handlePostSubmit}
-                disabled={isSubmitting}
-                className="bg-[#72AF5B] px-4 py-1.5 rounded-full active:opacity-80 flex-row items-center justify-center min-w-[60px]"
-              >
-                {isSubmitting ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text className="text-white font-medium text-sm">Post</Text>
-                )}
-              </TouchableOpacity>
+                {/* Title */}
+                <Text className="font-bold text-lg text-gray-900 text-center">
+                  Create Post
+                </Text>
+
+                {/* Post Button */}
+                <TouchableOpacity
+                  onPress={handlePostSubmit}
+                  disabled={isSubmitting}
+                  className="bg-[#72AF5B] px-4 py-1.5 rounded-full active:opacity-80 flex-row items-center justify-center min-w-[60px]"
+                >
+                  {isSubmitting ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text className="text-white font-medium text-sm">Post</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
             </View>
 
             {/* User Profile & Settings */}
@@ -260,7 +504,10 @@ export default function CreatePostModal({
               {/* Info Stack */}
               <View className="flex-1">
                 <Text className="font-bold text-base text-gray-900">
-                  {user?.name || user?.fullName || user?.username || "Local Farmer"}
+                  {user?.name ||
+                    user?.fullName ||
+                    user?.username ||
+                    "Local Farmer"}
                 </Text>
 
                 <View className="flex-row items-center gap-1.5 mt-1">
@@ -304,17 +551,56 @@ export default function CreatePostModal({
                     >
                       {selectedLocation || "Add location"}
                     </Text>
+                    {selectedLocation && (
+                      <TouchableOpacity
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          setSelectedLocation(null);
+                          setSelectedCoordinates(null);
+                        }}
+                        className="ml-0.5 p-0.5"
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove location"
+                      >
+                        <Ionicons
+                          name="close-circle"
+                          size={12}
+                          color="#72AF5B"
+                        />
+                      </TouchableOpacity>
+                    )}
                   </TouchableOpacity>
 
                   {/*  Live Permission Trigger */}
                   <TouchableOpacity
-                    onPress={() => setActiveView("LIVE_PERMISSION")}
-                    className="flex-row items-center bg-[#D90000] px-2 py-1 rounded-full border border-gray-200 gap-1 active:bg-gray-200"
+                    onPress={handleOpenLive}
+                    className={`flex-row items-center px-2.5 py-1 rounded-full border border-gray-200 gap-1 active:opacity-80 ${
+                      isRSBSAVerified ? "bg-[#D90000]" : "bg-[#B91C1C]"
+                    }`}
+                    accessibilityRole="button"
+                    accessibilityLabel={
+                      isRSBSAVerified
+                        ? "Start Live Stream"
+                        : "Live Stream (Requires RSBSA Verification)"
+                    }
                   >
-                    <Ionicons name="videocam" size={12} color="#FFFFFF" />
+                    <Ionicons
+                      name={isRSBSAVerified ? "videocam" : "videocam-outline"}
+                      size={12}
+                      color="#FFFFFF"
+                    />
                     <Text className="text-[11px] text-[#FFFFFF] font-medium">
                       Live
                     </Text>
+                    {isRSBSAVerified ? (
+                      <Ionicons
+                        name="checkmark-circle"
+                        size={11}
+                        color="#4ADE80"
+                      />
+                    ) : (
+                      <Ionicons name="lock-closed" size={10} color="#FCA5A5" />
+                    )}
                   </TouchableOpacity>
                 </View>
               </View>
@@ -381,6 +667,47 @@ export default function CreatePostModal({
               </View>
             )}
 
+            {/* Attached Location Leaflet Map Preview Card */}
+            {selectedLocation && (
+              <View className="mb-3 rounded-2xl overflow-hidden border border-gray-200 bg-white shadow-xs">
+                <View className="flex-row items-center justify-between px-3.5 py-2 bg-green-50/70 border-b border-green-100">
+                  <View className="flex-row items-center gap-1.5 flex-1 mr-2">
+                    <Ionicons name="location-sharp" size={15} color="#72AF5B" />
+                    <Text
+                      className="text-xs font-bold text-gray-900 flex-1"
+                      numberOfLines={1}
+                    >
+                      {selectedLocation}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    onPress={() => {
+                      setSelectedLocation(null);
+                      setSelectedCoordinates(null);
+                    }}
+                    className="w-6 h-6 rounded-full bg-white border border-gray-200 items-center justify-center active:bg-gray-100"
+                    accessibilityRole="button"
+                    accessibilityLabel="Remove location"
+                  >
+                    <Ionicons name="close" size={13} color="#4B5563" />
+                  </TouchableOpacity>
+                </View>
+                <View style={{ width: "100%", height: 140 }}>
+                  <LeafletMap
+                    latitude={
+                      selectedCoordinates?.latitude || mapCoords.latitude
+                    }
+                    longitude={
+                      selectedCoordinates?.longitude || mapCoords.longitude
+                    }
+                    zoom={15}
+                    locationTitle={selectedLocation}
+                    interactive={false}
+                  />
+                </View>
+              </View>
+            )}
+
             {/* Category Selection */}
             <View className="mb-4">
               <Text className="font-bold text-sm text-gray-800 mb-2 mt-2">
@@ -413,6 +740,73 @@ export default function CreatePostModal({
                   );
                 })}
               </View>
+
+              {/* Flexible Temporary Duration Selector (Idea C Option 2) */}
+              {selectedCategory === "Temporary" && (
+                <View className="mt-3 p-3.5 bg-amber-50/90 border border-amber-200/90 rounded-2xl">
+                  <View className="flex-row items-center justify-between mb-1.5">
+                    <View className="flex-row items-center gap-1.5">
+                      <Ionicons name="time" size={15} color="#D97706" />
+                      <Text className="text-xs font-bold text-amber-900">
+                        Temporary Post Duration
+                      </Text>
+                    </View>
+                    <View className="bg-amber-200/80 px-2 py-0.5 rounded-full flex-row items-center gap-1">
+                      <Ionicons name="flash" size={10} color="#B45309" />
+                      <Text className="text-[10px] font-bold text-amber-800">
+                        Auto-Expires
+                      </Text>
+                    </View>
+                  </View>
+
+                  <Text className="text-[11px] text-amber-800/90 leading-4 mb-2.5">
+                    Choose how long this post remains active on the
+                    community feed before disappearing:
+                  </Text>
+
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={{
+                      flexDirection: "row",
+                      gap: 6,
+                      alignItems: "center",
+                      paddingVertical: 2,
+                    }}
+                  >
+                    {TEMPORARY_DURATIONS.map((opt) => {
+                      const isDurationActive = temporaryDuration === opt.value;
+                      return (
+                        <TouchableOpacity
+                          key={opt.value}
+                          onPress={() => setTemporaryDuration(opt.value)}
+                          className={`px-2.5 py-1.5 rounded-xl border flex-row items-center gap-1.5 active:opacity-80 ${
+                            isDurationActive
+                              ? "bg-amber-500 border-amber-600 shadow-2xs"
+                              : "bg-white border-amber-200/90"
+                          }`}
+                          activeOpacity={0.7}
+                        >
+                          <Ionicons
+                            name={opt.icon}
+                            size={13}
+                            color={isDurationActive ? "#FFFFFF" : "#D97706"}
+                          />
+                          <Text
+                            className={`text-xs ${
+                              isDurationActive
+                                ? "text-white font-bold"
+                                : "text-amber-900 font-semibold"
+                            }`}
+                          >
+                            {opt.label}
+                          </Text>
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
             </View>
 
             {/* Bottom Action Bar */}
@@ -449,642 +843,895 @@ export default function CreatePostModal({
                 <Ionicons name="person-add-outline" size={20} color="#72AF5B" />
                 <Text className="text-[#72AF5B] font-medium text-sm ml-2">
                   {taggedUserIds.length > 0
-                    ? `Tag people (${taggedUserIds.length})`
-                    : "Tag people"}
+                    ? `Tag (${taggedUserIds.length})`
+                    : "Tag"}
                 </Text>
               </TouchableOpacity>
             </View>
-          </Pressable>
-        </Pressable>
-      ) : activeView === "PRIVACY" ? (
-        /* 2. WHO CAN SEE POST ? (PRIVACY) VIEW */
-        <View className="flex-1 bg-white justify-between px-5 pt-3 pb-3 h-full">
-          {/* Top Content */}
-          <View>
-            {/* Back Arrow Button */}
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="p-1 -ml-2 mb-2 self-start active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-            >
-              <Ionicons name="chevron-back" size={28} color="#111827" />
-            </TouchableOpacity>
+          </Animated.View>
+        </View>
+      ) : (
+        <SafeAreaView
+          className="flex-1"
+          edges={
+            activeView === "ADD_LOCATION"
+              ? ["bottom", "left", "right"]
+              : ["top", "bottom", "left", "right"]
+          }
+          style={{
+            flex: 1,
+            backgroundColor: activeView === "CAMERA" ? "#000000" : "#FFFFFF",
+          }}
+        >
+          {activeView === "PRIVACY" ? (
+            /* 2. WHO CAN SEE POST ? (PRIVACY) VIEW */
+            <View className="flex-1 bg-white justify-between px-5 pt-3 pb-4 h-full">
+              {/* Top Content */}
+              <View>
+                {/* Back Arrow Button */}
+                <TouchableOpacity
+                  onPress={() => setActiveView("POST_FORM")}
+                  className="p-1 -ml-2 mb-2 self-start active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
+                >
+                  <Ionicons name="chevron-back" size={28} color="#111827" />
+                </TouchableOpacity>
 
-            {/* Header Title */}
-            <Text className="text-2xl font-bold text-gray-900 mb-1.5">
-              Who can see post ?
-            </Text>
-            <Text className="text-sm text-gray-500 mb-8 leading-5">
-              Your post will show up in Feed, on your profile and search result
-            </Text>
+                {/* Header Title */}
+                <Text className="text-2xl font-bold text-gray-900 mb-1.5">
+                  Who can see post ?
+                </Text>
+                <Text className="text-sm text-gray-500 mb-8 leading-5">
+                  Your post will show up in Feed, on your profile and search
+                  result
+                </Text>
 
-            {/* Privacy Options List */}
-            <View className="space-y-4">
-              {PRIVACY_OPTIONS.map((option) => {
-                const isSelected = privacySetting === option.title;
+                {/* Privacy Options List */}
+                <View className="space-y-4">
+                  {PRIVACY_OPTIONS.map((option) => {
+                    const isSelected = privacySetting === option.title;
 
-                return (
-                  <TouchableOpacity
-                    key={option.id}
-                    onPress={() => setPrivacySetting(option.title)}
-                    className="flex-row items-center py-3.5 active:opacity-70"
-                    activeOpacity={0.7}
-                  >
-                    <Ionicons
-                      name={option.icon}
-                      size={23}
-                      color={isSelected ? "#111827" : "#4B5563"}
-                    />
-                    <Text
-                      className={`text-md ml-4 ${
-                        isSelected
-                          ? "font-bold text-gray-900"
-                          : "font-semibold text-gray-800"
-                      }`}
+                    return (
+                      <TouchableOpacity
+                        key={option.id}
+                        onPress={() => setPrivacySetting(option.title)}
+                        className="flex-row items-center py-3.5 active:opacity-70"
+                        activeOpacity={0.7}
+                      >
+                        <Ionicons
+                          name={option.icon}
+                          size={23}
+                          color={isSelected ? "#111827" : "#4B5563"}
+                        />
+                        <Text
+                          className={`text-md ml-4 ${
+                            isSelected
+                              ? "font-bold text-gray-900"
+                              : "font-semibold text-gray-800"
+                          }`}
+                        >
+                          {option.title}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </View>
+
+              {/* Bottom Actions */}
+              <View className="mt-auto">
+                {/* Set as default audience Row */}
+                <View className="flex-row justify-between items-center mb-3 px-1">
+                  <Text className="text-sm text-gray-600 font-medium">
+                    Set as default audience
+                  </Text>
+                  <Switch
+                    value={isDefaultAudience}
+                    onValueChange={setIsDefaultAudience}
+                    trackColor={{ false: "#E5E7EB", true: "#72AF5B" }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {/* Done Button */}
+                <TouchableOpacity
+                  onPress={() => setActiveView("POST_FORM")}
+                  className="w-full bg-[#72AF5B] py-3.5 rounded-xl items-center justify-center active:opacity-80"
+                  activeOpacity={0.8}
+                >
+                  <Text className="text-white font-bold text-base">Done</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : activeView === "LIVE_PERMISSION" && isRSBSAVerified ? (
+            /* 3. GO LIVE CAMERA ACCESS PERMISSION VIEW */
+            <View className="flex-1 bg-white justify-between px-5 pt-3 pb-3 h-full">
+              <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{
+                  flexGrow: 1,
+                  justifyContent: "space-between",
+                }}
+              >
+                {/* Header & Main Content */}
+                <View>
+                  {/* Header Section */}
+                  <View className="flex-row items-center pt-1 pb-2">
+                    <TouchableOpacity
+                      onPress={() => setActiveView("POST_FORM")}
+                      className="p-1 -ml-2 active:opacity-70"
+                      accessibilityRole="button"
+                      accessibilityLabel="Go back"
                     >
-                      {option.title}
+                      <Ionicons name="arrow-back" size={24} color="#111827" />
+                    </TouchableOpacity>
+                    <Text className="text-xl font-bold text-gray-900 ml-3">
+                      Live
+                    </Text>
+                  </View>
+
+                  {/* Main Graphic */}
+                  <View className="items-center mt-6">
+                    <View className="bg-green-100 p-5 rounded-3xl items-center justify-center">
+                      <Ionicons name="videocam" size={68} color="#16a34a" />
+                    </View>
+                  </View>
+
+                  {/* Typography */}
+                  <Text className="text-2xl font-bold text-center mt-5 text-gray-800 leading-8">
+                    Access Your Camera{"\n"}to{" "}
+                    <Text className="text-[#72AF5B]">Cast Live</Text>
+                  </Text>
+
+                  {/* Verified Broadcaster Badge */}
+                  <View className="flex-row items-center justify-center self-center bg-emerald-50 border border-emerald-200 px-3 py-1 rounded-full mt-2.5">
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={15}
+                      color="#10B981"
+                    />
+                    <Text className="text-xs font-semibold text-emerald-800 ml-1.5">
+                      RSBSA Verified Broadcaster
+                    </Text>
+                  </View>
+
+                  <Text className="text-sm text-gray-600 text-center px-4 mt-3 leading-5">
+                    Allow access to your camera to cast live and connect with
+                    your friends in real time. Your privacy is important to us.
+                  </Text>
+
+                  {/* Feature Info Box */}
+                  <View className="bg-gray-100 rounded-2xl mx-1 mt-6 p-4">
+                    {/* Feature 1 */}
+                    <View className="flex-row items-start mb-4">
+                      <View className="bg-gray-300 p-2 rounded-full mr-3.5 items-center justify-center">
+                        <Ionicons name="videocam" size={16} color="#374151" />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-sm font-bold text-gray-900">
+                          Go Live with Friends
+                        </Text>
+                        <Text className="text-xs text-gray-500 mt-0.5">
+                          Stream live video and share moments instantly.
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Feature 2 */}
+                    <View className="flex-row items-start mb-4">
+                      <View className="bg-gray-300 p-2 rounded-full mr-3.5 items-center justify-center">
+                        <Ionicons
+                          name="shield-checkmark"
+                          size={16}
+                          color="#374151"
+                        />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-sm font-bold text-gray-900">
+                          Safe & Secure
+                        </Text>
+                        <Text className="text-xs text-gray-500 mt-0.5">
+                          We do not record or store your live videos.
+                        </Text>
+                      </View>
+                    </View>
+
+                    {/* Feature 3 */}
+                    <View className="flex-row items-start">
+                      <View className="bg-gray-300 p-2 rounded-full mr-3.5 items-center justify-center">
+                        <Ionicons
+                          name="lock-closed"
+                          size={16}
+                          color="#374151"
+                        />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-sm font-bold text-gray-900">
+                          {"You're in Control"}
+                        </Text>
+                        <Text className="text-xs text-gray-500 mt-0.5">
+                          You can change or revoke camera access anytime in
+                          settings.
+                        </Text>
+                      </View>
+                    </View>
+                  </View>
+                </View>
+
+                {/* Bottom Action Buttons */}
+                <View className="mt-6 pb-2">
+                  {/* Allow Button */}
+                  <TouchableOpacity
+                    onPress={() => setActiveView("POST_FORM")}
+                    className="w-full bg-[#72AF5B] rounded-xl py-3.5 flex-row justify-center items-center mb-3 active:opacity-80 shadow-xs"
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="videocam" size={18} color="#FFFFFF" />
+                    <Text className="text-white font-bold text-base ml-2">
+                      Allow camera access
                     </Text>
                   </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
 
-          {/* Bottom Actions */}
-          <View className="mt-auto">
-            {/* Set as default audience Row */}
-            <View className="flex-row justify-between items-center mb-3 px-1">
-              <Text className="text-sm text-gray-600 font-medium">
-                Set as default audience
-              </Text>
-              <Switch
-                value={isDefaultAudience}
-                onValueChange={setIsDefaultAudience}
-                trackColor={{ false: "#E5E7EB", true: "#72AF5B" }}
-                thumbColor="#FFFFFF"
-              />
+                  {/* Not Now Button */}
+                  <TouchableOpacity
+                    onPress={() => setActiveView("POST_FORM")}
+                    className="w-full bg-white rounded-xl py-3.5 items-center justify-center shadow-xs border border-gray-200 active:bg-gray-50"
+                    activeOpacity={0.8}
+                  >
+                    <Text className="text-gray-800 font-bold text-base">
+                      Not Now
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
             </View>
-
-            {/* Done Button */}
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="w-full bg-[#72AF5B] py-3.5 rounded-xl items-center justify-center active:opacity-80"
-              activeOpacity={0.8}
-            >
-              <Text className="text-white font-bold text-base">Done</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : activeView === "LIVE_PERMISSION" ? (
-        /* 3. GO LIVE CAMERA ACCESS PERMISSION VIEW */
-        <View className="flex-1 bg-white justify-between px-5 pt-3 pb-3 h-full">
-          <ScrollView
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{
-              flexGrow: 1,
-              justifyContent: "space-between",
-            }}
-          >
-            {/* Header & Main Content */}
-            <View>
+          ) : activeView === "TAG_PEOPLE" ? (
+            /* 4. TAG AND COLLABORATE VIEW */
+            <View className="flex-1 bg-gray-50 h-full w-full relative">
               {/* Header Section */}
-              <View className="flex-row items-center pt-1 pb-2">
+              <View className="flex-row items-center pt-3 pb-3 px-5 bg-gray-50">
                 <TouchableOpacity
                   onPress={() => setActiveView("POST_FORM")}
                   className="p-1 -ml-2 active:opacity-70"
                   accessibilityRole="button"
                   accessibilityLabel="Go back"
                 >
-                  <Ionicons name="arrow-back" size={24} color="#111827" />
+                  <Ionicons name="chevron-back" size={24} color="#111827" />
                 </TouchableOpacity>
-                <Text className="text-xl font-bold text-gray-900 ml-3">
-                  Live
+                <Text className="text-lg font-bold text-gray-900 flex-1 text-center mr-6">
+                  Tag and collaborate
                 </Text>
               </View>
 
-              {/* Main Graphic */}
-              <View className="items-center mt-6">
-                <View className="bg-green-100 p-5 rounded-3xl items-center justify-center">
-                  <Ionicons name="videocam" size={68} color="#16a34a" />
+              {/* Tagged People Preview (Horizontal Scroll) */}
+              {taggedUserIds.length > 0 && (
+                <View className="mb-2">
+                  <Text className="text-sm font-medium text-gray-700 px-5 mb-3">
+                    Tagged People ({taggedUserIds.length})
+                  </Text>
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    className="px-5"
+                  >
+                    {taggedUserIds.map((userId) => {
+                      const user = MOCK_FRIENDS.find((f) => f.id === userId);
+                      if (!user) return null;
+
+                      return (
+                        <View key={user.id} className="items-center mr-4">
+                          <View className="bg-gray-300 h-12 w-12 rounded-full mb-1 items-center justify-center overflow-hidden border border-gray-200">
+                            <Ionicons name="person" size={24} color="#FFFFFF" />
+                          </View>
+                          <Text className="text-xs text-gray-700 font-medium">
+                            {user.firstName}
+                          </Text>
+                        </View>
+                      );
+                    })}
+                  </ScrollView>
                 </View>
+              )}
+
+              {/* Search Bar */}
+              <View className="bg-white rounded-2xl flex-row items-center px-4 py-2.5 mx-5 my-3 border border-gray-200 shadow-xs">
+                <Ionicons name="search" size={20} color="#9CA3AF" />
+                <TextInput
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Search..."
+                  placeholderTextColor="#9CA3AF"
+                  className="flex-1 ml-2 text-base text-gray-800 p-0"
+                />
+                {searchQuery.length > 0 && (
+                  <TouchableOpacity onPress={() => setSearchQuery("")}>
+                    <Ionicons name="close-circle" size={18} color="#9CA3AF" />
+                  </TouchableOpacity>
+                )}
               </View>
 
-              {/* Typography */}
-              <Text className="text-2xl font-bold text-center mt-5 text-gray-800 leading-8">
-                Access Your Camera{"\n"}to{" "}
-                <Text className="text-[#72AF5B]">Cast Live</Text>
-              </Text>
-
-              <Text className="text-sm text-gray-600 text-center px-4 mt-3 leading-5">
-                Allow access to your camera to cast live and connect with your
-                friends in real time. Your privacy is important to us.
-              </Text>
-
-              {/* Feature Info Box */}
-              <View className="bg-gray-100 rounded-2xl mx-1 mt-6 p-4">
-                {/* Feature 1 */}
-                <View className="flex-row items-start mb-4">
-                  <View className="bg-gray-300 p-2 rounded-full mr-3.5 items-center justify-center">
-                    <Ionicons name="videocam" size={16} color="#374151" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-bold text-gray-900">
-                      Go Live with Friends
-                    </Text>
-                    <Text className="text-xs text-gray-500 mt-0.5">
-                      Stream live video and share moments instantly.
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Feature 2 */}
-                <View className="flex-row items-start mb-4">
-                  <View className="bg-gray-300 p-2 rounded-full mr-3.5 items-center justify-center">
-                    <Ionicons
-                      name="shield-checkmark"
-                      size={16}
-                      color="#374151"
-                    />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-bold text-gray-900">
-                      Safe & Secure
-                    </Text>
-                    <Text className="text-xs text-gray-500 mt-0.5">
-                      We do not record or store your live videos.
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Feature 3 */}
-                <View className="flex-row items-start">
-                  <View className="bg-gray-300 p-2 rounded-full mr-3.5 items-center justify-center">
-                    <Ionicons name="lock-closed" size={16} color="#374151" />
-                  </View>
-                  <View className="flex-1">
-                    <Text className="text-sm font-bold text-gray-900">
-                      {"You're in Control"}
-                    </Text>
-                    <Text className="text-xs text-gray-500 mt-0.5">
-                      You can change or revoke camera access anytime in
-                      settings.
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            {/* Bottom Action Buttons */}
-            <View className="mt-6 pb-2">
-              {/* Allow Button */}
-              <TouchableOpacity
-                onPress={() => setActiveView("POST_FORM")}
-                className="w-full bg-[#72AF5B] rounded-xl py-3.5 flex-row justify-center items-center mb-3 active:opacity-80 shadow-xs"
-                activeOpacity={0.8}
-              >
-                <Ionicons name="videocam" size={18} color="#FFFFFF" />
-                <Text className="text-white font-bold text-base ml-2">
-                  Allow camera access
-                </Text>
-              </TouchableOpacity>
-
-              {/* Not Now Button */}
-              <TouchableOpacity
-                onPress={() => setActiveView("POST_FORM")}
-                className="w-full bg-white rounded-xl py-3.5 items-center justify-center shadow-xs border border-gray-200 active:bg-gray-50"
-                activeOpacity={0.8}
-              >
-                <Text className="text-gray-800 font-bold text-base">
-                  Not Now
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
-        </View>
-      ) : activeView === "TAG_PEOPLE" ? (
-        /* 4. TAG AND COLLABORATE VIEW */
-        <View className="flex-1 bg-gray-50 h-full w-full relative">
-          {/* Header Section */}
-          <View className="flex-row items-center pt-3 pb-3 px-5 bg-gray-50">
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="p-1 -ml-2 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-            >
-              <Ionicons name="chevron-back" size={24} color="#111827" />
-            </TouchableOpacity>
-            <Text className="text-lg font-bold text-gray-900 flex-1 text-center mr-6">
-              Tag and collaborate
-            </Text>
-          </View>
-
-          {/* Tagged People Preview (Horizontal Scroll) */}
-          {taggedUserIds.length > 0 && (
-            <View className="mb-2">
-              <Text className="text-sm font-medium text-gray-700 px-5 mb-3">
-                Tagged People ({taggedUserIds.length})
-              </Text>
+              {/* User List (Vertical Mapping) */}
               <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                className="px-5"
+                className="flex-1 px-5"
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: 100 }}
               >
-                {taggedUserIds.map((userId) => {
-                  const user = MOCK_FRIENDS.find((f) => f.id === userId);
-                  if (!user) return null;
+                {filteredFriends.map((friend) => {
+                  const isSelected = taggedUserIds.includes(friend.id);
 
                   return (
-                    <View key={user.id} className="items-center mr-4">
-                      <View className="bg-gray-300 h-12 w-12 rounded-full mb-1 items-center justify-center overflow-hidden border border-gray-200">
+                    <TouchableOpacity
+                      key={friend.id}
+                      onPress={() => toggleTagUser(friend.id)}
+                      className="flex-row items-center bg-white rounded-2xl mb-2.5 p-3 shadow-xs border border-gray-100 active:opacity-80"
+                      activeOpacity={0.7}
+                    >
+                      {/* Left (Avatar) */}
+                      <View className="bg-gray-300 h-12 w-12 rounded-full mr-3 items-center justify-center overflow-hidden border border-gray-200">
                         <Ionicons name="person" size={24} color="#FFFFFF" />
                       </View>
-                      <Text className="text-xs text-gray-700 font-medium">
-                        {user.firstName}
-                      </Text>
-                    </View>
+
+                      {/* Middle (Info) */}
+                      <View className="flex-1">
+                        <Text className="text-sm font-bold text-gray-800">
+                          {friend.fullName}
+                        </Text>
+                        <Text className="text-xs text-gray-500 mt-0.5">
+                          Friend
+                        </Text>
+                      </View>
+
+                      {/* Right (Checkbox) */}
+                      <View
+                        className={`h-6 w-6 rounded-md items-center justify-center ${
+                          isSelected
+                            ? "bg-[#72AF5B]"
+                            : "border border-[#72AF5B] bg-white"
+                        }`}
+                      >
+                        {isSelected && (
+                          <Ionicons
+                            name="checkmark"
+                            size={16}
+                            color="#FFFFFF"
+                          />
+                        )}
+                      </View>
+                    </TouchableOpacity>
                   );
                 })}
               </ScrollView>
-            </View>
-          )}
 
-          {/* Search Bar */}
-          <View className="bg-white rounded-2xl flex-row items-center px-4 py-2.5 mx-5 my-3 border border-gray-200 shadow-xs">
-            <Ionicons name="search" size={20} color="#9CA3AF" />
-            <TextInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Search..."
-              placeholderTextColor="#9CA3AF"
-              className="flex-1 ml-2 text-base text-gray-800 p-0"
-            />
-            {searchQuery.length > 0 && (
-              <TouchableOpacity onPress={() => setSearchQuery("")}>
-                <Ionicons name="close-circle" size={18} color="#9CA3AF" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* User List (Vertical Mapping) */}
-          <ScrollView
-            className="flex-1 px-5"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: 100 }}
-          >
-            {filteredFriends.map((friend) => {
-              const isSelected = taggedUserIds.includes(friend.id);
-
-              return (
+              {/* Bottom Finished Action Button */}
+              <View className="absolute bottom-0 left-0 right-0 p-5 bg-gray-50 border-t border-gray-200/60">
                 <TouchableOpacity
-                  key={friend.id}
-                  onPress={() => toggleTagUser(friend.id)}
-                  className="flex-row items-center bg-white rounded-2xl mb-2.5 p-3 shadow-xs border border-gray-100 active:opacity-80"
-                  activeOpacity={0.7}
-                >
-                  {/* Left (Avatar) */}
-                  <View className="bg-gray-300 h-12 w-12 rounded-full mr-3 items-center justify-center overflow-hidden border border-gray-200">
-                    <Ionicons name="person" size={24} color="#FFFFFF" />
-                  </View>
-
-                  {/* Middle (Info) */}
-                  <View className="flex-1">
-                    <Text className="text-sm font-bold text-gray-800">
-                      {friend.fullName}
-                    </Text>
-                    <Text className="text-xs text-gray-500 mt-0.5">Friend</Text>
-                  </View>
-
-                  {/* Right (Checkbox) */}
-                  <View
-                    className={`h-6 w-6 rounded-md items-center justify-center ${
-                      isSelected
-                        ? "bg-[#72AF5B]"
-                        : "border border-[#72AF5B] bg-white"
-                    }`}
-                  >
-                    {isSelected && (
-                      <Ionicons name="checkmark" size={16} color="#FFFFFF" />
-                    )}
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
-
-          {/* Bottom Finished Action Button */}
-          <View className="absolute bottom-0 left-0 right-0 p-5 bg-gray-50 border-t border-gray-200/60">
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="w-full bg-[#72AF5B] rounded-xl py-3.5 items-center justify-center active:opacity-80 shadow-sm"
-              activeOpacity={0.8}
-            >
-              <Text className="text-white font-bold text-base">Finished</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : activeView === "PHOTO_GALLERY" ? (
-        /* 5. MULTI-PHOTO GALLERY VIEW */
-        <View className="flex-1 bg-white h-full w-full relative">
-          {/* Header Section */}
-          <View className="flex-row justify-between items-center pt-3 pb-3 px-5 bg-white border-b border-gray-100">
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="p-1 -ml-2 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Close gallery"
-            >
-              <Ionicons name="close" size={28} color="#374151" />
-            </TouchableOpacity>
-
-            <Text className="text-lg font-semibold text-gray-900">Gallery</Text>
-
-            {/* Top Right Done / Camera Button */}
-            {selectedPhotos.length > 0 ? (
-              <TouchableOpacity
-                onPress={() => setActiveView("POST_FORM")}
-                className="bg-[#72AF5B] px-3.5 py-1.5 rounded-full active:opacity-80 shadow-xs"
-              >
-                <Text className="text-white font-bold text-xs">
-                  Next ({selectedPhotos.length})
-                </Text>
-              </TouchableOpacity>
-            ) : (
-              <TouchableOpacity
-                onPress={() => setActiveView("CAMERA")}
-                className="p-1 -mr-2 active:opacity-70"
-                accessibilityRole="button"
-                accessibilityLabel="Open camera"
-              >
-                <Ionicons name="camera-outline" size={26} color="#374151" />
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Helper Subheader */}
-          <View className="px-5 py-2.5 flex-row justify-between items-center bg-gray-50/80 border-b border-gray-100">
-            <Text className="text-xs font-medium text-gray-600">
-              Tap images to select multiple ({selectedPhotos.length} selected)
-            </Text>
-            {selectedPhotos.length > 0 && (
-              <TouchableOpacity
-                onPress={() => setSelectedPhotos([])}
-                className="active:opacity-70"
-              >
-                <Text className="text-xs font-semibold text-[#72AF5B]">
-                  Clear all
-                </Text>
-              </TouchableOpacity>
-            )}
-          </View>
-
-          {/* Photo Grid (2-Column Layout) */}
-          <ScrollView
-            className="flex-1 px-3 pt-3"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingBottom: 90 }}
-          >
-            <View className="flex-row flex-wrap justify-between">
-              {MOCK_GALLERY_IMAGES.map((imgUri, index) => {
-                const isSelected = selectedPhotos.includes(imgUri);
-                const selectedIndex = selectedPhotos.indexOf(imgUri) + 1;
-                const itemHeight =
-                  index % 3 === 0 ? 230 : index % 2 === 0 ? 190 : 210;
-
-                return (
-                  <TouchableOpacity
-                    key={index}
-                    onPress={() => toggleSelectPhoto(imgUri)}
-                    className={`w-[48.5%] mb-3 rounded-xl overflow-hidden relative shadow-xs border ${
-                      isSelected
-                        ? "border-2 border-[#72AF5B]"
-                        : "border-gray-200"
-                    } active:opacity-90`}
-                    activeOpacity={0.85}
-                  >
-                    <Image
-                      source={{ uri: imgUri }}
-                      style={{ width: "100%", height: itemHeight }}
-                      resizeMode="cover"
-                    />
-
-                    {/* Dark overlay when selected */}
-                    {isSelected && (
-                      <View className="absolute inset-0 bg-black/20" />
-                    )}
-
-                    {/* Selection Badge (Top-Right) */}
-                    <View className="absolute top-2.5 right-2.5">
-                      {isSelected ? (
-                        <View className="w-6 h-6 rounded-full bg-[#72AF5B] items-center justify-center border-2 border-white shadow-sm">
-                          <Text className="text-white text-xs font-bold">
-                            {selectedIndex}
-                          </Text>
-                        </View>
-                      ) : (
-                        <View className="w-6 h-6 rounded-full bg-black/35 border-2 border-white/90 items-center justify-center shadow-xs" />
-                      )}
-                    </View>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </ScrollView>
-
-          {/* Bottom Docked 'Add Photos' Button */}
-          {selectedPhotos.length > 0 && (
-            <View className="absolute bottom-0 left-0 right-0 p-4 bg-white/95 border-t border-gray-200/80 shadow-lg">
-              <TouchableOpacity
-                onPress={() => setActiveView("POST_FORM")}
-                className="w-full bg-[#72AF5B] py-3.5 rounded-xl flex-row items-center justify-center active:opacity-80 shadow-sm"
-                activeOpacity={0.8}
-              >
-                <Ionicons name="images" size={18} color="#FFFFFF" />
-                <Text className="text-white font-bold text-base ml-2">
-                  Add {selectedPhotos.length}{" "}
-                  {selectedPhotos.length === 1 ? "Photo" : "Photos"}
-                </Text>
-              </TouchableOpacity>
-            </View>
-          )}
-        </View>
-      ) : activeView === "CAMERA" ? (
-        /* 6. CAMERA SCREEN VIEW */
-        <View className="flex-1 bg-black h-full w-full justify-between relative">
-          {/* Top Controls Bar */}
-          <View className="flex-row justify-between items-center pt-5 pb-3 px-5 z-20 absolute top-0 w-full bg-black/30">
-            {/* Close 'X' Button */}
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="p-1 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Close camera"
-            >
-              <Ionicons name="close" size={32} color="#FFFFFF" />
-            </TouchableOpacity>
-
-            {/* Flash Toggle Button */}
-            <TouchableOpacity
-              onPress={() => setFlashMode((prev) => !prev)}
-              className="p-1 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Toggle flash"
-            >
-              <Ionicons
-                name={flashMode ? "flash" : "flash-off-outline"}
-                size={28}
-                color={flashMode ? "#FACC15" : "#FFFFFF"}
-              />
-            </TouchableOpacity>
-          </View>
-
-          {/* Viewfinder Area (Mock) */}
-          <View className="flex-1 items-center justify-center relative">
-            {/* Faint Viewfinder Frame */}
-            <View className="w-[85%] h-[65%] border border-white/20 rounded-3xl relative items-center justify-center">
-              {/* Corner framing brackets */}
-              <View className="w-10 h-10 border-t-2 border-l-2 border-white/70 absolute top-0 left-0 rounded-tl-2xl" />
-              <View className="w-10 h-10 border-t-2 border-r-2 border-white/70 absolute top-0 right-0 rounded-tr-2xl" />
-              <View className="w-10 h-10 border-b-2 border-l-2 border-white/70 absolute bottom-0 left-0 rounded-bl-2xl" />
-              <View className="w-10 h-10 border-b-2 border-r-2 border-white/70 absolute bottom-0 right-0 rounded-br-2xl" />
-
-              {/* Center Focus Reticle */}
-              <View className="w-16 h-16 border border-white/30 rounded-full items-center justify-center">
-                <View className="w-2.5 h-2.5 bg-white/60 rounded-full" />
-              </View>
-
-              <Text className="text-white/40 text-xs font-medium mt-6">
-                {isFrontCamera ? "Front Camera" : "Back Camera"}
-              </Text>
-            </View>
-          </View>
-
-          {/* Bottom Controls Bar */}
-          <View className="absolute bottom-0 w-full pb-10 pt-5 px-8 flex-row justify-between items-center bg-black/50 z-20">
-            {/* Left (Gallery Shortcut) */}
-            <TouchableOpacity
-              onPress={() => setActiveView("PHOTO_GALLERY")}
-              className="w-12 h-12 bg-gray-800 rounded-md border border-white/50 overflow-hidden items-center justify-center active:opacity-75"
-              activeOpacity={0.75}
-            >
-              {selectedPhotos.length > 0 ? (
-                <Image
-                  source={{ uri: selectedPhotos[selectedPhotos.length - 1] }}
-                  className="w-full h-full"
-                  resizeMode="cover"
-                />
-              ) : (
-                <Ionicons name="images-outline" size={22} color="#FFFFFF" />
-              )}
-            </TouchableOpacity>
-
-            {/* Center (Capture Button) */}
-            <TouchableOpacity
-              onPress={handleCapturePhoto}
-              className="w-20 h-20 rounded-full border-4 border-white items-center justify-center active:scale-95"
-              activeOpacity={0.8}
-            >
-              <View className="w-16 h-16 bg-white rounded-full" />
-            </TouchableOpacity>
-
-            {/* Right (Flip Camera) */}
-            <TouchableOpacity
-              onPress={() => setIsFrontCamera((prev) => !prev)}
-              className="p-1 active:opacity-75"
-              activeOpacity={0.75}
-            >
-              <Ionicons
-                name="camera-reverse-outline"
-                size={32}
-                color="#FFFFFF"
-              />
-            </TouchableOpacity>
-          </View>
-        </View>
-      ) : (
-        /* 7. ADD LOCATION VIEW (Leaflet Map) */
-        <View className="flex-1 bg-white h-full w-full relative">
-          {/* Header Section */}
-          <View className="flex-row items-center pt-3 pb-3 px-5 bg-white z-10 border-b border-gray-100">
-            <TouchableOpacity
-              onPress={() => setActiveView("POST_FORM")}
-              className="p-1 -ml-2 active:opacity-70"
-              accessibilityRole="button"
-              accessibilityLabel="Go back"
-            >
-              <Ionicons name="chevron-back" size={24} color="#111827" />
-            </TouchableOpacity>
-            <Text className="text-lg font-bold text-gray-900 flex-1 text-center mr-6">
-              Add Location
-            </Text>
-          </View>
-
-          {/* Map Container */}
-          <View className="flex-1 relative overflow-hidden">
-            <LeafletMap
-              latitude={ILIGAN_REGION.latitude}
-              longitude={ILIGAN_REGION.longitude}
-              zoom={14}
-              popupImage="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=300&q=80"
-            />
-
-            {/* Floating Top Search Bar */}
-            <View className="absolute top-4 left-5 right-5 z-20">
-              <View className="bg-white border border-[#72AF5B] rounded-full flex-row items-center px-4 py-2 shadow-sm">
-                <TextInput
-                  value={locationSearch}
-                  onChangeText={setLocationSearch}
-                  placeholder="Current Location"
-                  placeholderTextColor="#9CA3AF"
-                  className="flex-1 text-base text-gray-700 p-0"
-                />
-                <Ionicons name="search-outline" size={20} color="#6B7280" />
-              </View>
-            </View>
-
-            {/* Floating Bottom Info Card with Select & Cancel Location Buttons */}
-            <View className="absolute bottom-6 left-5 right-5 z-20 bg-[#f8f9fa] rounded-2xl p-4 shadow-xl border border-white/10">
-              <View className="mb-3">
-                <Text className="text-base font-bold text-[#000000] mb-1">
-                  {locationSearch || "Current Location"}
-                </Text>
-                <Text className="text-xs text-[#000000] leading-4">
-                  Your selected location will be attached to your post and
-                  visible to your community.
-                </Text>
-              </View>
-              {/* Action Buttons Row */}
-              <View className="flex-row justify-end gap-2.5 pt-1">
-                {/* Cancel Location Button */}
-                <TouchableOpacity
-                  onPress={() => {
-                    setSelectedLocation(null);
-                    setActiveView("POST_FORM");
-                  }}
-                  className="bg-gray-100 px-4 py-2.5 rounded-xl border border-[#72AF5B] items-center justify-center active:bg-white/25"
-                  activeOpacity={0.7}
-                >
-                  <Text className="text-[#000000] font-semibold text-xs">
-                    Cancel Location
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Select Location Button */}
-                <TouchableOpacity
-                  onPress={() => {
-                    setSelectedLocation(locationSearch || "Iligan City");
-                    setActiveView("POST_FORM");
-                  }}
-                  className="bg-[#72AF5B] px-5 py-2.5 rounded-xl items-center justify-center active:opacity-80 shadow-sm"
+                  onPress={() => setActiveView("POST_FORM")}
+                  className="w-full bg-[#72AF5B] rounded-xl py-3.5 items-center justify-center active:opacity-80 shadow-sm"
                   activeOpacity={0.8}
                 >
-                  <Text className="text-white font-bold text-xs">
-                    Select Location
+                  <Text className="text-white font-bold text-base">
+                    Finished
                   </Text>
                 </TouchableOpacity>
               </View>
             </View>
+          ) : activeView === "PHOTO_GALLERY" ? (
+            /* 5. MULTI-PHOTO GALLERY VIEW */
+            <View className="flex-1 bg-white h-full w-full relative">
+              {/* Header Section */}
+              <View className="flex-row justify-between items-center pt-3 pb-3 px-5 bg-white border-b border-gray-100">
+                <TouchableOpacity
+                  onPress={() => setActiveView("POST_FORM")}
+                  className="p-1 -ml-2 active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel="Close gallery"
+                >
+                  <Ionicons name="close" size={28} color="#374151" />
+                </TouchableOpacity>
+
+                <Text className="text-lg font-semibold text-gray-900">
+                  Gallery
+                </Text>
+
+                {/* Top Right Done / Camera Button */}
+                {selectedPhotos.length > 0 ? (
+                  <TouchableOpacity
+                    onPress={() => setActiveView("POST_FORM")}
+                    className="bg-[#72AF5B] px-3.5 py-1.5 rounded-full active:opacity-80 shadow-xs"
+                  >
+                    <Text className="text-white font-bold text-xs">
+                      Next ({selectedPhotos.length})
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    onPress={() => setActiveView("CAMERA")}
+                    className="p-1 -mr-2 active:opacity-70"
+                    accessibilityRole="button"
+                    accessibilityLabel="Open camera"
+                  >
+                    <Ionicons name="camera-outline" size={26} color="#374151" />
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Helper Subheader */}
+              <View className="px-5 py-2.5 flex-row justify-between items-center bg-gray-50/80 border-b border-gray-100">
+                <Text className="text-xs font-medium text-gray-600">
+                  Tap images to select multiple ({selectedPhotos.length}{" "}
+                  selected)
+                </Text>
+                {selectedPhotos.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setSelectedPhotos([])}
+                    className="active:opacity-70"
+                  >
+                    <Text className="text-xs font-semibold text-[#72AF5B]">
+                      Clear all
+                    </Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Photo Grid (2-Column Layout) */}
+              <ScrollView
+                className="flex-1 px-3 pt-3"
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: 90 }}
+              >
+                <View className="flex-row flex-wrap justify-between">
+                  {MOCK_GALLERY_IMAGES.map((imgUri, index) => {
+                    const isSelected = selectedPhotos.includes(imgUri);
+                    const selectedIndex = selectedPhotos.indexOf(imgUri) + 1;
+                    const itemHeight =
+                      index % 3 === 0 ? 230 : index % 2 === 0 ? 190 : 210;
+
+                    return (
+                      <TouchableOpacity
+                        key={index}
+                        onPress={() => toggleSelectPhoto(imgUri)}
+                        className={`w-[48.5%] mb-3 rounded-xl overflow-hidden relative shadow-xs border ${
+                          isSelected
+                            ? "border-2 border-[#72AF5B]"
+                            : "border-gray-200"
+                        } active:opacity-90`}
+                        activeOpacity={0.85}
+                      >
+                        <Image
+                          source={{ uri: imgUri }}
+                          style={{ width: "100%", height: itemHeight }}
+                          resizeMode="cover"
+                        />
+
+                        {/* Dark overlay when selected */}
+                        {isSelected && (
+                          <View className="absolute inset-0 bg-black/20" />
+                        )}
+
+                        {/* Selection Badge (Top-Right) */}
+                        <View className="absolute top-2.5 right-2.5">
+                          {isSelected ? (
+                            <View className="w-6 h-6 rounded-full bg-[#72AF5B] items-center justify-center border-2 border-white shadow-sm">
+                              <Text className="text-white text-xs font-bold">
+                                {selectedIndex}
+                              </Text>
+                            </View>
+                          ) : (
+                            <View className="w-6 h-6 rounded-full bg-black/35 border-2 border-white/90 items-center justify-center shadow-xs" />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              </ScrollView>
+
+              {/* Bottom Docked 'Add Photos' Button */}
+              {selectedPhotos.length > 0 && (
+                <View className="absolute bottom-0 left-0 right-0 p-4 bg-white/95 border-t border-gray-200/80 shadow-lg">
+                  <TouchableOpacity
+                    onPress={() => setActiveView("POST_FORM")}
+                    className="w-full bg-[#72AF5B] py-3.5 rounded-xl flex-row items-center justify-center active:opacity-80 shadow-sm"
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="images" size={18} color="#FFFFFF" />
+                    <Text className="text-white font-bold text-base ml-2">
+                      Add {selectedPhotos.length}{" "}
+                      {selectedPhotos.length === 1 ? "Photo" : "Photos"}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </View>
+          ) : activeView === "CAMERA" ? (
+            /* 6. CAMERA SCREEN VIEW */
+            <View className="flex-1 bg-black h-full w-full justify-between relative">
+              {/* Top Controls Bar */}
+              <View className="flex-row justify-between items-center pt-5 pb-3 px-5 z-20 absolute top-0 w-full bg-black/30">
+                {/* Close 'X' Button */}
+                <TouchableOpacity
+                  onPress={() => setActiveView("POST_FORM")}
+                  className="p-1 active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel="Close camera"
+                >
+                  <Ionicons name="close" size={32} color="#FFFFFF" />
+                </TouchableOpacity>
+
+                {/* Flash Toggle Button */}
+                <TouchableOpacity
+                  onPress={() => setFlashMode((prev) => !prev)}
+                  className="p-1 active:opacity-70"
+                  accessibilityRole="button"
+                  accessibilityLabel="Toggle flash"
+                >
+                  <Ionicons
+                    name={flashMode ? "flash" : "flash-off-outline"}
+                    size={28}
+                    color={flashMode ? "#FACC15" : "#FFFFFF"}
+                  />
+                </TouchableOpacity>
+              </View>
+
+              {/* Viewfinder Area (Mock) */}
+              <View className="flex-1 items-center justify-center relative">
+                {/* Faint Viewfinder Frame */}
+                <View className="w-[85%] h-[65%] border border-white/20 rounded-3xl relative items-center justify-center">
+                  {/* Corner framing brackets */}
+                  <View className="w-10 h-10 border-t-2 border-l-2 border-white/70 absolute top-0 left-0 rounded-tl-2xl" />
+                  <View className="w-10 h-10 border-t-2 border-r-2 border-white/70 absolute top-0 right-0 rounded-tr-2xl" />
+                  <View className="w-10 h-10 border-b-2 border-l-2 border-white/70 absolute bottom-0 left-0 rounded-bl-2xl" />
+                  <View className="w-10 h-10 border-b-2 border-r-2 border-white/70 absolute bottom-0 right-0 rounded-br-2xl" />
+
+                  {/* Center Focus Reticle */}
+                  <View className="w-16 h-16 border border-white/30 rounded-full items-center justify-center">
+                    <View className="w-2.5 h-2.5 bg-white/60 rounded-full" />
+                  </View>
+
+                  <Text className="text-white/40 text-xs font-medium mt-6">
+                    {isFrontCamera ? "Front Camera" : "Back Camera"}
+                  </Text>
+                </View>
+              </View>
+
+              {/* Bottom Controls Bar */}
+              <View className="absolute bottom-0 w-full pb-10 pt-5 px-8 flex-row justify-between items-center bg-black/50 z-20">
+                {/* Left (Gallery Shortcut) */}
+                <TouchableOpacity
+                  onPress={() => setActiveView("PHOTO_GALLERY")}
+                  className="w-12 h-12 bg-gray-800 rounded-md border border-white/50 overflow-hidden items-center justify-center active:opacity-75"
+                  activeOpacity={0.75}
+                >
+                  {selectedPhotos.length > 0 ? (
+                    <Image
+                      source={{
+                        uri: selectedPhotos[selectedPhotos.length - 1],
+                      }}
+                      className="w-full h-full"
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <Ionicons name="images-outline" size={22} color="#FFFFFF" />
+                  )}
+                </TouchableOpacity>
+
+                {/* Center (Capture Button) */}
+                <TouchableOpacity
+                  onPress={handleCapturePhoto}
+                  className="w-20 h-20 rounded-full border-4 border-white items-center justify-center active:scale-95"
+                  activeOpacity={0.8}
+                >
+                  <View className="w-16 h-16 bg-white rounded-full" />
+                </TouchableOpacity>
+
+                {/* Right (Flip Camera) */}
+                <TouchableOpacity
+                  onPress={() => setIsFrontCamera((prev) => !prev)}
+                  className="p-1 active:opacity-75"
+                  activeOpacity={0.75}
+                >
+                  <Ionicons
+                    name="camera-reverse-outline"
+                    size={32}
+                    color="#FFFFFF"
+                  />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : activeView === "ADD_LOCATION" ? (
+            /* 7. ADD LOCATION VIEW (Leaflet Map) */
+            <View className="flex-1 bg-white h-full w-full relative overflow-hidden">
+              {/* Full-Screen Map filling upper corners */}
+              <LeafletMap
+                latitude={mapCoords.latitude}
+                longitude={mapCoords.longitude}
+                zoom={14}
+                popupImage="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=300&q=80"
+                locationTitle={locationSearch || "Pala-o, Iligan City"}
+                interactive={true}
+                onLocationSelect={(lat, lng) => {
+                  setMapCoords({ latitude: lat, longitude: lng });
+                  const matched = STATIC_POST_LOCATIONS.find(
+                    (loc) =>
+                      Math.hypot(loc.latitude - lat, loc.longitude - lng) <
+                      0.005,
+                  );
+                  if (matched) {
+                    setLocationSearch(matched.name);
+                  } else {
+                    setLocationSearch(
+                      `Custom Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
+                    );
+                  }
+                }}
+              />
+
+              {/* Floating Top Controls: Chevron Back Button + Search Bar */}
+              <View
+                style={{
+                  position: "absolute",
+                  top: Math.max(insets.top, 16) + 6,
+                  left: 16,
+                  right: 16,
+                  zIndex: 30,
+                }}
+                className="flex-row items-center gap-2.5"
+              >
+                {/* Floating Chevron Back Button */}
+                <TouchableOpacity
+                  onPress={() => setActiveView("POST_FORM")}
+                  activeOpacity={0.7}
+                  className="w-11 h-11 rounded-full bg-white items-center justify-center shadow-lg elevation-5 border border-gray-100"
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
+                >
+                  <Ionicons name="chevron-back" size={26} color="#111827" />
+                </TouchableOpacity>
+
+                {/* Floating Search Bar */}
+                <View className="flex-1 bg-white border border-[#72AF5B] rounded-full flex-row items-center px-4 h-11 shadow-lg elevation-5">
+                  <TextInput
+                    value={locationSearch}
+                    onChangeText={setLocationSearch}
+                    placeholder="Search or pick a location"
+                    placeholderTextColor="#9CA3AF"
+                    className="flex-1 text-base text-gray-700 p-0"
+                  />
+                  <Ionicons name="search-outline" size={20} color="#6B7280" />
+                </View>
+              </View>
+
+              {/* Quick Select Location Chips */}
+              <View
+                style={{
+                  position: "absolute",
+                  top: Math.max(insets.top, 16) + 62,
+                  left: 0,
+                  right: 0,
+                  zIndex: 30,
+                }}
+              >
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={{ paddingHorizontal: 16 }}
+                  className="flex-row gap-2"
+                >
+                  {STATIC_POST_LOCATIONS.map((loc) => {
+                    const isSelected = locationSearch
+                      .toLowerCase()
+                      .includes(loc.barangay.toLowerCase());
+                    return (
+                      <TouchableOpacity
+                        key={loc.id}
+                        onPress={() => {
+                          setMapCoords({
+                            latitude: loc.latitude,
+                            longitude: loc.longitude,
+                          });
+                          setLocationSearch(loc.name);
+                        }}
+                        className={`px-3 py-1.5 rounded-full border shadow-sm flex-row items-center gap-1 ${
+                          isSelected
+                            ? "bg-[#72AF5B] border-[#5e944a]"
+                            : "bg-white/95 border-gray-200"
+                        }`}
+                        activeOpacity={0.8}
+                      >
+                        <Text className="text-xs">
+                          {isSelected ? "📍" : "🌱"}
+                        </Text>
+                        <Text
+                          className={`text-xs font-semibold ${
+                            isSelected ? "text-white" : "text-gray-800"
+                          }`}
+                        >
+                          {loc.barangay}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+
+              {/* Floating Bottom Info Card with Select & Cancel Location Buttons */}
+              <View className="absolute bottom-6 left-5 right-5 z-20 bg-white rounded-2xl p-4 shadow-xl border border-gray-100">
+                <View className="mb-3">
+                  <View className="flex-row items-center gap-1.5 mb-1">
+                    <Ionicons name="location-sharp" size={16} color="#72AF5B" />
+                    <Text
+                      className="text-base font-bold text-gray-900 flex-1"
+                      numberOfLines={1}
+                    >
+                      {locationSearch || "Pala-o, Iligan City"}
+                    </Text>
+                  </View>
+                  <Text className="text-xs text-gray-500 leading-4">
+                    Your selected location will be attached to your post and an
+                    interactive Leaflet map will be displayed to your community.
+                  </Text>
+                </View>
+                {/* Action Buttons Row */}
+                <View className="flex-row justify-end gap-2.5 pt-1">
+                  {/* Cancel Location Button */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      setActiveView("POST_FORM");
+                    }}
+                    className="bg-gray-100 px-4 py-2.5 rounded-xl border border-gray-200 items-center justify-center active:bg-gray-200"
+                    activeOpacity={0.7}
+                  >
+                    <Text className="text-gray-700 font-semibold text-xs">
+                      Cancel
+                    </Text>
+                  </TouchableOpacity>
+
+                  {/* Select Location Button */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      const finalName = locationSearch || "Pala-o, Iligan City";
+                      setSelectedLocation(finalName);
+                      setSelectedCoordinates(mapCoords);
+                      setActiveView("POST_FORM");
+                    }}
+                    className="bg-[#72AF5B] px-5 py-2.5 rounded-xl items-center justify-center active:bg-[#5e944a] shadow-sm"
+                    activeOpacity={0.8}
+                  >
+                    <Text className="text-white font-bold text-xs">
+                      Select Location
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+          ) : null}
+        </SafeAreaView>
+      )}
+
+      {/* RSBSA Green Badge Requirement Modal Overlay */}
+      {showRsbsaLockModal && (
+        <View className="absolute inset-0 bg-black/60 z-50 justify-center items-center px-6">
+          <Pressable
+            onPress={() => setShowRsbsaLockModal(false)}
+            className="absolute inset-0"
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss modal backdrop"
+          />
+          <View
+            className="bg-white rounded-3xl p-6 w-full max-w-sm items-center shadow-2xl z-10"
+            accessibilityRole="alert"
+          >
+            {/* Badge & Camera Graphic */}
+            <View className="relative mb-3">
+              <View className="w-16 h-16 rounded-full bg-[#72AF5B] items-center justify-center">
+                <Ionicons name="videocam" size={32} color="#ffffff" />
+              </View>
+              <View className="absolute -bottom-1 -right-1 w-7 h-7 rounded-full bg-white items-center justify-center shadow-md">
+                <Ionicons name="checkmark-circle" size={24} color="#72AF5B" />
+              </View>
+            </View>
+
+            {/* Status / Category Pill */}
+            <View
+              className={`px-3 py-1 rounded-full mb-2 border ${
+                rsbsaApp?.status === "pending"
+                  ? "bg-amber-50 border-amber-200"
+                  : rsbsaApp?.status === "rejected"
+                    ? "bg-rose-50 border-rose-200"
+                    : "bg-gray-50 border-[#72AF5B]"
+              }`}
+            >
+              <Text
+                className={`text-[11px] font-bold tracking-wide uppercase ${
+                  rsbsaApp?.status === "pending"
+                    ? "text-amber-800"
+                    : rsbsaApp?.status === "rejected"
+                      ? "text-rose-800"
+                      : "text-emerald-800"
+                }`}
+              >
+                {rsbsaApp?.status === "pending"
+                  ? "Verification Under Review"
+                  : rsbsaApp?.status === "rejected"
+                    ? "Verification Needs Attention"
+                    : "RSBSA Green Badge Required"}
+              </Text>
+            </View>
+
+            {/* Modal Heading */}
+            <Text className="text-xl font-bold text-[#E45742] text-center mb-2">
+              Unlock Live Streaming
+            </Text>
+
+            {/* Explanation / Subtitle */}
+            <Text className="text-sm text-gray-600 text-center leading-5 mb-4">
+              {rsbsaApp?.status === "pending"
+                ? "Your RSBSA application is currently under review by our team. Live streaming privileges will automatically unlock once verified."
+                : rsbsaApp?.status === "rejected"
+                  ? "Your previous RSBSA verification was not approved. Please update and re-submit your farming credentials to unlock live broadcasting."
+                  : "Live video broadcasting is exclusively reserved for RSBSA-verified farmers. Earn the Green Badge to protect our marketplace from fraudulent sellers and stream live harvest updates to buyers."}
+            </Text>
+
+            {/* Security & Trust Benefits */}
+            <View className="bg-gray-50 rounded-2xl p-3.5 w-full mb-5 border border-gray-100 gap-2">
+              <View className="flex-row items-center gap-2">
+                <Ionicons name="shield-checkmark" size={18} color="#72AF5B" />
+                <Text className="text-sm font-semibold text-gray-800">
+                  Protects buyers from fake farm listings
+                </Text>
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Ionicons name="ribbon" size={18} color="#72AF5B" />
+                <Text className="text-sm font-semibold text-gray-800">
+                  Awards the official Green Badge to your profile
+                </Text>
+              </View>
+              <View className="flex-row items-center gap-2">
+                <Ionicons name="people" size={18} color="#72AF5B" />
+                <Text className="text-sm font-semibold text-gray-800">
+                  Builds instant trust with local wholesale and retail buyers
+                </Text>
+              </View>
+            </View>
+
+            {/* Action Buttons */}
+            <TouchableOpacity
+              onPress={() => {
+                setShowRsbsaLockModal(false);
+                handleClose();
+                router.push("/user/RSBSAVerification" as any);
+              }}
+              className="w-full text-sm bg-[#72AF5B] py-3.5 rounded-xl items-center justify-center active:opacity-85 shadow-sm mb-2.5"
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel={
+                rsbsaApp?.status === "pending"
+                  ? "Check verification status"
+                  : rsbsaApp?.status === "rejected"
+                    ? "Review and re-apply"
+                    : "Apply for RSBSA verification"
+              }
+            >
+              <Text className="text-white font-bold text-sm">
+                {rsbsaApp?.status === "pending"
+                  ? "Check Verification Status"
+                  : rsbsaApp?.status === "rejected"
+                    ? "Review & Re-apply"
+                    : "Apply for RSBSA Verification"}
+              </Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              onPress={() => setShowRsbsaLockModal(false)}
+              className="w-full py-3.5 bg-gray-100 border border-gray-200 rounded-xl items-center justify-center active:opacity-60"
+              accessibilityRole="button"
+              accessibilityLabel="Dismiss dialog"
+            >
+              <Text className="text-gray-500 font-semibold text-sm text-center">
+                Maybe Later
+              </Text>
+            </TouchableOpacity>
           </View>
         </View>
       )}

@@ -1,19 +1,27 @@
 import { useAuth } from "@/hooks/use-auth";
+import { getBadgeCountsApi } from "@/services/badge-service";
 import { getRSBSAApplication, RSBSAApplication } from "@/services/rsbsa-service";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Image, Text, TouchableOpacity, View } from "react-native";
-import { INITIAL_NOTIFICATIONS, NotificationModal } from "./NotificationModal";
+import { NotificationModal } from "./NotificationModal";
 
 const UserHeader = () => {
   const router = useRouter();
   const { user } = useAuth();
   const [isNotifOpen, setNotifOpen] = useState(false);
-  const [unreadCount, setUnreadCount] = useState(
-    INITIAL_NOTIFICATIONS.filter((n) => n.isUnread).length,
-  );
+  const [unreadCount, setUnreadCount] = useState(0);
   const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
+
+  const loadBadgeCounts = useCallback(async () => {
+    try {
+      const counts = await getBadgeCountsApi();
+      setUnreadCount(counts.unreadNotificationsCount || 0);
+    } catch {
+      // ignore
+    }
+  }, []);
 
   useFocusEffect(
     useCallback(() => {
@@ -23,11 +31,19 @@ const UserHeader = () => {
           if (isMounted) setRsbsaApp(app);
         })
         .catch((err) => console.log("[UserHeader] Failed to load RSBSA:", err));
+
+      loadBadgeCounts();
+
       return () => {
         isMounted = false;
       };
-    }, [])
+    }, [loadBadgeCounts])
   );
+
+  useEffect(() => {
+    const timer = setInterval(loadBadgeCounts, 10000);
+    return () => clearInterval(timer);
+  }, [loadBadgeCounts]);
 
   const isRSBSAVerified = rsbsaApp?.status === "verified";
 
@@ -114,7 +130,10 @@ const UserHeader = () => {
       {/* Separated Notifications Modal Component */}
       <NotificationModal
         visible={isNotifOpen}
-        onClose={() => setNotifOpen(false)}
+        onClose={() => {
+          setNotifOpen(false);
+          loadBadgeCounts();
+        }}
         onUnreadCountChange={setUnreadCount}
       />
     </>

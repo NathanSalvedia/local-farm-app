@@ -1,5 +1,9 @@
 import { useToast } from "@/context/toast-context";
 import { useAuth } from "@/hooks/use-auth";
+import {
+  getFriendsApi,
+  searchUsersToConnectApi,
+} from "@/services/connection-service";
 import { createPostApi, PostItem } from "@/services/post-service";
 import {
   getRSBSAApplication,
@@ -56,6 +60,8 @@ interface Friend {
   id: string;
   fullName: string;
   firstName: string;
+  username?: string;
+  avatarUrl?: string;
 }
 
 const CATEGORIES = ["Field", "Wholesaler", "Temporary"];
@@ -110,20 +116,6 @@ const PRIVACY_OPTIONS: PrivacyOption[] = [
     title: "Only me",
     icon: "lock-closed",
   },
-];
-
-const MOCK_FRIENDS: Friend[] = [
-  { id: "1", fullName: "Mark Paul Cosido", firstName: "Mark" },
-  { id: "2", fullName: "Paul Walker", firstName: "Paul" },
-  { id: "3", fullName: "Tyson", firstName: "Tyson" },
-  { id: "4", fullName: "May Weather", firstName: "May" },
-  { id: "5", fullName: "Jolido Fries", firstName: "Jolido" },
-  { id: "6", fullName: "Jack Jalaran", firstName: "Jack" },
-  { id: "7", fullName: "Romarch Uchiha Landicho", firstName: "Romarch" },
-  { id: "8", fullName: "Nathan Manabilang Pitos", firstName: "Nathan" },
-  { id: "9", fullName: "Cleogardo Pitos", firstName: "Cleogardo" },
-  { id: "10", fullName: "Princess Jalaran", firstName: "Princess" },
-  { id: "11", fullName: "Geneleen Caneda", firstName: "Geneleen" },
 ];
 
 const MOCK_GALLERY_IMAGES = [
@@ -232,6 +224,10 @@ export default function CreatePostModal({
   );
   const [taggedUserIds, setTaggedUserIds] = useState<string[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [friendsList, setFriendsList] = useState<Friend[]>([]);
+  const [isLoadingFriends, setIsLoadingFriends] = useState(false);
+  const [searchedUsers, setSearchedUsers] = useState<Friend[]>([]);
+  const [isSearchingUsers, setIsSearchingUsers] = useState(false);
   const [selectedPhotos, setSelectedPhotos] = useState<string[]>([]);
   const [selectedLocation, setSelectedLocation] = useState<string | null>(null);
   const [selectedCoordinates, setSelectedCoordinates] = useState<{
@@ -247,6 +243,84 @@ export default function CreatePostModal({
   const [isFrontCamera, setIsFrontCamera] = useState(false);
   const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
   const [showRsbsaLockModal, setShowRsbsaLockModal] = useState(false);
+
+  const loadFriends = useCallback(async () => {
+    setIsLoadingFriends(true);
+    try {
+      const res = await getFriendsApi();
+      setFriendsList(
+        res.map((f) => ({
+          id: f.id,
+          fullName: f.name,
+          firstName: f.name.split(" ")[0] || f.name,
+          username: f.username,
+          avatarUrl: f.avatarUrl,
+        })),
+      );
+    } catch (e) {
+      console.warn("Error fetching friends for tag:", e);
+    } finally {
+      setIsLoadingFriends(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isVisible) {
+      loadFriends();
+    }
+  }, [isVisible, loadFriends]);
+
+  useEffect(() => {
+    if (!searchQuery.trim()) {
+      setSearchedUsers([]);
+      return;
+    }
+    const timeout = setTimeout(async () => {
+      setIsSearchingUsers(true);
+      try {
+        const results = await searchUsersToConnectApi(searchQuery.trim());
+        setSearchedUsers(
+          results.map((u) => ({
+            id: u.id,
+            fullName: u.name,
+            firstName: u.name.split(" ")[0] || u.name,
+            username: u.username,
+            avatarUrl: u.avatarUrl,
+          })),
+        );
+      } catch (e) {
+        console.warn("User search error for tag:", e);
+      } finally {
+        setIsSearchingUsers(false);
+      }
+    }, 350);
+    return () => clearTimeout(timeout);
+  }, [searchQuery]);
+
+  const filteredFriends = useMemo(() => {
+    if (searchQuery.trim()) {
+      const queryLower = searchQuery.toLowerCase();
+      const matchedFriends = friendsList.filter(
+        (f) =>
+          f.fullName.toLowerCase().includes(queryLower) ||
+          (f.username && f.username.toLowerCase().includes(queryLower)),
+      );
+      const friendIds = new Set(matchedFriends.map((f) => f.id));
+      const matchedSearched = searchedUsers.filter((u) => !friendIds.has(u.id));
+      return [...matchedFriends, ...matchedSearched];
+    }
+    return friendsList;
+  }, [searchQuery, friendsList, searchedUsers]);
+
+  const getFriendById = useCallback(
+    (userId: string) => {
+      return (
+        friendsList.find((f) => f.id === userId) ||
+        searchedUsers.find((f) => f.id === userId)
+      );
+    },
+    [friendsList, searchedUsers],
+  );
 
   // Swipe-down-to-dismiss animated gesture
   const [translateY] = useState(() => new Animated.Value(0));
@@ -274,14 +348,12 @@ export default function CreatePostModal({
           }
         },
         onPanResponderRelease: (_, gestureState) => {
-          if (gestureState.dy > 70 || gestureState.vy > 0.5) {
+          if (gestureState.dy > 120 || gestureState.vy > 0.8) {
             Animated.timing(translateY, {
               toValue: Dimensions.get("window").height,
-              duration: 180,
+              duration: 200,
               useNativeDriver: true,
-            }).start(() => {
-              handleClose();
-            });
+            }).start(() => handleClose());
           } else {
             Animated.spring(translateY, {
               toValue: 0,
@@ -290,29 +362,24 @@ export default function CreatePostModal({
             }).start();
           }
         },
-        onPanResponderTerminate: () => {
-          Animated.spring(translateY, {
-            toValue: 0,
-            useNativeDriver: true,
-          }).start();
-        },
       }),
     [handleClose, translateY],
   );
 
   useEffect(() => {
-    if (isVisible) {
+    if (!isVisible) {
       translateY.setValue(0);
-      getRSBSAApplication()
-        .then((app) => setRsbsaApp(app))
-        .catch((err) =>
-          console.log(
-            "[CreatePostModal] Failed to load RSBSA application:",
-            err,
-          ),
-        );
+      setActiveView("POST_FORM");
     }
   }, [isVisible, translateY]);
+
+  useEffect(() => {
+    if (isVisible) {
+      getRSBSAApplication()
+        .then((app) => setRsbsaApp(app))
+        .catch(() => setRsbsaApp(null));
+    }
+  }, [isVisible]);
 
   const isRSBSAVerified = rsbsaApp?.status === "verified";
 
@@ -348,16 +415,31 @@ export default function CreatePostModal({
         privacy: privacySetting,
         location: selectedLocation ? selectedLocation.trim() : null,
         photos: selectedPhotos,
+        taggedUserIds: taggedUserIds.length > 0 ? taggedUserIds : undefined,
         expiresAt,
+        temporaryDuration: isTemp ? temporaryDuration : undefined,
         durationLabel: isTemp ? durationOpt?.label : undefined,
       });
 
-      // Augment returned post with static expiry data for client-side rendering/filtering
+      // Augment returned post with static expiry data and tagged users for client-side rendering/filtering
       const clientPost = {
         ...newPost,
         category: selectedCategory,
+        privacy: privacySetting,
         expiresAt: isTemp ? expiresAt : null,
         durationLabel: isTemp ? durationOpt?.label : undefined,
+        taggedUsers:
+          newPost.taggedUsers && newPost.taggedUsers.length > 0
+            ? newPost.taggedUsers
+            : taggedUserIds.map((id) => {
+                const u = getFriendById(id);
+                return {
+                  id,
+                  name: u?.fullName || "User",
+                  username: u?.username,
+                  avatarUrl: u?.avatarUrl,
+                };
+              }),
       };
 
       showToast(
@@ -403,10 +485,6 @@ export default function CreatePostModal({
     setSelectedPhotos((prev) => [...prev, newPhoto]);
     setActiveView("POST_FORM");
   };
-
-  const filteredFriends = MOCK_FRIENDS.filter((friend) =>
-    friend.fullName.toLowerCase().includes(searchQuery.toLowerCase()),
-  );
 
   const getPrivacyIcon = (
     setting: PrivacyType,
@@ -509,6 +587,19 @@ export default function CreatePostModal({
                     user?.username ||
                     "Local Farmer"}
                 </Text>
+
+                {taggedUserIds.length > 0 && (
+                  <TouchableOpacity
+                    onPress={() => setActiveView("TAG_PEOPLE")}
+                    className="flex-row items-center mt-0.5"
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons name="pricetag" size={11} color="#72AF5B" style={{ marginRight: 3 }} />
+                    <Text className="text-xs text-[#72AF5B] font-semibold" numberOfLines={1}>
+                      with {taggedUserIds.length} {taggedUserIds.length === 1 ? "person" : "people"} tagged
+                    </Text>
+                  </TouchableOpacity>
+                )}
 
                 <View className="flex-row items-center gap-1.5 mt-1">
                   {/* Privacy Selector Trigger */}
@@ -1116,13 +1207,25 @@ export default function CreatePostModal({
                     className="px-5"
                   >
                     {taggedUserIds.map((userId) => {
-                      const user = MOCK_FRIENDS.find((f) => f.id === userId);
+                      const user = getFriendById(userId);
                       if (!user) return null;
 
                       return (
                         <View key={user.id} className="items-center mr-4">
-                          <View className="bg-gray-300 h-12 w-12 rounded-full mb-1 items-center justify-center overflow-hidden border border-gray-200">
-                            <Ionicons name="person" size={24} color="#FFFFFF" />
+                          <View className="bg-gray-200 h-12 w-12 rounded-full mb-1 items-center justify-center overflow-hidden border border-gray-300">
+                            {user.avatarUrl ? (
+                              <Image
+                                source={{ uri: user.avatarUrl }}
+                                className="w-full h-full"
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <Ionicons
+                                name="person"
+                                size={22}
+                                color="#6B7280"
+                              />
+                            )}
                           </View>
                           <Text className="text-xs text-gray-700 font-medium">
                             {user.firstName}
@@ -1140,7 +1243,7 @@ export default function CreatePostModal({
                 <TextInput
                   value={searchQuery}
                   onChangeText={setSearchQuery}
-                  placeholder="Search..."
+                  placeholder="Search members to tag..."
                   placeholderTextColor="#9CA3AF"
                   className="flex-1 ml-2 text-base text-gray-800 p-0"
                 />
@@ -1157,50 +1260,87 @@ export default function CreatePostModal({
                 showsVerticalScrollIndicator={false}
                 contentContainerStyle={{ paddingBottom: 100 }}
               >
-                {filteredFriends.map((friend) => {
-                  const isSelected = taggedUserIds.includes(friend.id);
+                {isLoadingFriends || isSearchingUsers ? (
+                  <View className="py-12 items-center justify-center">
+                    <ActivityIndicator size="small" color="#72AF5B" />
+                    <Text className="text-xs text-gray-500 mt-2">
+                      Loading members...
+                    </Text>
+                  </View>
+                ) : filteredFriends.length === 0 ? (
+                  <View className="py-12 items-center justify-center px-4">
+                    <Ionicons name="people-outline" size={36} color="#9CA3AF" />
+                    <Text className="text-sm font-semibold text-gray-600 mt-2 text-center">
+                      {searchQuery
+                        ? "No members found matching your search"
+                        : "No members to tag yet"}
+                    </Text>
+                    <Text className="text-xs text-gray-400 mt-1 text-center">
+                      {searchQuery
+                        ? "Try searching by exact name or username."
+                        : "Connect with farmers and friends or search their name above to tag them."}
+                    </Text>
+                  </View>
+                ) : (
+                  filteredFriends.map((friend) => {
+                    const isSelected = taggedUserIds.includes(friend.id);
 
-                  return (
-                    <TouchableOpacity
-                      key={friend.id}
-                      onPress={() => toggleTagUser(friend.id)}
-                      className="flex-row items-center bg-white rounded-2xl mb-2.5 p-3 shadow-xs border border-gray-100 active:opacity-80"
-                      activeOpacity={0.7}
-                    >
-                      {/* Left (Avatar) */}
-                      <View className="bg-gray-300 h-12 w-12 rounded-full mr-3 items-center justify-center overflow-hidden border border-gray-200">
-                        <Ionicons name="person" size={24} color="#FFFFFF" />
-                      </View>
-
-                      {/* Middle (Info) */}
-                      <View className="flex-1">
-                        <Text className="text-sm font-bold text-gray-800">
-                          {friend.fullName}
-                        </Text>
-                        <Text className="text-xs text-gray-500 mt-0.5">
-                          Friend
-                        </Text>
-                      </View>
-
-                      {/* Right (Checkbox) */}
-                      <View
-                        className={`h-6 w-6 rounded-md items-center justify-center ${
-                          isSelected
-                            ? "bg-[#72AF5B]"
-                            : "border border-[#72AF5B] bg-white"
-                        }`}
+                    return (
+                      <TouchableOpacity
+                        key={friend.id}
+                        onPress={() => toggleTagUser(friend.id)}
+                        className="flex-row items-center bg-white rounded-2xl mb-2.5 p-3 shadow-xs border border-gray-100 active:opacity-80"
+                        activeOpacity={0.7}
                       >
-                        {isSelected && (
-                          <Ionicons
-                            name="checkmark"
-                            size={16}
-                            color="#FFFFFF"
-                          />
-                        )}
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
+                        {/* Left (Avatar) */}
+                        <View className="bg-gray-200 h-12 w-12 rounded-full mr-3 items-center justify-center overflow-hidden border border-gray-200">
+                          {friend.avatarUrl ? (
+                            <Image
+                              source={{ uri: friend.avatarUrl }}
+                              className="w-full h-full"
+                              resizeMode="cover"
+                            />
+                          ) : (
+                            <Ionicons
+                              name="person"
+                              size={22}
+                              color="#6B7280"
+                            />
+                          )}
+                        </View>
+
+                        {/* Middle (Info) */}
+                        <View className="flex-1">
+                          <Text className="text-sm font-bold text-gray-800">
+                            {friend.fullName}
+                          </Text>
+                          <Text className="text-xs text-gray-500 mt-0.5">
+                            {friend.username
+                              ? `@${friend.username}`
+                              : "Member"}
+                          </Text>
+                        </View>
+
+                        {/* Right (Checkbox) */}
+                        <View
+                          className={`h-6 w-6 rounded-md items-center justify-center ${
+                            isSelected
+                              ? "bg-[#72AF5B]"
+                              : "border border-[#72AF5B] bg-white"
+                          }`}
+                        >
+                          {isSelected && (
+                            <Ionicons
+                              name="checkmark"
+                              size={16}
+                              color="#FFFFFF"
+                            />
+                          )}
+                        </View>
+                      </TouchableOpacity>
+                    );
+                  })
+                )}
               </ScrollView>
 
               {/* Bottom Finished Action Button */}

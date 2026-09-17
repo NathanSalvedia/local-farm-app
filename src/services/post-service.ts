@@ -14,6 +14,13 @@ export interface OriginalPostItem {
   isVerified?: boolean;
 }
 
+export interface TaggedUser {
+  id: string;
+  name: string;
+  username?: string;
+  avatarUrl?: string;
+}
+
 export interface PostItem {
   id: string;
   userId: string;
@@ -36,6 +43,7 @@ export interface PostItem {
   originalPost?: OriginalPostItem | null;
   expiresAt?: number | string | null;
   durationLabel?: string;
+  taggedUsers?: TaggedUser[];
 }
 
 export interface SavedPostItem extends PostItem {
@@ -65,7 +73,9 @@ export interface CreatePostPayload {
   location?: string | null;
   photos?: string[];
   imageUrl?: string;
+  taggedUserIds?: string[];
   expiresAt?: number | string | null;
+  temporaryDuration?: number;
   durationLabel?: string;
 }
 

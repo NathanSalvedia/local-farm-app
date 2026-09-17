@@ -17,6 +17,14 @@ import {
   getRSBSAApplication,
   RSBSAApplication,
 } from "@/services/rsbsa-service";
+import {
+  createStoryApi,
+  getStoriesApi,
+  markStoryViewedApi,
+  StoryItem,
+  UserStory,
+} from "@/services/story-service";
+import * as ImagePicker from "expo-image-picker";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -50,22 +58,6 @@ import CreatePostModal, {
 import LeafletMap from "../../components/LeafletMap";
 import BottomNavBar from "../../components/Navigation";
 import UserHeader from "../../components/UserHeader";
-
-interface StoryItem {
-  id: string;
-  imageUrl: string;
-  content?: string;
-  isSeen: boolean;
-  timeAgo?: string;
-}
-
-interface UserStory {
-  userId: string;
-  userName: string;
-  userAvatar?: string;
-  color: string;
-  stories: StoryItem[];
-}
 
 interface Post {
   id: string;
@@ -170,248 +162,6 @@ const isPostExpired = (post: PostItem | Post) => {
   return Date.now() >= exp;
 };
 
-const mockUserStories: UserStory[] = [
-  {
-    userId: "u1",
-    userName: "Paulbert",
-    userAvatar: "https://i.pravatar.cc/150?img=11",
-    color: "#72AF5B",
-    stories: [
-      {
-        id: "s1_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1542838132-92c53300491e?w=800&q=80",
-        content: "Fresh harvest from our organic farm today! 🌿🍅",
-        isSeen: false,
-        timeAgo: "1h ago",
-      },
-      {
-        id: "s1_2",
-        imageUrl:
-          "https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=800&q=80",
-        content: "Organizing new seed packs for wholesale orders 🥕",
-        isSeen: false,
-        timeAgo: "30m ago",
-      },
-    ],
-  },
-  {
-    userId: "u2",
-    userName: "Pitos",
-    userAvatar: "https://i.pravatar.cc/150?img=33",
-    color: "#3B82F6",
-    stories: [
-      {
-        id: "s2_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?w=800&q=80",
-        content: "New batch of hydroponic lettuce ready for order! 🥬",
-        isSeen: false,
-        timeAgo: "2h ago",
-      },
-      {
-        id: "s2_2",
-        imageUrl:
-          "https://images.unsplash.com/photo-1500651230702-0e2d8a49d4ad?w=800&q=80",
-        content: "Nutrient water levels checked! 🌱",
-        isSeen: true,
-        timeAgo: "4h ago",
-      },
-    ],
-  },
-  {
-    userId: "u3",
-    userName: "Cleo",
-    userAvatar: "https://i.pravatar.cc/150?img=44",
-    color: "#EC4899",
-    stories: [
-      {
-        id: "s3_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1508746829417-e6f548d8d6ed?w=800&q=80",
-        content: "Sunflowers blooming in full color! 🌻✨",
-        isSeen: false,
-        timeAgo: "3h ago",
-      },
-    ],
-  },
-  {
-    userId: "u4",
-    userName: "Maria",
-    userAvatar: "https://i.pravatar.cc/150?img=47",
-    color: "#F59E0B",
-    stories: [
-      {
-        id: "s4_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1550828520-4cb496926fc9?w=800&q=80",
-        content: "Fresh dragon fruits & mangoes picked this morning! 🐉🍎",
-        isSeen: true,
-        timeAgo: "6h ago",
-      },
-    ],
-  },
-  {
-    userId: "u5",
-    userName: "Juan",
-    userAvatar: "https://i.pravatar.cc/150?img=52",
-    color: "#8B5CF6",
-    stories: [
-      {
-        id: "s5_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1560493676-04071c5f467b?w=800&q=80",
-        content: "Organic compost available for local gardens 🌱",
-        isSeen: false,
-        timeAgo: "45m ago",
-      },
-    ],
-  },
-  {
-    userId: "u6",
-    userName: "Elena",
-    userAvatar: "https://i.pravatar.cc/150?img=26",
-    color: "#10B981",
-    stories: [
-      {
-        id: "s6_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1598511726623-d2e9996892f0?w=800&q=80",
-        content: "Sweet corn harvest is live! 🌽🌽",
-        isSeen: false,
-        timeAgo: "5h ago",
-      },
-    ],
-  },
-  {
-    userId: "u7",
-    userName: "Carlos",
-    userAvatar: "https://i.pravatar.cc/150?img=60",
-    color: "#EF4444",
-    stories: [
-      {
-        id: "s7_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1587049352846-4a222e784d38?w=800&q=80",
-        content: "Farm-fresh strawberry baskets 🍓🍓",
-        isSeen: true,
-        timeAgo: "8h ago",
-      },
-    ],
-  },
-  {
-    userId: "u8",
-    userName: "Sophia",
-    userAvatar: "https://i.pravatar.cc/150?img=9",
-    color: "#6366F1",
-    stories: [
-      {
-        id: "s8_1",
-        imageUrl:
-          "https://images.unsplash.com/photo-1516253593875-bd7ba052fbc5?w=800&q=80",
-        content: "Join our weekend urban farming workshop! 🧑‍🌾",
-        isSeen: false,
-        timeAgo: "2h ago",
-      },
-    ],
-  },
-];
-
-const MOCK_GALLERY_IMAGES = [
-  "https://images.unsplash.com/photo-1542838132-92c53300491e?w=400&q=80",
-  "https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=400&q=80",
-  "https://images.unsplash.com/photo-1500937386664-56d1dfef3854?w=400&q=80",
-  "https://images.unsplash.com/photo-1597362925123-77861d3fbac7?w=400&q=80",
-  "https://images.unsplash.com/photo-1518977676601-b53f82aba655?w=400&q=80",
-  "https://images.unsplash.com/photo-1615485290382-441e4d049cb5?w=400&q=80",
-  "https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?w=400&q=80",
-  "https://images.unsplash.com/photo-1560493676-04071c5f467b?w=400&q=80",
-  "https://images.unsplash.com/photo-1506744038136-46273834b3fb?w=400&q=80",
-  "https://images.unsplash.com/photo-1516253593875-bd7ba052fbc5?w=400&q=80",
-  "https://images.unsplash.com/photo-1574943320219-553eb213f72d?w=400&q=80",
-  "https://images.unsplash.com/photo-1587049352846-4a222e784d38?w=400&q=80",
-  "https://images.unsplash.com/photo-1528825871115-3581a5387919?w=400&q=80",
-  "https://images.unsplash.com/photo-1550828520-4cb496926fc9?w=400&q=80",
-  "https://images.unsplash.com/photo-1567306226416-28f0efdc88ce?w=400&q=80",
-  "https://images.unsplash.com/photo-1590779033100-9f60a05a013d?w=400&q=80",
-  "https://images.unsplash.com/photo-1598170845058-32b9d6a5da37?w=400&q=80",
-  "https://images.unsplash.com/photo-1508746829417-e6f548d8d6ed?w=400&q=80",
-  "https://images.unsplash.com/photo-1500651230702-0e2d8a49d4ad?w=400&q=80",
-  "https://images.unsplash.com/photo-1557844352-761f2565b576?w=400&q=80",
-  "https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?w=400&q=80",
-  "https://images.unsplash.com/photo-1598511726623-d2e9996892f0?w=400&q=80",
-  "https://images.unsplash.com/photo-1519999482648-25049ddd37b1?w=400&q=80",
-  "https://images.unsplash.com/photo-1576045057995-568f588f82fb?w=400&q=80",
-  "https://images.unsplash.com/photo-1563729784474-d77dbb933a9e?w=400&q=80",
-  "https://images.unsplash.com/photo-1573246123716-6b1782bfc499?w=400&q=80",
-  "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&q=80",
-  "https://images.unsplash.com/photo-1589927986089-35812388d1f4?w=400&q=80",
-  "https://images.unsplash.com/photo-1533038590840-1cde6e668a91?w=400&q=80",
-  "https://images.unsplash.com/photo-1526344966-89049886b28d?w=400&q=80",
-];
-
-const POSTS: Post[] = [
-  {
-    id: "1",
-    authorName: "Paulbert Landicho",
-    authorRole: "Wholesaler",
-    avatarUri: "https://i.pravatar.cc/150?img=11",
-    location: "Pala-o, Iligan City",
-    timeAgo: "2h ago",
-    content:
-      "Mga suki! Naa tay presko ug tam-is nga apple karon.🍎 Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/apple.jpg"),
-    likes: 142,
-    comments: 22,
-    shares: 55,
-  },
-  {
-    id: "2",
-    authorName: "Nez Uy",
-    authorRole: "Temporary",
-    avatarUri: "https://i.pravatar.cc/150?img=5",
-    location: "",
-    timeAgo: "4h ago",
-    category: "Temporary",
-    expiresAt: Date.now() + 20 * 3600 * 1000,
-    durationLabel: "24 Hours (Default)",
-    content:
-      "Mga suki! Naa tay presko nga durian karon. Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/durian.jpg"),
-    likes: 289,
-    comments: 41,
-    shares: 18,
-  },
-  {
-    id: "3",
-    authorName: "Juan Dela Cruz",
-    authorRole: "Wholesaler",
-    avatarUri: "https://i.pravatar.cc/150?img=8",
-    location: "Tubod, Iligan City",
-    timeAgo: "6h ago",
-    content:
-      "Mga suki! Naa tay presko ug tam-is nga mga orange karon. 🍊 Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/orange.jpg"),
-    likes: 310,
-    comments: 34,
-    shares: 62,
-  },
-  {
-    id: "4",
-    authorName: "Kent Zorel Elnas",
-    authorRole: "field",
-    avatarUri: "https://i.pravatar.cc/150?img=9",
-    location: "",
-    timeAgo: "1d ago",
-    content:
-      "Mga suki! Naa tay presko ug tam-is nga mga pineapple karon. 🍍 Puno sa vitamins ug perfect para sa tibuok pamilya!",
-    imageSource: require("../../../assets/images/products/pineapple.jpg"),
-    likes: 524,
-    comments: 89,
-    shares: 104,
-  },
-];
-
 const STORY_DURATION = 4000;
 
 export default function NewsFeed() {
@@ -463,6 +213,10 @@ export default function NewsFeed() {
   }, []);
 
   const isRSBSAVerified = rsbsaApp?.status === "verified";
+  const [userStories, setUserStories] = useState<UserStory[]>([]);
+  const [isLoadingStories, setIsLoadingStories] = useState(false);
+  const [isSharingStory, setIsSharingStory] = useState(false);
+  const [storyTextContent, setStoryTextContent] = useState("");
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeSubStoryIndex, setActiveSubStoryIndex] = useState<number>(0);
   const [isStoryModalVisible, setStoryModalVisible] = useState(false);
@@ -609,15 +363,124 @@ export default function NewsFeed() {
     }
   };
 
+  const fetchFeedStories = async () => {
+    try {
+      setIsLoadingStories(true);
+      const data = await getStoriesApi();
+      setUserStories(data);
+    } catch (err) {
+      console.log("[NewsFeed] Failed to fetch stories:", err);
+    } finally {
+      setIsLoadingStories(false);
+    }
+  };
+
   useEffect(() => {
     fetchFeedPosts();
+    fetchFeedStories();
   }, []);
 
   useFocusEffect(
     useCallback(() => {
       fetchFeedPosts();
+      fetchFeedStories();
     }, [])
   );
+
+  // Auto-mark story as viewed when viewed by user
+  useEffect(() => {
+    if (activeStoryIndex !== null && userStories[activeStoryIndex]) {
+      const activeStory = userStories[activeStoryIndex].stories[activeSubStoryIndex];
+      if (activeStory && !activeStory.isSeen) {
+        markStoryViewedApi(activeStory.id);
+        setUserStories((prev) =>
+          prev.map((u, uIdx) => {
+            if (uIdx !== activeStoryIndex) return u;
+            return {
+              ...u,
+              stories: u.stories.map((s, sIdx) =>
+                sIdx === activeSubStoryIndex ? { ...s, isSeen: true } : s
+              ),
+            };
+          })
+        );
+      }
+    }
+  }, [activeStoryIndex, activeSubStoryIndex]);
+
+  const handlePickCamera = async () => {
+    try {
+      if (Platform.OS !== "web") {
+        const cameraPerm = await ImagePicker.requestCameraPermissionsAsync();
+        if (!cameraPerm.granted) {
+          showToast("Permission to access camera is required.", "warning");
+          return;
+        }
+      }
+      const result = await ImagePicker.launchCameraAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setSelectedStoryImage(result.assets[0].uri);
+        setStoryStep("EDIT_STORY");
+      }
+    } catch (error) {
+      console.error("Error taking story photo:", error);
+      showToast("Could not open camera.", "error");
+    }
+  };
+
+  const handlePickGallery = async () => {
+    try {
+      if (Platform.OS !== "web") {
+        const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (!perm.granted) {
+          showToast("Permission to access gallery is required.", "warning");
+          return;
+        }
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsEditing: true,
+        quality: 0.85,
+      });
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        setSelectedStoryImage(result.assets[0].uri);
+        setStoryStep("EDIT_STORY");
+      }
+    } catch (error) {
+      console.error("Error picking story photo:", error);
+      showToast("Could not open photo gallery.", "error");
+    }
+  };
+
+  const handleShareStory = async () => {
+    if (!selectedStoryImage && !storyTextContent.trim()) {
+      showToast("Please add a photo or text for your story.", "warning");
+      return;
+    }
+    try {
+      setIsSharingStory(true);
+      await createStoryApi({
+        mediaUrl: selectedStoryImage || undefined,
+        textContent: storyTextContent.trim() || undefined,
+        privacy: storyPrivacy,
+      });
+      showToast("Story shared successfully!", "success");
+      setStoryModalVisible(false);
+      setSelectedStoryImage(null);
+      setStoryTextContent("");
+      setStoryStep("SELECT_MEDIA");
+      fetchFeedStories();
+    } catch (err: any) {
+      console.error("[NewsFeed] Error sharing story:", err);
+      showToast(err.message || "Failed to share story.", "error");
+    } finally {
+      setIsSharingStory(false);
+    }
+  };
 
   const handleNewPostCreated = (newPost: PostItem) => {
     setPosts((prev) => [newPost, ...prev]);
@@ -1098,18 +961,18 @@ export default function NewsFeed() {
     if (activeSubStoryIndex > 0) {
       setActiveSubStoryIndex((prev) => prev - 1);
     } else if (activeStoryIndex > 0) {
-      const prevUserStories = mockUserStories[activeStoryIndex - 1].stories;
+      const prevUserStories = userStories[activeStoryIndex - 1]?.stories || [];
       setActiveStoryIndex(activeStoryIndex - 1);
-      setActiveSubStoryIndex(prevUserStories.length - 1);
+      setActiveSubStoryIndex(Math.max(0, prevUserStories.length - 1));
     }
   };
 
   const handleNextStory = () => {
     if (activeStoryIndex === null) return;
-    const currentUser = mockUserStories[activeStoryIndex];
-    if (activeSubStoryIndex < currentUser.stories.length - 1) {
+    const currentUser = userStories[activeStoryIndex];
+    if (currentUser && activeSubStoryIndex < currentUser.stories.length - 1) {
       setActiveSubStoryIndex((prev) => prev + 1);
-    } else if (activeStoryIndex < mockUserStories.length - 1) {
+    } else if (activeStoryIndex < userStories.length - 1) {
       setActiveStoryIndex(activeStoryIndex + 1);
       setActiveSubStoryIndex(0);
     } else {
@@ -1182,7 +1045,7 @@ export default function NewsFeed() {
   }, [activeStoryIndex, activeSubStoryIndex]);
 
   const currentStoryUser =
-    activeStoryIndex !== null ? mockUserStories[activeStoryIndex] : null;
+    activeStoryIndex !== null ? userStories[activeStoryIndex] : null;
   const currentSubStory =
     currentStoryUser && currentStoryUser.stories[activeSubStoryIndex]
       ? currentStoryUser.stories[activeSubStoryIndex]
@@ -1272,7 +1135,7 @@ export default function NewsFeed() {
                 </View>
 
                 {/* Items 2+: Other Users' Stories (Grouped per User) */}
-                {mockUserStories.map((userStory, index) => {
+                {userStories.map((userStory, index) => {
                   const hasUnseen = userStory.stories.some((s) => !s.isSeen);
 
                   return (
@@ -1296,8 +1159,16 @@ export default function NewsFeed() {
                             hasUnseen ? { borderColor: "#72AF5B" } : undefined
                           }
                         >
-                          <View className="w-full h-full rounded-full bg-gray-200 items-center justify-center">
-                            <Ionicons name="person" size={28} color="#6B7280" />
+                          <View className="w-full h-full rounded-full bg-gray-200 items-center justify-center overflow-hidden">
+                            {userStory.userAvatar ? (
+                              <Image
+                                source={{ uri: userStory.userAvatar }}
+                                style={{ width: "100%", height: "100%" }}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <Ionicons name="person" size={28} color="#6B7280" />
+                            )}
                           </View>
                         </View>
                         <Text
@@ -1550,6 +1421,17 @@ export default function NewsFeed() {
                                   <Text className="font-bold text-gray-900 mr-1.5 text-base">
                                     {post.authorName}
                                   </Text>
+                                  {Boolean(post.taggedUsers && post.taggedUsers.length > 0) && (
+                                    <Text className="text-xs text-gray-500 mr-1.5 font-normal">
+                                      is with{" "}
+                                      <Text className="font-semibold text-gray-800">
+                                        {post.taggedUsers![0].name}
+                                      </Text>
+                                      {post.taggedUsers!.length > 1
+                                        ? ` and ${post.taggedUsers!.length - 1} other${post.taggedUsers!.length > 2 ? "s" : ""}`
+                                        : ""}
+                                    </Text>
+                                  )}
                                   {(post.isVerified ||
                                     ((Boolean(
                                       user?.id &&
@@ -2491,10 +2373,18 @@ export default function NewsFeed() {
               <View className="flex-row items-center justify-between w-full">
                 <View className="flex-row items-center">
                   <View
-                    className="h-10 w-10 rounded-full border-2 items-center justify-center bg-gray-800 mr-3"
+                    className="h-10 w-10 rounded-full border-2 items-center justify-center bg-gray-800 mr-3 overflow-hidden"
                     style={{ borderColor: "#72AF5B" }}
                   >
-                    <Ionicons name="person" size={20} color="#9CA3AF" />
+                    {currentStoryUser.userAvatar ? (
+                      <Image
+                        source={{ uri: currentStoryUser.userAvatar }}
+                        style={{ width: "100%", height: "100%" }}
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={20} color="#9CA3AF" />
+                    )}
                   </View>
                   <View>
                     <Text className="text-white font-bold text-base">
@@ -2601,14 +2491,14 @@ export default function NewsFeed() {
                 className="flex-row items-center bg-black/40 px-3 py-1.5 rounded-full"
               >
                 <Text className="text-white text-xs mr-1 font-medium">
-                  {activeStoryIndex === mockUserStories.length - 1 &&
+                  {activeStoryIndex === userStories.length - 1 &&
                   activeSubStoryIndex === currentStoryUser.stories.length - 1
                     ? "Close"
                     : "Next"}
                 </Text>
                 <Ionicons
                   name={
-                    activeStoryIndex === mockUserStories.length - 1 &&
+                    activeStoryIndex === userStories.length - 1 &&
                     activeSubStoryIndex === currentStoryUser.stories.length - 1
                       ? "close"
                       : "arrow-forward"
@@ -2660,8 +2550,8 @@ export default function NewsFeed() {
               {/* Option 1: Text */}
               <TouchableOpacity
                 onPress={() => {
-                  console.log("Create text story selected");
                   setSelectedStoryImage(null);
+                  setStoryTextContent("");
                   setStoryStep("EDIT_STORY");
                 }}
                 className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
@@ -2677,11 +2567,7 @@ export default function NewsFeed() {
 
               {/* Option 2: Camera */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Create camera story selected");
-                  setSelectedStoryImage(MOCK_GALLERY_IMAGES[0]);
-                  setStoryStep("EDIT_STORY");
-                }}
+                onPress={handlePickCamera}
                 className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
                 activeOpacity={0.7}
               >
@@ -2691,67 +2577,90 @@ export default function NewsFeed() {
                 </Text>
               </TouchableOpacity>
 
-              {/* Option 3: Music */}
+              {/* Option 3: Gallery */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Create music story selected");
-                  setSelectedStoryImage(MOCK_GALLERY_IMAGES[1]);
-                  setStoryStep("EDIT_STORY");
-                }}
+                onPress={handlePickGallery}
                 className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
                 activeOpacity={0.7}
               >
                 <Ionicons
-                  name="musical-notes-outline"
+                  name="images-outline"
                   size={24}
                   color="#1F2937"
                 />
                 <Text className="text-xs font-semibold text-gray-700 mt-1">
-                  Music
+                  Gallery
                 </Text>
               </TouchableOpacity>
             </View>
 
-            {/* Gallery Section */}
-            <View className="flex-1 px-1">
-              <View className="flex-row justify-between items-center px-2 mb-3">
-                <Text className="text-base font-bold text-gray-900">
-                  Gallery
-                </Text>
-                <TouchableOpacity activeOpacity={0.7}>
-                  <Text className="text-sm font-semibold text-green-600">
-                    Select Multiple
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {/* Gallery Grid */}
-              <ScrollView
-                showsVerticalScrollIndicator={false}
-                className="flex-1"
-                contentContainerStyle={{ paddingBottom: 32 }}
+            {/* Media Options Section */}
+            <ScrollView
+              showsVerticalScrollIndicator={false}
+              className="flex-1 px-3"
+              contentContainerStyle={{ paddingBottom: 32 }}
+            >
+              <TouchableOpacity
+                onPress={handlePickGallery}
+                activeOpacity={0.8}
+                className="bg-green-50 border border-green-200 rounded-2xl p-5 mb-3 flex-row items-center"
               >
-                <View className="flex-row flex-wrap justify-between px-1">
-                  {MOCK_GALLERY_IMAGES.map((imgUri, index) => (
-                    <TouchableOpacity
-                      key={index}
-                      onPress={() => {
-                        setSelectedStoryImage(imgUri);
-                        setStoryStep("EDIT_STORY");
-                      }}
-                      className="w-[32%] aspect-square rounded-md mb-2 bg-gray-300 overflow-hidden active:opacity-80 relative"
-                      activeOpacity={0.8}
-                    >
-                      <Image
-                        source={{ uri: imgUri }}
-                        className="w-full h-full"
-                        resizeMode="cover"
-                      />
-                    </TouchableOpacity>
-                  ))}
+                <View className="w-14 h-14 rounded-full bg-[#72AF5B] items-center justify-center mr-4 shadow-sm">
+                  <Ionicons name="images" size={28} color="#FFFFFF" />
                 </View>
-              </ScrollView>
-            </View>
+                <View className="flex-1">
+                  <Text className="text-base font-bold text-gray-900">
+                    Choose from Gallery
+                  </Text>
+                  <Text className="text-xs text-gray-600 mt-0.5">
+                    Select photos from your device library to share
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#72AF5B" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handlePickCamera}
+                activeOpacity={0.8}
+                className="bg-blue-50 border border-blue-200 rounded-2xl p-5 mb-3 flex-row items-center"
+              >
+                <View className="w-14 h-14 rounded-full bg-blue-500 items-center justify-center mr-4 shadow-sm">
+                  <Ionicons name="camera" size={28} color="#FFFFFF" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-bold text-gray-900">
+                    Take Photo
+                  </Text>
+                  <Text className="text-xs text-gray-600 mt-0.5">
+                    Snap a fresh photo of your crops or farm today
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#3B82F6" />
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={() => {
+                  setSelectedStoryImage(null);
+                  setStoryTextContent("");
+                  setStoryStep("EDIT_STORY");
+                }}
+                activeOpacity={0.8}
+                className="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-3 flex-row items-center"
+              >
+                <View className="w-14 h-14 rounded-full bg-amber-500 items-center justify-center mr-4 shadow-sm">
+                  <Ionicons name="create" size={28} color="#FFFFFF" />
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-bold text-gray-900">
+                    Create Text Story
+                  </Text>
+                  <Text className="text-xs text-gray-600 mt-0.5">
+                    Share an update, announcement, or farming tip
+                  </Text>
+                </View>
+                <Ionicons name="chevron-forward" size={20} color="#F59E0B" />
+              </TouchableOpacity>
+            </ScrollView>
           </SafeAreaView>
         ) : storyStep === "PRIVACY_SETTINGS" ? (
           /* Step 3: WHO CAN SEE POST ? (PRIVACY) VIEW */
@@ -2855,16 +2764,33 @@ export default function NewsFeed() {
           <View className="flex-1 bg-black relative">
             {/* Main Media */}
             {selectedStoryImage ? (
-              <Image
-                source={{ uri: selectedStoryImage }}
-                className="flex-1 w-full"
-                resizeMode="cover"
-              />
+              <View className="flex-1 w-full relative">
+                <Image
+                  source={{ uri: selectedStoryImage }}
+                  className="flex-1 w-full"
+                  resizeMode="cover"
+                />
+                <View className="absolute bottom-24 left-4 right-4 bg-black/60 rounded-xl px-4 py-3 z-10 border border-white/20">
+                  <TextInput
+                    value={storyTextContent}
+                    onChangeText={setStoryTextContent}
+                    placeholder="Add a caption to your story..."
+                    placeholderTextColor="#CBD5E1"
+                    className="text-white text-sm"
+                  />
+                </View>
+              </View>
             ) : (
               <View className="flex-1 w-full bg-[#1e293b] items-center justify-center p-8">
-                <Text className="text-white text-2xl font-bold text-center">
-                  Start typing your story... ✍️
-                </Text>
+                <TextInput
+                  value={storyTextContent}
+                  onChangeText={setStoryTextContent}
+                  placeholder="Type your story here... ✍️"
+                  placeholderTextColor="#94A3B8"
+                  multiline
+                  className="text-white text-2xl font-bold text-center w-full px-4"
+                  autoFocus
+                />
               </View>
             )}
 
@@ -2962,21 +2888,23 @@ export default function NewsFeed() {
 
               {/* Right: Primary Share Button */}
               <TouchableOpacity
-                onPress={() => {
-                  console.log("Story Shared with privacy:", storyPrivacy);
-                  setStoryModalVisible(false);
-                  setSelectedStoryImage(null);
-                  setStoryStep("SELECT_MEDIA");
-                }}
-                className="bg-blue-500 px-6 py-3 rounded-full flex-row items-center active:bg-blue-600 shadow-lg"
+                onPress={handleShareStory}
+                disabled={isSharingStory}
+                className="bg-[#72AF5B] px-6 py-3 rounded-full flex-row items-center active:bg-[#5e944b] shadow-lg"
                 activeOpacity={0.8}
                 accessibilityRole="button"
                 accessibilityLabel="Share story"
               >
-                <Text className="text-white font-bold text-base mr-2">
-                  Share
-                </Text>
-                <Ionicons name="arrow-forward" size={18} color="white" />
+                {isSharingStory ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" className="mr-2" />
+                ) : (
+                  <>
+                    <Text className="text-white font-bold text-base mr-2">
+                      Share
+                    </Text>
+                    <Ionicons name="arrow-forward" size={18} color="white" />
+                  </>
+                )}
               </TouchableOpacity>
             </View>
           </View>

@@ -20,7 +20,7 @@ function getDynamicHost(): string {
 
   // Physical mobile device fallback (PC's current local Wi-Fi IP)
   if (Device.isDevice) {
-    return "http://192.168.12.2:5000/api";
+    return "http://192.168.111.16:5000/api";
   }
 
   // Android emulator loopback alias

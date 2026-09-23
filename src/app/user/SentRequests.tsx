@@ -40,7 +40,7 @@ export default function SentRequests() {
       const data = await getSentRequestsApi();
       setSentRequests(data);
     } catch (err) {
-      console.warn("Failed to fetch sent requests:", err);
+      console.log("Failed to fetch sent requests:", err);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);

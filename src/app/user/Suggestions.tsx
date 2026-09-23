@@ -41,7 +41,7 @@ export default function Suggestions() {
       const data = await getSuggestionsApi();
       setSuggestions(data);
     } catch (err) {
-      console.warn("Failed to fetch suggestions:", err);
+      console.log("Failed to fetch suggestions:", err);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);

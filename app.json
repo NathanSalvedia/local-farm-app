@@ -20,7 +20,9 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "ACCESS_COARSE_LOCATION",
-        "ACCESS_FINE_LOCATION"
+        "ACCESS_FINE_LOCATION",
+        "READ_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES"
       ]
     },
     "web": {
@@ -41,6 +43,13 @@
         "expo-location",
         {
           "locationAlwaysAndWhenInUsePermission": "Allow LocalFarm to access your location to show nearby farms and navigation routes."
+        }
+      ],
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow LocalFarm to access your photos to share stories.",
+          "savePhotosPermission": "Allow LocalFarm to save photos to your library."
         }
       ]
     ],

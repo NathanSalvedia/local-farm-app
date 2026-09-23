@@ -26,8 +26,10 @@ SplashScreen.preventAutoHideAsync().catch(() => {});
 LogBox.ignoreLogs([
   "Cannot connect to Expo CLI",
   "Can't perform a React state update on a component that hasn't mounted yet",
-  "Failed to fetch posts:",
+  "Failed to fetch",
+  "Authentication required",
   "connect ECONNREFUSED",
+  "Failed to connect to",
 ]);
 
 import { useToast } from "@/context/toast-context";

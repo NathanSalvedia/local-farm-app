@@ -1,4 +1,6 @@
+const path = require("path");
 const { Pool } = require("pg");
+require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 require("dotenv").config();
 
 const dbConfig = {
@@ -19,9 +21,50 @@ async function initDB() {
     // 1. Create pool connected to database
     pool = new Pool(dbConfig);
 
-    // 2. Test connection
+    // 2. Test connection and run minor migrations
     const client = await pool.connect();
-    client.release();
+    try {
+      await client.query(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS is_delivered BOOLEAN NOT NULL DEFAULT FALSE;"
+      );
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS user_conversation_settings (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+          is_spam BOOLEAN NOT NULL DEFAULT FALSE,
+          is_muted BOOLEAN NOT NULL DEFAULT FALSE,
+          is_accepted BOOLEAN NOT NULL DEFAULT FALSE,
+          updated_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (user_id, conversation_id)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS restricted_users (
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          restricted_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          created_at TIMESTAMP DEFAULT NOW(),
+          PRIMARY KEY (user_id, restricted_user_id)
+        );
+      `);
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS reports (
+          id SERIAL PRIMARY KEY,
+          reporter_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          reported_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          conversation_id INTEGER REFERENCES conversations(id) ON DELETE SET NULL,
+          reason VARCHAR(255) NOT NULL,
+          statement TEXT NOT NULL,
+          attachment_url TEXT,
+          status VARCHAR(50) NOT NULL DEFAULT 'pending',
+          created_at TIMESTAMP DEFAULT NOW()
+        );
+      `);
+    } catch (migErr) {
+      console.warn("[PostgreSQL] Migration notice:", migErr.message);
+    } finally {
+      client.release();
+    }
 
     console.log(
       `[PostgreSQL] Connected successfully to database: ${dbConfig.database} on ${dbConfig.host}:${dbConfig.port}`

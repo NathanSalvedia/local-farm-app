@@ -1,5 +1,6 @@
 import { useToast } from "@/context/toast-context";
 import { useAuth } from "@/hooks/use-auth";
+import { confirm2FASetupApi, resend2FAOtpApi } from "@/services/auth-service";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useLocalSearchParams } from "expo-router";
@@ -25,7 +26,7 @@ export const TWO_FACTOR_STORAGE_KEY = "localfarm_2fa_settings_v1";
 
 export default function TwoFactorOtpScreen() {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const { showToast } = useToast();
 
   const params = useLocalSearchParams<{
@@ -101,7 +102,7 @@ export default function TwoFactorOtpScreen() {
   };
 
   const handleVerify = async () => {
-    const fullOtp = otp.join("");
+    const fullOtp = otp.join("").trim();
     if (fullOtp.length < 6) {
       setErrorMsg("Please enter all 6 digits of the OTP code.");
       return;
@@ -111,15 +112,18 @@ export default function TwoFactorOtpScreen() {
     setIsSubmitting(true);
 
     try {
-      // Simulated verification delay
-      await new Promise((resolve) => setTimeout(resolve, 600));
+      const res = await confirm2FASetupApi(fullOtp, method);
+      await updateUser({
+        twoFactorEnabled: true,
+        twoFactorMethod: res.twoFactorMethod || method,
+      });
 
-      // Persist 2FA as active in local storage
+      // Persist 2FA as active in local storage cache
       await AsyncStorage.setItem(
         TWO_FACTOR_STORAGE_KEY,
         JSON.stringify({
           isEnabled: true,
-          method: "email",
+          method: res.twoFactorMethod || method,
           target: rawTarget,
           updatedAt: new Date().toISOString(),
         }),
@@ -130,7 +134,7 @@ export default function TwoFactorOtpScreen() {
     } catch (err: any) {
       setIsSubmitting(false);
       setErrorMsg(
-        err?.message || "Invalid or expired verification code. Please try again.",
+        err?.message || "Invalid or expired verification code. Please check your email and try again.",
       );
     }
   };
@@ -141,10 +145,16 @@ export default function TwoFactorOtpScreen() {
     router.replace("/user/TwoFactorAuth" as any);
   };
 
-  const handleResendCode = () => {
-    setResendSent(true);
-    showToast(`New code sent to ${maskedTarget}`, "info");
-    setTimeout(() => setResendSent(false), 5000);
+  const handleResendCode = async () => {
+    try {
+      setResendSent(true);
+      const res = await resend2FAOtpApi(rawTarget, "2fa_setup");
+      showToast(res.message || `New code sent to ${maskedTarget}`, "info");
+      setTimeout(() => setResendSent(false), 5000);
+    } catch (err: any) {
+      showToast(err?.message || "Failed to resend verification code.", "error");
+      setResendSent(false);
+    }
   };
 
   return (

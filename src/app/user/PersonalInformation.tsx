@@ -34,9 +34,9 @@ interface FarmDetails {
 }
 
 const DEFAULT_FARM_DETAILS: FarmDetails = {
-  farmName: "Salvedia Green Meadows",
-  farmLocation: "Brgy. Bunga, Cabanglasan, Bukidnon",
-  primaryCrops: "Tomatoes, Bell Peppers, Romaine Lettuce",
+  farmName: "",
+  farmLocation: "",
+  primaryCrops: "",
 };
 
 const GENDER_OPTIONS = ["Male", "Female", "Prefer not to say"];
@@ -57,7 +57,11 @@ export default function PersonalInformation() {
   });
 
   // Agricultural Profile State (Farm or Product)
-  const [farmData, setFarmData] = useState<FarmDetails>(DEFAULT_FARM_DETAILS);
+  const [farmData, setFarmData] = useState<FarmDetails>({
+    farmName: user?.farmName || "",
+    farmLocation: user?.farmLocation || user?.location || "",
+    primaryCrops: user?.primaryCrops || "",
+  });
 
   // RSBSA Verification State
   const [rsbsaApp, setRsbsaApp] =
@@ -95,6 +99,11 @@ export default function PersonalInformation() {
         gender: user.gender || "Male",
         bio: user.about || user.bio || "",
       });
+      setFarmData({
+        farmName: user.farmName || "",
+        farmLocation: user.farmLocation || user.location || "",
+        primaryCrops: user.primaryCrops || "",
+      });
       if (user.avatarUrl) {
         setAvatarUri(user.avatarUrl);
       }
@@ -110,17 +119,25 @@ export default function PersonalInformation() {
         if (!isMounted) return;
         setRsbsaApp(app);
 
-        const savedFarm = await AsyncStorage.getItem(FARM_DETAILS_STORAGE_KEY);
-        if (!isMounted) return;
-        if (savedFarm) {
-          const parsed = JSON.parse(savedFarm);
-          setFarmData((prev) => ({ ...prev, ...parsed }));
-        } else if (app && (app.farmName || app.location || app.crops)) {
+        if (user?.farmName || user?.farmLocation || user?.primaryCrops) {
           setFarmData({
-            farmName: app.farmName || DEFAULT_FARM_DETAILS.farmName,
-            farmLocation: app.location || DEFAULT_FARM_DETAILS.farmLocation,
-            primaryCrops: app.crops || DEFAULT_FARM_DETAILS.primaryCrops,
+            farmName: user.farmName || "",
+            farmLocation: user.farmLocation || user.location || "",
+            primaryCrops: user.primaryCrops || "",
           });
+        } else {
+          const savedFarm = await AsyncStorage.getItem(FARM_DETAILS_STORAGE_KEY);
+          if (!isMounted) return;
+          if (savedFarm) {
+            const parsed = JSON.parse(savedFarm);
+            setFarmData((prev) => ({ ...prev, ...parsed }));
+          } else if (app && (app.farmName || app.location || app.crops)) {
+            setFarmData({
+              farmName: app.farmName || "",
+              farmLocation: app.location || "",
+              primaryCrops: app.crops || "",
+            });
+          }
         }
       } catch (err) {
         console.warn("Error loading agricultural profile data:", err);
@@ -131,7 +148,7 @@ export default function PersonalInformation() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [user]);
 
   const updateSliderProgress = (locationX: number) => {
     if (trackWidth <= 0) return;
@@ -167,13 +184,11 @@ export default function PersonalInformation() {
       gender: user?.gender || "Male",
       bio: user?.about || user?.bio || "",
     });
-    AsyncStorage.getItem(FARM_DETAILS_STORAGE_KEY)
-      .then((saved) => {
-        if (saved) {
-          setFarmData(JSON.parse(saved));
-        }
-      })
-      .catch(() => {});
+    setFarmData({
+      farmName: user?.farmName || "",
+      farmLocation: user?.farmLocation || user?.location || "",
+      primaryCrops: user?.primaryCrops || "",
+    });
     setIsEditing(false);
   };
 
@@ -185,7 +200,7 @@ export default function PersonalInformation() {
 
     setIsSaving(true);
     try {
-      // 1. Update user profile via auth context
+      // 1. Update user profile via auth context (persisting to PostgreSQL users table)
       await updateUser({
         name: formData.name.trim(),
         fullName: formData.name.trim(),
@@ -194,6 +209,9 @@ export default function PersonalInformation() {
         gender: formData.gender.trim(),
         about: formData.bio.trim(),
         bio: formData.bio.trim(),
+        farmName: farmData.farmName.trim(),
+        farmLocation: farmData.farmLocation.trim(),
+        primaryCrops: farmData.primaryCrops.trim(),
       });
 
       // 2. Persist farm profile details

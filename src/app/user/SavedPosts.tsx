@@ -1,7 +1,10 @@
 import { useToast } from "@/context/toast-context";
 import {
-  getSavedPostsApi,
+  createSavedCollectionApi,
+  deleteSavedCollectionApi,
   getSavedCollectionsApi,
+  getSavedPostsApi,
+  renameSavedCollectionApi,
   SavedPostItem,
   toggleSavePostApi,
 } from "@/services/post-service";
@@ -10,9 +13,11 @@ import { useRouter } from "expo-router";
 import React, { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   Image,
   Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -22,6 +27,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import SaveToCollectionModal from "@/components/SaveToCollectionModal";
 
 const { width: SCREEN_WIDTH } = Dimensions.get("window");
 const GRID_GAP = 1.5;
@@ -55,6 +61,10 @@ export default function SavedPosts() {
   const [selectedPostForDetail, setSelectedPostForDetail] = useState<SavedPostItem | null>(null);
   const [selectedPostForFolder, setSelectedPostForFolder] = useState<SavedPostItem | null>(null);
   const [isFolderPickerVisible, setIsFolderPickerVisible] = useState(false);
+  const [collectionMenuTarget, setCollectionMenuTarget] = useState<string | null>(null);
+  const [renameTarget, setRenameTarget] = useState<string | null>(null);
+  const [renameInput, setRenameInput] = useState("");
+  const [isRenaming, setIsRenaming] = useState(false);
 
   // Search
   const [searchQuery, setSearchQuery] = useState("");
@@ -82,7 +92,7 @@ export default function SavedPosts() {
       const data = await getSavedCollectionsApi();
       setCollections(data);
     } catch (err) {
-      console.warn("Failed to fetch collections:", err);
+      console.log("Failed to fetch collections:", err);
     }
   };
 
@@ -157,16 +167,89 @@ export default function SavedPosts() {
   const handleCreateCollection = async () => {
     const trimmed = newCollectionName.trim();
     if (!trimmed) return;
-    if (!collections.includes(trimmed)) {
-      setCollections((prev) => [...prev, trimmed]);
+    try {
+      await createSavedCollectionApi(trimmed, selectedPostForFolder?.id);
+      if (!collections.includes(trimmed)) {
+        setCollections((prev) => [...prev, trimmed]);
+      }
+      if (selectedPostForFolder) {
+        setSavedPosts((prev) =>
+          prev.map((p) =>
+            p.id === selectedPostForFolder.id
+              ? { ...p, collectionName: trimmed }
+              : p
+          )
+        );
+        showToast(`Saved to "${trimmed}"`, "success");
+      } else {
+        showToast(`Collection "${trimmed}" created`, "success");
+      }
+      setNewCollectionName("");
+      setIsCreateCollectionVisible(false);
+      setSelectedPostForFolder(null);
+      await loadData();
+    } catch (err: any) {
+      showToast(err?.message || "Failed to create collection", "error");
     }
-    if (selectedPostForFolder) {
-      await handleSaveToCollection(trimmed);
+  };
+
+  const handleConfirmRename = async () => {
+    if (!renameTarget || !renameInput.trim()) return;
+    const trimmed = renameInput.trim();
+    if (trimmed.toLowerCase() === renameTarget.toLowerCase()) {
+      setRenameTarget(null);
+      return;
+    }
+    setIsRenaming(true);
+    try {
+      await renameSavedCollectionApi(renameTarget, trimmed);
+      showToast(`Collection renamed to "${trimmed}"`, "success");
+      if (activeCollectionName === renameTarget) {
+        setActiveCollectionName(trimmed);
+      }
+      setRenameTarget(null);
+      await loadData();
+    } catch (err: any) {
+      showToast(err?.message || "Failed to rename collection", "error");
+    } finally {
+      setIsRenaming(false);
+    }
+  };
+
+  const handleDeleteCollection = (name: string) => {
+    setCollectionMenuTarget(null);
+    const executeDelete = async () => {
+      try {
+        await deleteSavedCollectionApi(name);
+        showToast(`Collection "${name}" deleted. Posts moved to All Saved.`, "info");
+        if (activeCollectionName === name) {
+          setActiveCollectionName(null);
+          setActiveTab("collections");
+        }
+        await loadData();
+      } catch (err: any) {
+        showToast(err?.message || "Failed to delete collection", "error");
+      }
+    };
+
+    if (Platform.OS === "web") {
+      if (
+        window.confirm(
+          `Delete "${name}"?\nPosts in this collection will not be deleted and will remain in All Saved.`
+        )
+      ) {
+        executeDelete();
+      }
     } else {
-      showToast(`Collection "${trimmed}" created`, "success");
+      Alert.alert(
+        "Delete Collection?",
+        `Posts in "${name}" will still be kept in All Saved.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          { text: "Delete", style: "destructive", onPress: executeDelete },
+        ]
+      );
     }
-    setNewCollectionName("");
-    setIsCreateCollectionVisible(false);
   };
 
   // Extract distinct collection names
@@ -293,7 +376,7 @@ export default function SavedPosts() {
           {activeCollectionName ? activeCollectionName : "Saved"}
         </Text>
 
-        {/* Right Action Icons: Search & + New Collection */}
+        {/* Right Action Icons: Search & + New Collection & Options */}
         <View className="flex-row items-center gap-3">
           <TouchableOpacity
             onPress={() => setIsSearchOpen((prev) => !prev)}
@@ -306,6 +389,20 @@ export default function SavedPosts() {
               color="#000000"
             />
           </TouchableOpacity>
+
+          {Boolean(
+            activeCollectionName &&
+              activeCollectionName.toLowerCase() !== "all saved"
+          ) && (
+            <TouchableOpacity
+              onPress={() => setCollectionMenuTarget(activeCollectionName)}
+              className="p-1 active:opacity-60"
+              accessibilityRole="button"
+              accessibilityLabel="Collection options"
+            >
+              <Ionicons name="ellipsis-horizontal" size={22} color="#000000" />
+            </TouchableOpacity>
+          )}
 
           <TouchableOpacity
             onPress={() => {
@@ -480,16 +577,32 @@ export default function SavedPosts() {
                     className="active:opacity-85"
                   >
                     {renderCollageCover(previewImgs, COLLECTION_CARD_WIDTH)}
-                    <View className="mt-2 px-0.5">
-                      <Text
-                        className="text-sm font-semibold text-gray-900"
-                        numberOfLines={1}
+                    <View className="mt-2 px-0.5 flex-row items-center justify-between">
+                      <View className="flex-1 mr-1">
+                        <Text
+                          className="text-sm font-semibold text-gray-900"
+                          numberOfLines={1}
+                        >
+                          {colName}
+                        </Text>
+                        <Text className="text-xs text-gray-500 font-normal mt-0.5">
+                          {count} {count === 1 ? "post" : "posts"}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        onPress={(e) => {
+                          e.stopPropagation();
+                          setCollectionMenuTarget(colName);
+                        }}
+                        className="p-1 -mr-1 rounded-full active:bg-gray-100"
+                        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
                       >
-                        {colName}
-                      </Text>
-                      <Text className="text-xs text-gray-500 font-normal mt-0.5">
-                        {count} {count === 1 ? "post" : "posts"}
-                      </Text>
+                        <Ionicons
+                          name="ellipsis-vertical"
+                          size={15}
+                          color="#6B7280"
+                        />
+                      </TouchableOpacity>
                     </View>
                   </TouchableOpacity>
                 );
@@ -726,9 +839,12 @@ export default function SavedPosts() {
 
                 {/* Bookmark Saved Icon (Active = filled bookmark) */}
                 <TouchableOpacity
-                  onPress={() => handleUnsave(selectedPostForDetail.id)}
+                  onPress={() => {
+                    setSelectedPostForFolder(selectedPostForDetail);
+                    setIsFolderPickerVisible(true);
+                  }}
                   className="active:opacity-60"
-                  accessibilityLabel="Unsave post"
+                  accessibilityLabel="Save to collection"
                 >
                   <Ionicons name="bookmark" size={24} color="#000000" />
                 </TouchableOpacity>
@@ -838,102 +954,148 @@ export default function SavedPosts() {
         </Pressable>
       </Modal>
 
-      {/* 7. Instagram-Style Collection Picker Bottom Sheet */}
-      <Modal
-        visible={isFolderPickerVisible}
-        transparent
-        animationType="slide"
-        onRequestClose={() => setIsFolderPickerVisible(false)}
-      >
-        <Pressable
-          onPress={() => setIsFolderPickerVisible(false)}
-          className="flex-1 bg-black/50 justify-end"
+      {/* 7. Instagram Save to Collection Modal */}
+      <SaveToCollectionModal
+        visible={isFolderPickerVisible && selectedPostForFolder !== null}
+        postId={selectedPostForFolder?.id || null}
+        postImageUrl={
+          selectedPostForFolder?.imageUrl ||
+          selectedPostForFolder?.originalPost?.imageUrl ||
+          selectedPostForFolder?.avatarUri
+        }
+        currentCollectionName={selectedPostForFolder?.collectionName || "All Saved"}
+        onClose={() => {
+          setIsFolderPickerVisible(false);
+          setSelectedPostForFolder(null);
+        }}
+        onSaveToCollection={async (collectionName) => {
+          if (selectedPostForFolder) {
+            await handleSaveToCollection(collectionName);
+          }
+        }}
+        onCollectionCreated={() => {
+          loadData();
+        }}
+        onShowToast={showToast}
+      />
+
+      {/* 8. Collection Context / Options Bottom Sheet */}
+      {collectionMenuTarget && (
+        <Modal
+          visible={Boolean(collectionMenuTarget)}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setCollectionMenuTarget(null)}
         >
           <Pressable
-            onPress={(e) => e.stopPropagation()}
-            className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl max-h-[75%]"
+            className="flex-1 bg-black/40 justify-end"
+            onPress={() => setCollectionMenuTarget(null)}
           >
-            <View className="w-10 h-1 bg-gray-300 rounded-full self-center mb-4" />
+            <Pressable
+              className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl"
+              onPress={(e) => e.stopPropagation()}
+            >
+              <View className="items-center mb-3">
+                <View className="w-10 h-1 bg-gray-300 rounded-full" />
+              </View>
 
-            <View className="flex-row items-center justify-between mb-4 px-1">
-              <Text className="text-base font-bold text-gray-900">
-                Save to Collection
+              <Text className="text-base font-bold text-gray-900 mb-4 text-center">
+                {collectionMenuTarget}
               </Text>
+
               <TouchableOpacity
                 onPress={() => {
-                  setIsFolderPickerVisible(false);
-                  setIsCreateCollectionVisible(true);
+                  const target = collectionMenuTarget;
+                  setCollectionMenuTarget(null);
+                  setRenameTarget(target);
+                  setRenameInput(target);
                 }}
-                className="flex-row items-center"
+                className="flex-row items-center py-3 px-3 rounded-xl active:bg-gray-100"
               >
-                <Ionicons name="add" size={18} color="#0095F6" />
-                <Text className="text-xs font-bold text-[#0095F6] ml-0.5">
-                  New Collection
+                <Ionicons name="pencil-outline" size={20} color="#374151" />
+                <Text className="text-sm font-semibold text-gray-800 ml-3">
+                  Rename Collection
                 </Text>
               </TouchableOpacity>
-            </View>
 
-            <ScrollView className="mb-4 max-h-60" showsVerticalScrollIndicator={false}>
-              {["All Saved", ...allCollectionNames].map((col) => {
-                const isSelected =
-                  (selectedPostForFolder?.collectionName || "All Saved") === col;
+              <TouchableOpacity
+                onPress={() => {
+                  const target = collectionMenuTarget;
+                  handleDeleteCollection(target);
+                }}
+                className="flex-row items-center py-3 px-3 rounded-xl active:bg-red-50 mt-1"
+              >
+                <Ionicons name="trash-outline" size={20} color="#EF4444" />
+                <Text className="text-sm font-semibold text-red-600 ml-3">
+                  Delete Collection
+                </Text>
+              </TouchableOpacity>
 
-                return (
-                  <TouchableOpacity
-                    key={col}
-                    onPress={() => handleSaveToCollection(col)}
-                    className="flex-row items-center justify-between py-3 px-2 border-b border-gray-100 active:bg-gray-50"
-                  >
-                    <View className="flex-row items-center gap-3">
-                      <Ionicons
-                        name="folder-outline"
-                        size={20}
-                        color={isSelected ? "#0095F6" : "#262626"}
-                      />
-                      <Text
-                        className={`text-sm ${
-                          isSelected ? "font-bold text-[#0095F6]" : "font-normal text-gray-900"
-                        }`}
-                      >
-                        {col}
-                      </Text>
-                    </View>
-
-                    {isSelected && (
-                      <Ionicons
-                        name="checkmark"
-                        size={20}
-                        color="#0095F6"
-                      />
-                    )}
-                  </TouchableOpacity>
-                );
-              })}
-            </ScrollView>
-
-            <TouchableOpacity
-              onPress={() => {
-                if (selectedPostForFolder) {
-                  handleUnsave(selectedPostForFolder.id);
-                  setIsFolderPickerVisible(false);
-                }
-              }}
-              className="py-3 rounded-xl bg-red-50 items-center justify-center mb-2 active:bg-red-100"
-            >
-              <Text className="text-sm font-semibold text-red-600">
-                Remove from Saved
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              onPress={() => setIsFolderPickerVisible(false)}
-              className="py-3 rounded-xl bg-gray-100 items-center justify-center active:bg-gray-200"
-            >
-              <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
-            </TouchableOpacity>
+              <TouchableOpacity
+                onPress={() => setCollectionMenuTarget(null)}
+                className="mt-4 py-3 rounded-xl bg-gray-100 items-center justify-center"
+              >
+                <Text className="text-sm font-bold text-gray-700">Cancel</Text>
+              </TouchableOpacity>
+            </Pressable>
           </Pressable>
-        </Pressable>
-      </Modal>
+        </Modal>
+      )}
+
+      {/* 9. Rename Collection Modal */}
+      {renameTarget && (
+        <Modal
+          visible={Boolean(renameTarget)}
+          transparent={true}
+          animationType="fade"
+          onRequestClose={() => setRenameTarget(null)}
+        >
+          <Pressable
+            className="flex-1 bg-black/50 justify-center items-center p-5"
+            onPress={() => setRenameTarget(null)}
+          >
+            <Pressable
+              className="bg-white rounded-3xl p-6 w-full max-w-sm shadow-2xl"
+              onPress={(e) => e.stopPropagation()}
+            >
+              <Text className="text-base font-bold text-gray-900 mb-2">
+                Rename Collection
+              </Text>
+              <TextInput
+                value={renameInput}
+                onChangeText={setRenameInput}
+                autoFocus={true}
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3 text-sm text-gray-900 mb-5"
+                placeholder="Collection name"
+                placeholderTextColor="#9CA3AF"
+              />
+              <View className="flex-row justify-end gap-2">
+                <TouchableOpacity
+                  onPress={() => setRenameTarget(null)}
+                  className="px-4 py-2 rounded-xl bg-gray-100"
+                >
+                  <Text className="text-sm font-semibold text-gray-700">Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handleConfirmRename}
+                  disabled={!renameInput.trim() || isRenaming}
+                  className={`px-4 py-2 rounded-xl ${
+                    renameInput.trim() && !isRenaming
+                      ? "bg-[#72AF5B]"
+                      : "bg-gray-200 opacity-60"
+                  }`}
+                >
+                  {isRenaming ? (
+                    <ActivityIndicator size="small" color="#ffffff" />
+                  ) : (
+                    <Text className="text-sm font-bold text-white">Save</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </Pressable>
+          </Pressable>
+        </Modal>
+      )}
     </SafeAreaView>
   );
 }

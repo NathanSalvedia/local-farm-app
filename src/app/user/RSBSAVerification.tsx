@@ -477,7 +477,7 @@ export default function RSBSAVerificationScreen() {
                     <TextInput
                       value={farmName}
                       onChangeText={setFarmName}
-                      placeholder="e.g., Mill Creek Organic Homestead"
+                      placeholder="e.g., Green Valley Organic Farm"
                       placeholderTextColor="#9CA3AF"
                       className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3.5 text-sm text-gray-900"
                     />

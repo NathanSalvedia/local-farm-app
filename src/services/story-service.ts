@@ -1,5 +1,14 @@
 import { apiFetch } from "@/lib/api";
 
+export interface StoryViewerItem {
+  userId: string;
+  name: string;
+  username: string;
+  avatarUrl: string;
+  role: string;
+  viewedAt: string;
+}
+
 export interface StoryItem {
   id: string;
   imageUrl: string;
@@ -8,6 +17,8 @@ export interface StoryItem {
   timeAgo?: string;
   backgroundColor?: string;
   mediaType?: string;
+  privacy?: string;
+  viewsCount?: number;
 }
 
 export interface UserStory {
@@ -61,5 +72,35 @@ export async function markStoryViewedApi(storyId: string): Promise<void> {
     });
   } catch (err) {
     console.warn("[StoryService] markStoryViewedApi error:", err);
+  }
+}
+
+/**
+ * Update privacy for an existing story
+ */
+export async function updateStoryPrivacyApi(
+  storyId: string,
+  privacy: "Public" | "Friends" | "Only me",
+): Promise<void> {
+  await apiFetch(`/stories/${storyId}/privacy`, {
+    method: "PATCH",
+    body: JSON.stringify({ privacy }),
+  });
+}
+
+/**
+ * Get users who viewed a specific story
+ */
+export async function getStoryViewersApi(
+  storyId: string,
+): Promise<StoryViewerItem[]> {
+  try {
+    const res = await apiFetch<{ viewers: StoryViewerItem[]; count: number }>(
+      `/stories/${storyId}/viewers`,
+    );
+    return res.viewers || [];
+  } catch (err) {
+    console.log("[StoryService] getStoryViewersApi info:", err);
+    return [];
   }
 }

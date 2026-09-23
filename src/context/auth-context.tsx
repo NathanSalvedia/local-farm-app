@@ -4,7 +4,9 @@ import React, { createContext, useState, useEffect, ReactNode } from "react";
 import {
   User,
   SignUpParams,
+  AuthResponse,
   loginApi,
+  verify2FALoginApi,
   signUpApi,
   logoutApi,
   getCurrentUserApi,
@@ -14,7 +16,8 @@ import {
 interface AuthContextType {
   user: User | null;
   isLoading: boolean;
-  signIn: (email: string, password: string) => Promise<void>;
+  signIn: (email: string, password: string) => Promise<AuthResponse>;
+  complete2FALogin: (email: string, otp: string) => Promise<User>;
   signUp: (params: SignUpParams | string, email?: string, password?: string) => Promise<void>;
   signOut: () => Promise<void>;
   updateUser: (data: Partial<User> & { fullName?: string }) => Promise<User>;
@@ -24,7 +27,8 @@ interface AuthContextType {
 export const AuthContext = createContext<AuthContextType>({
   user: null,
   isLoading: true,
-  signIn: async () => {},
+  signIn: async () => ({}),
+  complete2FALogin: async () => ({ id: "", name: "", email: "", role: "user" }),
   signUp: async () => {},
   signOut: async () => {},
   updateUser: async () => ({ id: "", name: "", email: "", role: "user" }),
@@ -79,12 +83,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Check stored JWT session on app boot
     getCurrentUserApi()
       .then((currentUser) => {
-        if (isMounted && currentUser) {
-          setUser((prev) => ({ ...(prev || {}), ...currentUser }));
-          AsyncStorage.setItem(
-            "localfarm_cached_user",
-            JSON.stringify(currentUser),
-          ).catch(() => {});
+        if (isMounted) {
+          if (currentUser) {
+            setUser((prev) => ({ ...(prev || {}), ...currentUser }));
+            AsyncStorage.setItem(
+              "localfarm_cached_user",
+              JSON.stringify(currentUser),
+            ).catch(() => {});
+          } else {
+            setUser(null);
+            AsyncStorage.removeItem("localfarm_cached_user").catch(() => {});
+          }
         }
       })
       .finally(() => {
@@ -98,15 +107,36 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (email: string, password: string): Promise<AuthResponse> => {
     setIsLoading(true);
     try {
       const response = await loginApi(email, password);
+      if (response.requires2FA) {
+        return response;
+      }
+      if (response.user) {
+        setUser(response.user);
+        await AsyncStorage.setItem(
+          "localfarm_cached_user",
+          JSON.stringify(response.user),
+        );
+      }
+      return response;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const complete2FALogin = async (email: string, otp: string): Promise<User> => {
+    setIsLoading(true);
+    try {
+      const response = await verify2FALoginApi(email, otp);
       setUser(response.user);
       await AsyncStorage.setItem(
         "localfarm_cached_user",
         JSON.stringify(response.user),
       );
+      return response.user;
     } finally {
       setIsLoading(false);
     }
@@ -120,11 +150,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsLoading(true);
     try {
       const response = await signUpApi(params, email, password);
-      setUser(response.user);
-      await AsyncStorage.setItem(
-        "localfarm_cached_user",
-        JSON.stringify(response.user),
-      );
+      if (response.user) {
+        setUser(response.user);
+        await AsyncStorage.setItem(
+          "localfarm_cached_user",
+          JSON.stringify(response.user),
+        );
+      }
     } finally {
       setIsLoading(false);
     }
@@ -194,6 +226,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         user,
         isLoading,
         signIn,
+        complete2FALogin,
         signUp,
         signOut,
         updateUser,

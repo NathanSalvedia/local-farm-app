@@ -1,10 +1,15 @@
 import { useToast } from "@/context/toast-context";
 import { useAuth } from "@/hooks/use-auth";
+import {
+  disable2FAApi,
+  send2FASetupOtpApi,
+} from "@/services/auth-service";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router, useFocusEffect } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Alert,
   ScrollView,
   Switch,
@@ -18,13 +23,29 @@ import Navigation from "../../components/Navigation";
 import { TWO_FACTOR_STORAGE_KEY } from "./TwoFactorOtp";
 
 export default function TwoFactorAuth() {
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const { showToast } = useToast();
-  const [isEmailEnabled, setIsEmailEnabled] = useState(false);
-  const [isAppEnabled, setIsAppEnabled] = useState(false);
+  const [isEmailEnabled, setIsEmailEnabled] = useState(
+    Boolean(user?.twoFactorEnabled && user?.twoFactorMethod === "email")
+  );
+  const [isAppEnabled, setIsAppEnabled] = useState(
+    Boolean(user?.twoFactorEnabled && user?.twoFactorMethod === "authenticator")
+  );
+  const [isSaving, setIsSaving] = useState(false);
 
-  // Load existing 2FA preference
-  const loadSettings = async () => {
+  // Sync existing 2FA preference from user context and local storage fallback
+  const syncSettings = useCallback(async () => {
+    if (user?.twoFactorEnabled) {
+      if (user.twoFactorMethod === "authenticator") {
+        setIsAppEnabled(true);
+        setIsEmailEnabled(false);
+      } else {
+        setIsEmailEnabled(true);
+        setIsAppEnabled(false);
+      }
+      return;
+    }
+
     try {
       const stored = await AsyncStorage.getItem(TWO_FACTOR_STORAGE_KEY);
       if (stored) {
@@ -36,20 +57,23 @@ export default function TwoFactorAuth() {
           setIsEmailEnabled(Boolean(parsed.isEnabled));
           setIsAppEnabled(false);
         }
+      } else {
+        setIsEmailEnabled(false);
+        setIsAppEnabled(false);
       }
     } catch (err) {
       console.warn("Error loading 2FA status:", err);
     }
-  };
+  }, [user?.twoFactorEnabled, user?.twoFactorMethod]);
 
   useEffect(() => {
-    loadSettings();
-  }, []);
+    syncSettings();
+  }, [syncSettings]);
 
   useFocusEffect(
     useCallback(() => {
-      loadSettings();
-    }, [])
+      syncSettings();
+    }, [syncSettings])
   );
 
   const handleBack = () => {
@@ -76,6 +100,12 @@ export default function TwoFactorAuth() {
             style: "destructive",
             onPress: async () => {
               try {
+                setIsSaving(true);
+                await disable2FAApi();
+                await updateUser({
+                  twoFactorEnabled: false,
+                  twoFactorMethod: "none",
+                });
                 await AsyncStorage.setItem(
                   TWO_FACTOR_STORAGE_KEY,
                   JSON.stringify({
@@ -86,8 +116,10 @@ export default function TwoFactorAuth() {
                 );
                 setIsAppEnabled(false);
                 showToast("Google Authenticator disabled.", "info");
-              } catch {
-                Alert.alert("Error", "Could not disable authenticator.");
+              } catch (err: any) {
+                Alert.alert("Error", err?.message || "Could not disable authenticator.");
+              } finally {
+                setIsSaving(false);
               }
             },
           },
@@ -107,31 +139,59 @@ export default function TwoFactorAuth() {
 
   const handleSave = async () => {
     if (isEmailEnabled) {
-      // Directs to TwoFactorOtp verification page with email target
-      router.push({
-        pathname: "/user/TwoFactorOtp",
-        params: {
-          method: "email",
-          target: user?.email || "",
-        },
-      } as any);
+      if (user?.twoFactorEnabled && user?.twoFactorMethod === "email") {
+        showToast("Email Two-Factor Authentication is already active.", "info");
+        handleBack();
+        return;
+      }
+
+      setIsSaving(true);
+      try {
+        const res = await send2FASetupOtpApi();
+        showToast(res.message || `Verification code sent to ${user?.email}`, "success");
+        router.push({
+          pathname: "/user/TwoFactorOtp",
+          params: {
+            method: "email",
+            target: user?.email || "",
+          },
+        } as any);
+      } catch (err: any) {
+        showToast(err?.message || "Failed to send 2FA verification code.", "error");
+      } finally {
+        setIsSaving(false);
+      }
     } else if (isAppEnabled) {
-      showToast("Google Authenticator settings saved.", "success");
-      handleBack();
+      router.push("/user/GoogleAuthSetup" as any);
     } else {
       // Disabling 2FA
+      if (!user?.twoFactorEnabled) {
+        showToast("Two-factor authentication is already disabled.", "info");
+        handleBack();
+        return;
+      }
+
+      setIsSaving(true);
       try {
+        const res = await disable2FAApi();
+        await updateUser({
+          twoFactorEnabled: false,
+          twoFactorMethod: "none",
+        });
         await AsyncStorage.setItem(
           TWO_FACTOR_STORAGE_KEY,
           JSON.stringify({
             isEnabled: false,
+            method: "none",
             updatedAt: new Date().toISOString(),
           })
         );
-        showToast("Two-factor authentication disabled.", "info");
+        showToast(res.message || "Two-factor authentication disabled.", "info");
         handleBack();
-      } catch {
-        Alert.alert("Error", "Failed to update 2FA settings.");
+      } catch (err: any) {
+        Alert.alert("Error", err?.message || "Failed to update 2FA settings.");
+      } finally {
+        setIsSaving(false);
       }
     }
   };
@@ -275,17 +335,37 @@ export default function TwoFactorAuth() {
           </TouchableOpacity>
 
           {/* Option 2: Email Address Card */}
-          <View className="bg-white rounded-2xl p-4 mb-8 border border-gray-200 shadow-sm">
+          <View
+            className={`bg-white rounded-2xl p-4 mb-8 border ${
+              isEmailEnabled ? "border-[#77af5c] bg-[#F8FCF7]" : "border-gray-200"
+            } shadow-sm`}
+          >
             <View className="flex-row items-center justify-between">
               <View className="flex-row items-center gap-3 flex-1 pr-3">
-                <View className="w-11 h-11 rounded-xl bg-gray-100 items-center justify-center">
-                  <Ionicons name="mail-outline" size={22} color="#4B5563" />
+                <View
+                  className={`w-11 h-11 rounded-xl items-center justify-center ${
+                    isEmailEnabled ? "bg-[#77af5c]" : "bg-gray-100"
+                  }`}
+                >
+                  <Ionicons
+                    name="mail-outline"
+                    size={22}
+                    color={isEmailEnabled ? "#FFFFFF" : "#4B5563"}
+                  />
                 </View>
                 <View className="flex-1">
-                  <Text className="text-base font-bold text-gray-900">
-                    Email Address
-                  </Text>
-                  <Text className="text-xs text-gray-400 mt-0.5" numberOfLines={1}>
+                  <View className="flex-row items-center gap-2">
+                    <Text className="text-base font-bold text-gray-900">
+                      Email Address
+                    </Text>
+                    {user?.twoFactorEnabled && user?.twoFactorMethod === "email" && (
+                      <View className="bg-[#E8F5E9] px-2 py-0.5 rounded-full border border-[#77af5c]/30 flex-row items-center gap-1">
+                        <View className="w-1.5 h-1.5 rounded-full bg-[#77af5c]" />
+                        <Text className="text-[10px] font-bold text-[#4B8A38]">Active</Text>
+                      </View>
+                    )}
+                  </View>
+                  <Text className="text-xs text-gray-500 mt-0.5" numberOfLines={1}>
                     Send one-time codes to {userEmail}
                   </Text>
                 </View>
@@ -296,6 +376,7 @@ export default function TwoFactorAuth() {
                 thumbColor="#FFFFFF"
                 value={isEmailEnabled}
                 onValueChange={handleEmailToggle}
+                disabled={isSaving}
               />
             </View>
           </View>
@@ -306,6 +387,7 @@ export default function TwoFactorAuth() {
           <TouchableOpacity
             onPress={handleBack}
             className="active:opacity-70 px-4 py-2"
+            disabled={isSaving}
             accessibilityRole="button"
             accessibilityLabel="Cancel"
           >
@@ -314,13 +396,17 @@ export default function TwoFactorAuth() {
 
           <TouchableOpacity
             onPress={handleSave}
-            className="bg-[#77af5c] rounded-full px-6 py-2.5 active:bg-[#66984e]"
+            className="bg-[#77af5c] rounded-full px-6 py-2.5 active:bg-[#66984e] flex-row items-center gap-2"
             style={{ backgroundColor: "#77af5c" }}
             activeOpacity={0.8}
+            disabled={isSaving}
             accessibilityRole="button"
             accessibilityLabel="Save Changes"
           >
-            <Text className="text-sm font-bold text-white">Save Changes</Text>
+            {isSaving && <ActivityIndicator size="small" color="#FFFFFF" />}
+            <Text className="text-sm font-bold text-white">
+              {isSaving ? "Saving..." : "Save Changes"}
+            </Text>
           </TouchableOpacity>
         </View>
       </ScrollView>

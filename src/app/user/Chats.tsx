@@ -1,21 +1,32 @@
 import { useAuth } from "@/hooks/use-auth";
+import { blockUser } from "@/services/blocked-users-service";
 import {
   ActiveChatUser,
+  archiveConversationApi,
+  blockUserChatApi,
   ConversationItem,
+  deleteConversationApi,
   getActiveChatUsersApi,
   getConversationsApi,
+  muteConversationApi,
+  restrictUserApi,
 } from "@/services/chat-service";
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import React, { useEffect, useState } from "react";
+import { useFocusEffect, useRouter } from "expo-router";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
+  Modal,
+  Platform,
   RefreshControl,
   ScrollView,
+  StyleSheet,
   Text,
   TextInput,
   TouchableOpacity,
+  TouchableWithoutFeedback,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -34,13 +45,18 @@ export default function Chats() {
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const fetchChatsData = async (isPull = false) => {
+  // Long-press modal state
+  const [selectedChatForOptions, setSelectedChatForOptions] = useState<ConversationItem | null>(null);
+  const [isOptionsModalVisible, setIsOptionsModalVisible] = useState(false);
+  const [isActionInProgress, setIsActionInProgress] = useState(false);
+
+  const fetchChatsData = async (isPull = false, isSilent = false) => {
     if (isPull) setIsRefreshing(true);
-    else setIsLoading(true);
+    else if (!isSilent && conversations.length === 0) setIsLoading(true);
 
     try {
       const [convsData, usersData] = await Promise.all([
-        getConversationsApi(),
+        getConversationsApi({ category: "messages" }),
         getActiveChatUsersApi(),
       ]);
       setConversations(convsData);
@@ -53,9 +69,17 @@ export default function Chats() {
     }
   };
 
-  useEffect(() => {
-    fetchChatsData();
-  }, []);
+  useFocusEffect(
+    useCallback(() => {
+      fetchChatsData(false, true);
+
+      const interval = setInterval(() => {
+        fetchChatsData(false, true);
+      }, 3000);
+
+      return () => clearInterval(interval);
+    }, [])
+  );
 
   const handleOpenConversation = (chat: ConversationItem) => {
     router.push({
@@ -80,6 +104,172 @@ export default function Chats() {
         online: "true",
       },
     } as any);
+  };
+
+  const handleOpenOptionsModal = (chat: ConversationItem) => {
+    setSelectedChatForOptions(chat);
+    setIsOptionsModalVisible(true);
+  };
+
+  const handleCloseOptionsModal = () => {
+    if (isActionInProgress) return;
+    setIsOptionsModalVisible(false);
+    setSelectedChatForOptions(null);
+  };
+
+  const handleArchiveConversation = async (chat: ConversationItem) => {
+    try {
+      setIsActionInProgress(true);
+      setConversations((prev) => prev.filter((c) => c.id !== chat.id));
+      handleCloseOptionsModal();
+      await archiveConversationApi(chat.id, true);
+      const msg = `Conversation with ${chat.name} archived.`;
+      if (Platform.OS === "web") {
+        window.alert(msg);
+      } else {
+        Alert.alert("Archived", msg);
+      }
+      fetchChatsData(false, true);
+    } catch (err: any) {
+      fetchChatsData(false, true);
+    } finally {
+      setIsActionInProgress(false);
+    }
+  };
+
+  const handleToggleMuteConversation = async (chat: ConversationItem) => {
+    try {
+      setIsActionInProgress(true);
+      const nextMuted = !chat.isMuted;
+      setConversations((prev) =>
+        prev.map((c) => (c.id === chat.id ? { ...c, isMuted: nextMuted } : c))
+      );
+      handleCloseOptionsModal();
+      await muteConversationApi(chat.id, nextMuted);
+      const msg = nextMuted
+        ? `Notifications muted for ${chat.name}.`
+        : `Notifications unmuted for ${chat.name}.`;
+      if (Platform.OS === "web") {
+        window.alert(msg);
+      } else {
+        Alert.alert("Notifications", msg);
+      }
+      fetchChatsData(false, true);
+    } catch (err: any) {
+      fetchChatsData(false, true);
+    } finally {
+      setIsActionInProgress(false);
+    }
+  };
+
+  const handleToggleRestrictConversation = async (chat: ConversationItem) => {
+    try {
+      setIsActionInProgress(true);
+      const nextRestricted = !chat.isRestricted;
+      if (nextRestricted) {
+        setConversations((prev) => prev.filter((c) => c.id !== chat.id));
+      }
+      handleCloseOptionsModal();
+      await restrictUserApi(chat.otherUserId, nextRestricted);
+      const msg = nextRestricted
+        ? `${chat.name} restricted. Moved to Restricted Accounts.`
+        : `${chat.name} is no longer restricted.`;
+      if (Platform.OS === "web") {
+        window.alert(msg);
+      } else {
+        Alert.alert("Restriction", msg);
+      }
+      fetchChatsData(false, true);
+    } catch (err: any) {
+      fetchChatsData(false, true);
+    } finally {
+      setIsActionInProgress(false);
+    }
+  };
+
+  const handleBlockConversation = (chat: ConversationItem) => {
+    const blockPrompt = `Block ${chat.name}? They will not be able to send you messages or find your profile on Local Farm.`;
+    const performBlock = async () => {
+      try {
+        setIsActionInProgress(true);
+        setConversations((prev) => prev.filter((c) => c.id !== chat.id));
+        handleCloseOptionsModal();
+        await Promise.all([
+          blockUserChatApi(chat.otherUserId, true),
+          blockUser({
+            id: chat.otherUserId,
+            name: chat.name,
+            username: chat.username,
+            avatarUrl: chat.avatarUrl,
+          }),
+        ]);
+        const msg = `${chat.name} has been blocked.`;
+        if (Platform.OS === "web") {
+          window.alert(msg);
+        } else {
+          Alert.alert("Blocked", msg);
+        }
+        fetchChatsData(false, true);
+      } catch (err: any) {
+        fetchChatsData(false, true);
+      } finally {
+        setIsActionInProgress(false);
+      }
+    };
+
+    if (Platform.OS === "web") {
+      if (window.confirm(blockPrompt)) {
+        performBlock();
+      }
+    } else {
+      Alert.alert("Block User", blockPrompt, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Block", style: "destructive", onPress: performBlock },
+      ]);
+    }
+  };
+
+  const handleDeleteConversation = (chat: ConversationItem) => {
+    const deletePrompt = `Delete all chat with ${chat.name}? This will permanently remove all messages in this conversation. This cannot be undone.`;
+    const performDelete = async () => {
+      try {
+        setIsActionInProgress(true);
+        setConversations((prev) => prev.filter((c) => c.id !== chat.id));
+        handleCloseOptionsModal();
+        await deleteConversationApi({
+          conversationId: chat.id,
+          userId: chat.otherUserId,
+        });
+        const msg = `Conversation with ${chat.name} deleted.`;
+        if (Platform.OS === "web") {
+          window.alert(msg);
+        } else {
+          Alert.alert("Deleted", msg);
+        }
+        fetchChatsData(false, true);
+      } catch (err: any) {
+        fetchChatsData(false, true);
+        const errMsg = err?.message || "Failed to delete chat.";
+        if (Platform.OS === "web") {
+          window.alert(errMsg);
+        } else {
+          Alert.alert("Error", errMsg);
+        }
+      } finally {
+        setIsActionInProgress(false);
+      }
+    };
+
+    if (Platform.OS === "web") {
+      if (window.confirm(deletePrompt)) {
+        performDelete();
+      }
+    } else {
+      Alert.alert("Delete All Chat", deletePrompt, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: performDelete },
+      ]);
+    }
   };
 
   const filteredConversations = conversations.filter((chat) => {
@@ -252,6 +442,7 @@ export default function Chats() {
               <TouchableOpacity
                 key={chat.id}
                 onPress={() => handleOpenConversation(chat)}
+                onLongPress={() => handleOpenOptionsModal(chat)}
                 className="py-3.5 border-b border-gray-100 flex-row items-center justify-between active:bg-gray-50 rounded-xl px-1"
                 activeOpacity={0.7}
               >
@@ -275,46 +466,90 @@ export default function Chats() {
 
                 {/* Middle: Name & Last Message Snippet */}
                 <View className="flex-1 pr-2">
-                  <Text className="font-bold text-gray-900 text-base leading-tight mb-1">
-                    {chat.name}
-                  </Text>
-                  <Text
-                    numberOfLines={1}
-                    className={`text-sm ${
-                      chat.unread > 0
-                        ? "font-bold text-gray-900"
-                        : "text-gray-500 font-normal"
-                    }`}
-                  >
-                    {chat.snippet || "Start a conversation"}
-                  </Text>
+                  <View className="flex-row items-center gap-1.5 mb-1">
+                    <Text
+                      onLongPress={() => handleOpenOptionsModal(chat)}
+                      className="font-bold text-gray-900 text-base leading-tight"
+                    >
+                      {chat.name}
+                    </Text>
+                    {chat.isMuted && (
+                      <Ionicons name="notifications-off" size={13} color="#9CA3AF" />
+                    )}
+                  </View>
+                  {chat.isTyping ? (
+                    <View className="flex-row items-center gap-1.5">
+                      <View className="flex-row items-center gap-0.5">
+                        <View className="w-1.5 h-1.5 rounded-full bg-[#72AF5B]" />
+                        <View className="w-1.5 h-1.5 rounded-full bg-[#72AF5B]/70" />
+                        <View className="w-1.5 h-1.5 rounded-full bg-[#72AF5B]/40" />
+                      </View>
+                      <Text
+                        numberOfLines={1}
+                        className="text-sm font-semibold text-[#72AF5B] italic"
+                      >
+                        typing...
+                      </Text>
+                    </View>
+                  ) : (
+                    <Text
+                      numberOfLines={1}
+                      className={`text-sm ${
+                        chat.unread > 0
+                          ? "font-bold text-gray-900"
+                          : "text-gray-500 font-normal"
+                      }`}
+                    >
+                      {chat.snippet || "Start a conversation"}
+                    </Text>
+                  )}
                 </View>
 
                 {/* Right: Time & Status / Badge */}
                 <View className="items-end justify-center gap-1.5 min-w-[50px]">
                   <Text
                     className={`text-xs ${
-                      chat.unread > 0
-                        ? "text-red-500 font-bold"
-                        : "text-gray-400 font-medium"
+                      chat.isTyping
+                        ? "text-[#72AF5B] font-bold"
+                        : chat.unread > 0
+                          ? "text-red-500 font-bold"
+                          : "text-gray-400 font-medium"
                     }`}
                   >
                     {chat.time}
                   </Text>
 
-                  {chat.unread > 0 ? (
+                  {chat.isTyping ? (
+                    <View className="px-1.5 py-0.5 rounded-full bg-[#72AF5B]/15">
+                      <Text className="text-[10px] text-[#72AF5B] font-bold">typing</Text>
+                    </View>
+                  ) : chat.unread > 0 ? (
                     <View className="bg-red-500 rounded-full h-5 min-w-[20px] px-1.5 items-center justify-center">
                       <Text className="text-white text-[11px] font-bold">
                         {chat.unread > 9 ? "9+" : chat.unread}
                       </Text>
                     </View>
-                  ) : (
-                    <Ionicons
-                      name="checkmark-done"
-                      size={16}
-                      color="#9CA3AF"
-                    />
-                  )}
+                  ) : chat.isLastSenderMe ? (
+                    chat.isSeen ? (
+                      <Ionicons
+                        name="checkmark-done"
+                        size={16}
+                        color="#72AF5B"
+                      />
+                    ) : chat.isDelivered ? (
+                      <Ionicons
+                        name="checkmark-done"
+                        size={16}
+                        color="#9CA3AF"
+                      />
+                    ) : (
+                      <Ionicons
+                        name="checkmark"
+                        size={15}
+                        color="#9CA3AF"
+                      />
+                    )
+                  ) : null}
                 </View>
               </TouchableOpacity>
             ))}
@@ -322,10 +557,170 @@ export default function Chats() {
         )}
       </ScrollView>
 
-      {/* 5. Bottom Navigation Component */}
+      {/* 5. Messenger-style Long-Press Action Modal */}
+      <Modal
+        visible={isOptionsModalVisible}
+        transparent={true}
+        animationType="fade"
+        onRequestClose={handleCloseOptionsModal}
+        statusBarTranslucent={true}
+      >
+        <View className="flex-1 justify-end bg-black/50">
+          <TouchableWithoutFeedback onPress={handleCloseOptionsModal}>
+            <View style={StyleSheet.absoluteFill} />
+          </TouchableWithoutFeedback>
+
+          <View
+            className="bg-white rounded-t-3xl pt-3 pb-8 px-5 w-full max-w-lg mx-auto shadow-2xl"
+            style={{
+              backgroundColor: "#FFFFFF",
+              borderTopLeftRadius: 28,
+              borderTopRightRadius: 28,
+              elevation: 25,
+            }}
+          >
+            {/* Grabber Handle */}
+            <View className="w-10 h-1 bg-gray-300 rounded-full self-center mb-3" />
+
+            {/* Target Contact Header Preview */}
+            {selectedChatForOptions && (
+              <View className="flex-row items-center pb-3.5 border-b border-gray-100 mb-2">
+                <View className="relative mr-3.5">
+                  <View className="h-12 w-12 rounded-full bg-gray-200 items-center justify-center border border-gray-200 overflow-hidden">
+                    {selectedChatForOptions.avatarUrl ? (
+                      <Image
+                        source={{ uri: selectedChatForOptions.avatarUrl }}
+                        className="w-full h-full"
+                        resizeMode="cover"
+                      />
+                    ) : (
+                      <Ionicons name="person" size={24} color="#6B7280" />
+                    )}
+                  </View>
+                  {selectedChatForOptions.online && (
+                    <View className="absolute bottom-0 right-0 bg-green-500 w-3 h-3 rounded-full border-2 border-white" />
+                  )}
+                </View>
+                <View className="flex-1">
+                  <Text className="text-base font-bold text-gray-900 leading-tight" numberOfLines={1}>
+                    {selectedChatForOptions.name}
+                  </Text>
+                  <Text className="text-xs text-gray-500 mt-0.5" numberOfLines={1}>
+                    {selectedChatForOptions.username
+                      ? `@${selectedChatForOptions.username}`
+                      : selectedChatForOptions.online
+                        ? "Active now"
+                        : "Local Farm member"}
+                  </Text>
+                </View>
+                {isActionInProgress && (
+                  <ActivityIndicator size="small" color="#72AF5B" className="ml-2" />
+                )}
+              </View>
+            )}
+
+            {/* Action Items List */}
+            {selectedChatForOptions && (
+              <View className="py-1">
+                {/* 1. Archive */}
+                <TouchableOpacity
+                  onPress={() => handleArchiveConversation(selectedChatForOptions)}
+                  disabled={isActionInProgress}
+                  activeOpacity={0.7}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center mr-3.5">
+                    <Ionicons name="archive-outline" size={20} color="#374151" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-base font-semibold text-gray-900">Archive</Text>
+                    <Text className="text-xs text-gray-500">Hide conversation from chats</Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* 2. Mute / Unmute */}
+                <TouchableOpacity
+                  onPress={() => handleToggleMuteConversation(selectedChatForOptions)}
+                  disabled={isActionInProgress}
+                  activeOpacity={0.7}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center mr-3.5">
+                    <Ionicons
+                      name={selectedChatForOptions.isMuted ? "notifications-outline" : "notifications-off-outline"}
+                      size={20}
+                      color="#374151"
+                    />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-base font-semibold text-gray-900">
+                      {selectedChatForOptions.isMuted ? "Unmute notifications" : "Mute notifications"}
+                    </Text>
+                    <Text className="text-xs text-gray-500">
+                      {selectedChatForOptions.isMuted ? "Receive message alerts again" : "Silence message alerts"}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* 3. Restrict */}
+                <TouchableOpacity
+                  onPress={() => handleToggleRestrictConversation(selectedChatForOptions)}
+                  disabled={isActionInProgress}
+                  activeOpacity={0.7}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
+                >
+                  <View className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center mr-3.5">
+                    <Ionicons name="shield-outline" size={20} color="#374151" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-base font-semibold text-gray-900">
+                      {selectedChatForOptions.isRestricted ? "Unrestrict" : "Restrict"}
+                    </Text>
+                    <Text className="text-xs text-gray-500">Move to Restricted Accounts</Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* 4. Block */}
+                <TouchableOpacity
+                  onPress={() => handleBlockConversation(selectedChatForOptions)}
+                  disabled={isActionInProgress}
+                  activeOpacity={0.7}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
+                >
+                  <View className="w-10 h-10 rounded-full bg-red-50 items-center justify-center mr-3.5">
+                    <Ionicons name="ban-outline" size={20} color="#DC2626" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-base font-semibold text-red-600">Block</Text>
+                    <Text className="text-xs text-red-400">They won't be able to message you</Text>
+                  </View>
+                </TouchableOpacity>
+
+                {/* 5. Delete all chat */}
+                <TouchableOpacity
+                  onPress={() => handleDeleteConversation(selectedChatForOptions)}
+                  disabled={isActionInProgress}
+                  activeOpacity={0.7}
+                  className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
+                >
+                  <View className="w-10 h-10 rounded-full bg-red-50 items-center justify-center mr-3.5">
+                    <Ionicons name="trash-outline" size={20} color="#DC2626" />
+                  </View>
+                  <View className="flex-1">
+                    <Text className="text-base font-semibold text-red-600">Delete all chat</Text>
+                    <Text className="text-xs text-red-400">Permanently delete this entire conversation</Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
+
+      {/* 6. Bottom Navigation Component */}
       <BottomNavBar activeTab="Chat" showFab={false} />
 
-      {/* 6. Chat Sidebar Modal Component */}
+      {/* 7. Chat Sidebar Modal Component */}
       <ChatSidebarModal
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}

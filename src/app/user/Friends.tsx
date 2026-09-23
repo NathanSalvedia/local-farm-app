@@ -42,7 +42,7 @@ export default function Friends() {
       const data = await getFriendsApi();
       setFriends(data);
     } catch (err) {
-      console.warn("Failed to fetch friends:", err);
+      console.log("Failed to fetch friends:", err);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -56,7 +56,7 @@ export default function Friends() {
         if (isMounted) setFriends(data);
       })
       .catch((err) => {
-        console.warn("Failed to fetch friends:", err);
+        console.log("Failed to fetch friends:", err);
       })
       .finally(() => {
         if (isMounted) setIsLoading(false);

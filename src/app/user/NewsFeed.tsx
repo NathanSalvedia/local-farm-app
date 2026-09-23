@@ -1,3 +1,4 @@
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useToast } from "@/context/toast-context";
 import { useAuth } from "@/hooks/use-auth";
 import {
@@ -20,12 +21,15 @@ import {
 import {
   createStoryApi,
   getStoriesApi,
+  getStoryViewersApi,
   markStoryViewedApi,
-  StoryItem,
+  StoryViewerItem,
   UserStory,
 } from "@/services/story-service";
-import * as ImagePicker from "expo-image-picker";
+import { sendMessageApi } from "@/services/chat-service";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
+import * as MediaLibrary from "expo-media-library/legacy";
 import { useFocusEffect, useRouter } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -33,8 +37,11 @@ import {
   Animated,
   Dimensions,
   Easing,
+  FlatList,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
+  LogBox,
   Modal,
   PanResponder,
   Platform,
@@ -58,6 +65,66 @@ import CreatePostModal, {
 import LeafletMap from "../../components/LeafletMap";
 import BottomNavBar from "../../components/Navigation";
 import UserHeader from "../../components/UserHeader";
+import LiveViewerModal from "../../components/LiveViewerModal";
+import SharePostModal from "../../components/SharePostModal";
+import PostImageGrid from "../../components/PostImageGrid";
+import SaveToCollectionModal from "../../components/SaveToCollectionModal";
+import { LinearGradient } from "expo-linear-gradient";
+
+// Suppress known Expo Go sandbox media library warning, service log warnings, and empty uri warnings
+LogBox.ignoreLogs([
+  "Due to changes in Androids permission requirements",
+  "[StoryService]",
+  "source.uri should not be an empty string",
+]);
+
+export const STORY_GRADIENT_PRESETS: Record<string, [string, string, ...string[]]> = {
+  emerald: ["#064e3b", "#065f46", "#047857"],
+  forest: ["#1b4332", "#2d6a4f", "#40916c"],
+  ocean: ["#0f172a", "#1e293b", "#334155"],
+  sunset: ["#78350f", "#b45309", "#d97706"],
+  berry: ["#4c1d95", "#6d28d9", "#8b5cf6"],
+  harvest: ["#881337", "#9f1239", "#be123c"],
+};
+
+export const DEFAULT_STORY_GRADIENT: [string, string, ...string[]] = [
+  "#064e3b",
+  "#065f46",
+  "#047857",
+];
+
+export const getStoryGradient = (bgColor?: string): [string, string, ...string[]] => {
+  if (!bgColor) return DEFAULT_STORY_GRADIENT;
+  const key = bgColor.toLowerCase().trim();
+  if (STORY_GRADIENT_PRESETS[key]) {
+    return STORY_GRADIENT_PRESETS[key];
+  }
+  if (key.startsWith("#") || key.startsWith("rgb")) {
+    return [key, "#0f172a"];
+  }
+  return DEFAULT_STORY_GRADIENT;
+};
+
+const STORY_PRIVACY_OPTIONS = [
+  {
+    id: "Public",
+    title: "Public",
+    subtitle: "Anyone on LocalFarm can see your story",
+    icon: "globe-outline" as const,
+  },
+  {
+    id: "Friends",
+    title: "Friends",
+    subtitle: "Only your connected friends on LocalFarm can see your story",
+    icon: "people-outline" as const,
+  },
+  {
+    id: "Only me",
+    title: "Only me",
+    subtitle: "Only you will be able to see this story",
+    icon: "lock-closed-outline" as const,
+  },
+] as const;
 
 interface Post {
   id: string;
@@ -92,34 +159,24 @@ const REACTIONS: ReactionConfig[] = [
   { type: "wow", emoji: "😮", label: "Wow", color: "#EAB308" },
 ];
 
-interface ShareOption {
-  id: string;
-  title: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}
 
-const SHARE_OPTIONS: ShareOption[] = [
-  { id: "public", title: "Share Now (Public)", icon: "globe-outline" },
-  { id: "group", title: "Share to a Group", icon: "people-outline" },
-  {
-    id: "message",
-    title: "Send in Message",
-    icon: "chatbubble-ellipses-outline",
-  },
-  { id: "copy", title: "Copy Link", icon: "link-outline" },
-];
 
-interface BookmarkCollection {
-  id: string;
-  name: string;
-  icon: keyof typeof Ionicons.glyphMap;
-}
 
-const DEFAULT_BOOKMARK_COLLECTIONS: BookmarkCollection[] = [
-  { id: "saved", name: "Saved Items", icon: "bookmark" },
-];
-
-const getStaticLocationCoords = (locationName?: string) => {
+const getPostLocationCoords = (
+  locationName?: string,
+  latitude?: number | null,
+  longitude?: number | null,
+) => {
+  if (
+    latitude !== undefined &&
+    latitude !== null &&
+    !isNaN(Number(latitude)) &&
+    longitude !== undefined &&
+    longitude !== null &&
+    !isNaN(Number(longitude))
+  ) {
+    return { latitude: Number(latitude), longitude: Number(longitude) };
+  }
   if (!locationName) {
     return { latitude: 8.2283, longitude: 124.2452 };
   }
@@ -132,6 +189,10 @@ const getStaticLocationCoords = (locationName?: string) => {
     return { latitude: match.latitude, longitude: match.longitude };
   }
   return { latitude: 8.2283, longitude: 124.2452 };
+};
+
+const getStaticLocationCoords = (locationName?: string) => {
+  return getPostLocationCoords(locationName);
 };
 
 const formatTemporaryRemainingTime = (expiresAt?: number | string | null) => {
@@ -182,6 +243,8 @@ export default function NewsFeed() {
   // Fullscreen Image Lightbox Modal State
   const [previewImage, setPreviewImage] = useState<{
     uri?: string;
+    images?: string[];
+    currentIndex?: number;
     source?: any;
     caption?: string;
     authorName?: string;
@@ -196,6 +259,20 @@ export default function NewsFeed() {
     isLiked?: boolean;
     isSaved?: boolean;
   } | null>(null);
+  const screenWidth = Dimensions.get("window").width;
+  const lightboxListRef = useRef<FlatList>(null);
+
+  useEffect(() => {
+    if (previewImage && previewImage.currentIndex !== undefined && previewImage.currentIndex > 0) {
+      setTimeout(() => {
+        lightboxListRef.current?.scrollToOffset({
+          offset: (previewImage.currentIndex ?? 0) * screenWidth,
+          animated: false,
+        });
+      }, 50);
+    }
+  }, [previewImage?.uri, previewImage?.currentIndex]);
+
   const [activeCommentsPostId, setActiveCommentsPostId] = useState<
     string | null
   >(null);
@@ -213,12 +290,30 @@ export default function NewsFeed() {
   }, []);
 
   const isRSBSAVerified = rsbsaApp?.status === "verified";
+  const [isLiveViewerVisible, setIsLiveViewerVisible] = useState(false);
+  const [liveViewerData, setLiveViewerData] = useState<{
+    authorName: string;
+    authorAvatar?: string;
+    streamTitle: string;
+    location?: string;
+    isReplay?: boolean;
+  }>({
+    authorName: "Juan Santos",
+    streamTitle: "Morning Sweet Corn Harvest at Tipanoy 🌾",
+    location: "Tipanoy, Iligan City",
+  });
   const [userStories, setUserStories] = useState<UserStory[]>([]);
   const [isLoadingStories, setIsLoadingStories] = useState(false);
   const [isSharingStory, setIsSharingStory] = useState(false);
   const [storyTextContent, setStoryTextContent] = useState("");
   const [activeStoryIndex, setActiveStoryIndex] = useState<number | null>(null);
   const [activeSubStoryIndex, setActiveSubStoryIndex] = useState<number>(0);
+  const [isStoryViewersModalVisible, setIsStoryViewersModalVisible] =
+    useState(false);
+  const [storyViewersList, setStoryViewersList] = useState<StoryViewerItem[]>(
+    [],
+  );
+  const [isLoadingStoryViewers, setIsLoadingStoryViewers] = useState(false);
   const [isStoryModalVisible, setStoryModalVisible] = useState(false);
   const [storyStep, setStoryStep] = useState<
     "SELECT_MEDIA" | "EDIT_STORY" | "PRIVACY_SETTINGS"
@@ -226,9 +321,13 @@ export default function NewsFeed() {
   const [selectedStoryImage, setSelectedStoryImage] = useState<string | null>(
     null,
   );
+  const [devicePhotos, setDevicePhotos] = useState<MediaLibrary.Asset[]>([]);
+  const [loadingDevicePhotos, setLoadingDevicePhotos] = useState(false);
+  const [mediaPermissionDenied, setMediaPermissionDenied] = useState(false);
   const [storyPrivacy, setStoryPrivacy] = useState<
     "Public" | "Friends" | "Only me"
   >("Public");
+  const [selectedStoryBg, setSelectedStoryBg] = useState<string>("emerald");
   const [isDefaultStoryAudience, setIsDefaultStoryAudience] = useState(false);
   const [isCreatePostVisible, setCreatePostVisible] = useState(false);
   const [expandedPostId, setExpandedPostId] = useState<string | null>(null);
@@ -238,13 +337,11 @@ export default function NewsFeed() {
   const [activeSharePostId, setActiveSharePostId] = useState<string | null>(
     null,
   );
-  const [bookmarkPostId, setBookmarkPostId] = useState<string | null>(null);
-  const [isNewCollectionModalVisible, setNewCollectionModalVisible] =
-    useState(false);
-  const [newCollectionName, setNewCollectionName] = useState("");
-  const [bookmarkCollections, setBookmarkCollections] = useState<
-    BookmarkCollection[]
-  >(DEFAULT_BOOKMARK_COLLECTIONS);
+  const [saveModalPost, setSaveModalPost] = useState<{
+    id: string;
+    imageUrl?: string;
+    collectionName?: string;
+  } | null>(null);
 
   const [selectedReactions, setSelectedReactions] = useState<
     Record<string, ReactionType | null>
@@ -330,6 +427,8 @@ export default function NewsFeed() {
 
   const handleOpenPreview = (data: {
     uri?: string;
+    images?: string[];
+    initialIndex?: number;
     source?: any;
     caption?: string;
     authorName?: string;
@@ -344,7 +443,25 @@ export default function NewsFeed() {
     isLiked?: boolean;
     isSaved?: boolean;
   }) => {
-    setPreviewImage(data);
+    const list =
+      data.images && data.images.length > 0
+        ? data.images
+        : data.uri
+          ? [data.uri]
+          : [];
+    const idx =
+      data.initialIndex !== undefined &&
+      data.initialIndex >= 0 &&
+      data.initialIndex < list.length
+        ? data.initialIndex
+        : 0;
+
+    setPreviewImage({
+      ...data,
+      images: list,
+      currentIndex: idx,
+      uri: list[idx] || data.uri,
+    });
   };
 
   const [posts, setPosts] = useState<PostItem[]>([]);
@@ -355,6 +472,15 @@ export default function NewsFeed() {
     try {
       const data = await getPostsApi();
       setPosts(data);
+      const initialReactions: Record<string, ReactionType | null> = {};
+      data.forEach((p) => {
+        if (p.userReaction) {
+          initialReactions[p.id] = p.userReaction as ReactionType;
+        } else if (p.isLiked) {
+          initialReactions[p.id] = "like";
+        }
+      });
+      setSelectedReactions((prev) => ({ ...prev, ...initialReactions }));
     } catch (err) {
       console.log("[NewsFeed] Failed to fetch posts:", err);
     } finally {
@@ -384,13 +510,14 @@ export default function NewsFeed() {
     useCallback(() => {
       fetchFeedPosts();
       fetchFeedStories();
-    }, [])
+    }, []),
   );
 
   // Auto-mark story as viewed when viewed by user
   useEffect(() => {
     if (activeStoryIndex !== null && userStories[activeStoryIndex]) {
-      const activeStory = userStories[activeStoryIndex].stories[activeSubStoryIndex];
+      const activeStory =
+        userStories[activeStoryIndex].stories[activeSubStoryIndex];
       if (activeStory && !activeStory.isSeen) {
         markStoryViewedApi(activeStory.id);
         setUserStories((prev) =>
@@ -399,14 +526,45 @@ export default function NewsFeed() {
             return {
               ...u,
               stories: u.stories.map((s, sIdx) =>
-                sIdx === activeSubStoryIndex ? { ...s, isSeen: true } : s
+                sIdx === activeSubStoryIndex ? { ...s, isSeen: true } : s,
               ),
             };
-          })
+          }),
         );
       }
     }
   }, [activeStoryIndex, activeSubStoryIndex]);
+
+  // Dynamically load saved default story privacy preference
+  useEffect(() => {
+    AsyncStorage.getItem("localfarm_default_story_privacy")
+      .then((saved) => {
+        if (saved && ["Public", "Friends", "Only me"].includes(saved)) {
+          setStoryPrivacy(saved as "Public" | "Friends" | "Only me");
+          setIsDefaultStoryAudience(true);
+        }
+      })
+      .catch((err) =>
+        console.log("[NewsFeed] Error loading default story privacy:", err),
+      );
+  }, []);
+
+  const handleSaveStoryPrivacy = async () => {
+    try {
+      if (isDefaultStoryAudience) {
+        await AsyncStorage.setItem(
+          "localfarm_default_story_privacy",
+          storyPrivacy,
+        );
+      } else {
+        await AsyncStorage.removeItem("localfarm_default_story_privacy");
+      }
+    } catch (err) {
+      console.log("[NewsFeed] Error saving story privacy:", err);
+    }
+    setStoryStep("EDIT_STORY");
+  };
+
 
   const handlePickCamera = async () => {
     try {
@@ -456,6 +614,63 @@ export default function NewsFeed() {
     }
   };
 
+  const loadDevicePhotos = async (requestIfMissing = false) => {
+    if (Platform.OS === "web") return;
+    try {
+      setLoadingDevicePhotos(true);
+      let perm = await MediaLibrary.getPermissionsAsync(false, ["photo"]);
+      if (!perm.granted && requestIfMissing) {
+        perm = await MediaLibrary.requestPermissionsAsync(false, ["photo"]);
+      }
+      if (!perm.granted) {
+        setMediaPermissionDenied(true);
+        setLoadingDevicePhotos(false);
+        return;
+      }
+      setMediaPermissionDenied(false);
+
+      let fetchedList: MediaLibrary.Asset[] = [];
+      try {
+        const assets = await MediaLibrary.getAssetsAsync({
+          first: 90,
+          mediaType: [MediaLibrary.MediaType.photo],
+          sortBy: [MediaLibrary.SortBy.creationTime],
+        });
+        fetchedList = assets.assets || [];
+      } catch (err) {
+        console.log("[NewsFeed] Sort query failed, retrying without sort:", err);
+        try {
+          const fallback = await MediaLibrary.getAssetsAsync({
+            first: 90,
+            mediaType: [MediaLibrary.MediaType.photo],
+          });
+          fetchedList = fallback.assets || [];
+        } catch (fallbackErr) {
+          console.log("[NewsFeed] Fallback query failed:", fallbackErr);
+        }
+      }
+
+      setDevicePhotos(fetchedList);
+    } catch (err) {
+      console.log("[NewsFeed] Error loading device photos:", err);
+    } finally {
+      setLoadingDevicePhotos(false);
+    }
+  };
+
+  useEffect(() => {
+    if (isStoryModalVisible && storyStep === "SELECT_MEDIA") {
+      loadDevicePhotos(true);
+    }
+  }, [isStoryModalVisible, storyStep]);
+
+  const storyGridItems = useMemo(() => {
+    return [
+      { id: "__camera_tile__", uri: "" } as MediaLibrary.Asset,
+      ...devicePhotos,
+    ];
+  }, [devicePhotos]);
+
   const handleShareStory = async () => {
     if (!selectedStoryImage && !storyTextContent.trim()) {
       showToast("Please add a photo or text for your story.", "warning");
@@ -466,12 +681,14 @@ export default function NewsFeed() {
       await createStoryApi({
         mediaUrl: selectedStoryImage || undefined,
         textContent: storyTextContent.trim() || undefined,
+        backgroundColor: !selectedStoryImage ? selectedStoryBg : undefined,
         privacy: storyPrivacy,
       });
       showToast("Story shared successfully!", "success");
       setStoryModalVisible(false);
       setSelectedStoryImage(null);
       setStoryTextContent("");
+      setSelectedStoryBg("emerald");
       setStoryStep("SELECT_MEDIA");
       fetchFeedStories();
     } catch (err: any) {
@@ -490,13 +707,18 @@ export default function NewsFeed() {
     if (activeReactionPostId) setActiveReactionPostId(null);
     if (activeSharePostId) setActiveSharePostId(null);
 
+    const targetPost = posts.find((p) => p.id === postId);
+    const wasLiked = Boolean(
+      selectedReactions[postId] || targetPost?.isLiked,
+    );
+
     setPosts((prev) =>
       prev.map((p) => {
         if (p.id === postId) {
-          const wasLiked = p.isLiked || selectedReactions[postId] === "like";
           return {
             ...p,
             isLiked: !wasLiked,
+            userReaction: wasLiked ? null : "like",
             likes: wasLiked ? Math.max(0, p.likes - 1) : p.likes + 1,
           };
         }
@@ -504,111 +726,116 @@ export default function NewsFeed() {
       }),
     );
 
-    setSelectedReactions((prev) => {
-      const current = prev[postId];
-      return {
-        ...prev,
-        [postId]: current ? null : "like",
-      };
-    });
+    setSelectedReactions((prev) => ({
+      ...prev,
+      [postId]: wasLiked ? null : "like",
+    }));
 
     try {
-      const res = await toggleLikePostApi(postId);
+      const res = await toggleLikePostApi(postId, "like");
       setPosts((prev) =>
         prev.map((p) =>
           p.id === postId
-            ? { ...p, isLiked: res.isLiked, likes: res.likesCount }
+            ? {
+                ...p,
+                isLiked: res.isLiked,
+                likes: res.likesCount,
+                userReaction: res.userReaction,
+              }
             : p,
         ),
       );
+      setSelectedReactions((prev) => ({
+        ...prev,
+        [postId]: (res.userReaction as ReactionType) || null,
+      }));
     } catch (err) {
       console.log("[NewsFeed] Error toggling like:", err);
     }
   };
 
-  const handleSelectReaction = (postId: string, reaction: ReactionType) => {
+  const handleSelectReaction = async (
+    postId: string,
+    reaction: ReactionType,
+  ) => {
+    setActiveReactionPostId(null);
+    const targetPost = posts.find((p) => p.id === postId);
+    const prevReaction =
+      selectedReactions[postId] || targetPost?.userReaction;
+    const isRemoving = prevReaction === reaction;
+
     setSelectedReactions((prev) => ({
       ...prev,
-      [postId]: prev[postId] === reaction ? null : reaction,
+      [postId]: isRemoving ? null : reaction,
     }));
-    setActiveReactionPostId(null);
-  };
 
-  // Share to Feed Dialog Modal State
-  const [shareDialogPost, setShareDialogPost] = useState<PostItem | null>(null);
-  const [shareCaption, setShareCaption] = useState("");
-  const [isSharingPost, setIsSharingPost] = useState(false);
-
-  const handleToggleShare = (postId: string) => {
-    if (activeReactionPostId) setActiveReactionPostId(null);
-    setActiveSharePostId((prev) => (prev === postId ? null : postId));
-  };
-
-  const handleOpenShareDialog = (post: PostItem) => {
-    setActiveSharePostId(null);
-    setShareCaption("");
-    setShareDialogPost(post);
-  };
-
-  const handleShareOptionClick = async (postId: string, optionId: string) => {
-    setActiveSharePostId(null);
-    const targetPost = posts.find((p) => p.id === postId);
-
-    if (optionId === "public" || optionId === "feed") {
-      if (targetPost) {
-        handleOpenShareDialog(targetPost);
-      }
-      return;
-    }
-
-    if (optionId === "copy") {
-      showToast("Post link copied to clipboard!", "success");
-      return;
-    }
-
-    try {
-      const res = await sharePostApi(postId, optionId);
-      setPosts((prev) => {
-        const updated = prev.map((p) =>
-          p.id === postId ? { ...p, shares: res.sharesCount } : p,
-        );
-        if (res.sharedPost) {
-          return [res.sharedPost, ...updated];
+    setPosts((prev) =>
+      prev.map((p) => {
+        if (p.id === postId) {
+          const currentLikes = p.likes || 0;
+          return {
+            ...p,
+            isLiked: !isRemoving,
+            userReaction: isRemoving ? null : reaction,
+            likes: isRemoving
+              ? Math.max(0, currentLikes - 1)
+              : p.isLiked
+                ? currentLikes
+                : currentLikes + 1,
+          };
         }
-        return updated;
-      });
-      showToast(`Post shared! (${optionId})`, "success");
-    } catch (err: any) {
-      showToast(err?.message || "Failed to share post.", "error");
-    }
-  };
+        return p;
+      }),
+    );
 
-  const handleConfirmShare = async () => {
-    if (!shareDialogPost) return;
-    setIsSharingPost(true);
     try {
-      const res = await sharePostApi(
-        shareDialogPost.id,
-        "public",
-        shareCaption.trim(),
+      const res = await toggleLikePostApi(postId, reaction);
+      setPosts((prev) =>
+        prev.map((p) =>
+          p.id === postId
+            ? {
+                ...p,
+                isLiked: res.isLiked,
+                likes: res.likesCount,
+                userReaction: res.userReaction,
+              }
+            : p,
+        ),
       );
-      setPosts((prev) => {
-        const updated = prev.map((p) =>
-          p.id === shareDialogPost.id ? { ...p, shares: res.sharesCount } : p,
-        );
-        if (res.sharedPost) {
-          return [res.sharedPost, ...updated];
-        }
-        return updated;
-      });
-      showToast("Post shared to your feed!", "success");
-      setShareDialogPost(null);
-      setShareCaption("");
-    } catch (err: any) {
-      showToast(err?.message || "Failed to share post.", "error");
-    } finally {
-      setIsSharingPost(false);
+      setSelectedReactions((prev) => ({
+        ...prev,
+        [postId]: (res.userReaction as ReactionType) || null,
+      }));
+    } catch (err) {
+      console.log("[NewsFeed] Error selecting reaction:", err);
     }
+  };
+
+  // Share Post Modal State
+  const [shareModalPost, setShareModalPost] = useState<PostItem | null>(null);
+
+  const handleOpenShareModal = (post: PostItem) => {
+    if (activeReactionPostId) setActiveReactionPostId(null);
+    setShareModalPost(post);
+  };
+
+  const handleShareSuccess = (sharedPost?: PostItem | null, newSharesCount?: number) => {
+    if (!shareModalPost) return;
+    setPosts((prev) => {
+      const updated = prev.map((p) =>
+        p.id === shareModalPost.id
+          ? {
+              ...p,
+              shares:
+                newSharesCount !== undefined ? newSharesCount : p.shares + 1,
+            }
+          : p,
+      );
+      if (sharedPost) {
+        return [sharedPost, ...updated];
+      }
+      return updated;
+    });
   };
 
   const toggleExpandComments = async (postId: string) => {
@@ -679,9 +906,7 @@ export default function NewsFeed() {
         parentId: currentReply?.commentId || null,
         userId: String(user?.id || "me"),
         authorName: user?.name || user?.username || "You",
-        avatarUri:
-          user?.avatarUrl ||
-          "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=100&auto=format&fit=crop&q=80",
+        avatarUri: user?.avatarUrl || "",
         timeAgo: "Just now",
         content: text,
         likes: 0,
@@ -905,43 +1130,27 @@ export default function NewsFeed() {
 
   const handleToggleSavePost = async (
     postId: string,
-    collectionName: string = "All Saved",
+    collectionName?: string,
   ) => {
     try {
       const res = await toggleSavePostApi(postId, collectionName);
       setPosts((prev) =>
         prev.map((p) => (p.id === postId ? { ...p, isSaved: res.isSaved } : p)),
       );
+      const effectiveCol = res.collectionName || collectionName || "All Saved";
       setBookmarkedPosts((prev) => ({
         ...prev,
-        [postId]: res.isSaved ? collectionName : "",
+        [postId]: res.isSaved ? effectiveCol : "",
       }));
-      showToast(res.message, "success");
+
+      if (res.isSaved) {
+        showToast(res.message || `Saved to ${effectiveCol}`, "success");
+      } else {
+        showToast("Post removed from saved.", "info");
+      }
     } catch (err: any) {
       showToast(err?.message || "Failed to save post.", "error");
     }
-  };
-
-  const handleCreateCollection = async () => {
-    const trimmed = newCollectionName.trim();
-    if (!trimmed) return;
-
-    const newId = `col_${Date.now()}`;
-    const newCol: BookmarkCollection = {
-      id: newId,
-      name: trimmed,
-      icon: "folder",
-    };
-
-    setBookmarkCollections((prev) => [...prev, newCol]);
-
-    if (bookmarkPostId) {
-      await handleToggleSavePost(bookmarkPostId, trimmed);
-    }
-
-    setNewCollectionName("");
-    setNewCollectionModalVisible(false);
-    setBookmarkPostId(null);
   };
 
   const toggleRepliesVisibility = (commentId: string) => {
@@ -956,8 +1165,81 @@ export default function NewsFeed() {
   const cardOpacityAnim = useRef(new Animated.Value(0)).current;
   const storyScrollViewRef = useRef<ScrollView>(null);
 
+  const [storyReplyText, setStoryReplyText] = useState("");
+  const [isReplyingStory, setIsReplyingStory] = useState(false);
+  const [isSendingStoryReply, setIsSendingStoryReply] = useState(false);
+  const storyRemainingTimeRef = useRef(STORY_DURATION);
+  const storyReplyInputRef = useRef<TextInput>(null);
+  const isReplyingStoryRef = useRef(isReplyingStory);
+
+  useEffect(() => {
+    isReplyingStoryRef.current = isReplyingStory;
+  }, [isReplyingStory]);
+
+  const pauseStoryTimer = () => {
+    progressAnim.stopAnimation((value) => {
+      const elapsed = (value || 0) * STORY_DURATION;
+      storyRemainingTimeRef.current = Math.max(500, STORY_DURATION - elapsed);
+    });
+  };
+
+  const resumeStoryTimer = () => {
+    Animated.timing(progressAnim, {
+      toValue: 1,
+      duration: storyRemainingTimeRef.current || STORY_DURATION,
+      easing: Easing.linear,
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (finished && !isReplyingStoryRef.current) {
+        handleNextRef.current();
+      }
+    });
+  };
+
+  const handleFocusStoryReply = () => {
+    setIsReplyingStory(true);
+    pauseStoryTimer();
+  };
+
+  const handleBlurStoryReply = () => {
+    if (!isSendingStoryReply) {
+      setIsReplyingStory(false);
+      resumeStoryTimer();
+    }
+  };
+
+  const handleTapLeft = () => {
+    if (isReplyingStory) {
+      Keyboard.dismiss();
+      setIsReplyingStory(false);
+      resumeStoryTimer();
+      return;
+    }
+    handlePrevStory();
+  };
+
+  const handleTapRight = () => {
+    if (isReplyingStory) {
+      Keyboard.dismiss();
+      setIsReplyingStory(false);
+      resumeStoryTimer();
+      return;
+    }
+    handleNextStory();
+  };
+
+  const handleCloseStoryViewer = () => {
+    setActiveStoryIndex(null);
+    setStoryReplyText("");
+    setIsReplyingStory(false);
+    Keyboard.dismiss();
+  };
+
   const handlePrevStory = () => {
     if (activeStoryIndex === null) return;
+    setStoryReplyText("");
+    setIsReplyingStory(false);
+    Keyboard.dismiss();
     if (activeSubStoryIndex > 0) {
       setActiveSubStoryIndex((prev) => prev - 1);
     } else if (activeStoryIndex > 0) {
@@ -969,6 +1251,9 @@ export default function NewsFeed() {
 
   const handleNextStory = () => {
     if (activeStoryIndex === null) return;
+    setStoryReplyText("");
+    setIsReplyingStory(false);
+    Keyboard.dismiss();
     const currentUser = userStories[activeStoryIndex];
     if (currentUser && activeSubStoryIndex < currentUser.stories.length - 1) {
       setActiveSubStoryIndex((prev) => prev + 1);
@@ -991,14 +1276,16 @@ export default function NewsFeed() {
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => !isReplyingStoryRef.current,
       onMoveShouldSetPanResponder: (_, gestureState) => {
+        if (isReplyingStoryRef.current) return false;
         return (
           Math.abs(gestureState.dx) > 15 &&
           Math.abs(gestureState.dx) > Math.abs(gestureState.dy)
         );
       },
       onPanResponderRelease: (_, gestureState) => {
+        if (isReplyingStoryRef.current) return;
         if (gestureState.dx < -30) {
           handleNextRef.current();
         } else if (gestureState.dx > 30) {
@@ -1011,6 +1298,7 @@ export default function NewsFeed() {
   useEffect(() => {
     if (activeStoryIndex === null) return;
 
+    storyRemainingTimeRef.current = STORY_DURATION;
     progressAnim.setValue(0);
     cardScaleAnim.setValue(0.92);
     cardOpacityAnim.setValue(0);
@@ -1034,7 +1322,7 @@ export default function NewsFeed() {
         useNativeDriver: true,
       }),
     ]).start(({ finished }) => {
-      if (finished) {
+      if (finished && !isReplyingStoryRef.current) {
         handleNextRef.current();
       }
     });
@@ -1050,6 +1338,91 @@ export default function NewsFeed() {
     currentStoryUser && currentStoryUser.stories[activeSubStoryIndex]
       ? currentStoryUser.stories[activeSubStoryIndex]
       : null;
+
+  const isOwnActiveStory = Boolean(
+    currentStoryUser &&
+      user &&
+      (String(currentStoryUser.userId) === String(user.id) ||
+        (user.username &&
+          currentStoryUser.userName.trim().toLowerCase() ===
+            user.username.trim().toLowerCase())),
+  );
+
+  // Automatically mark story as viewed when current user is viewing someone else's story
+  useEffect(() => {
+    if (activeStoryIndex === null || !currentSubStory?.id) return;
+    if (!isOwnActiveStory) {
+      markStoryViewedApi(currentSubStory.id).catch(() => {});
+    }
+  }, [activeStoryIndex, activeSubStoryIndex, currentSubStory?.id, isOwnActiveStory]);
+
+  const handleOpenStoryViewers = async () => {
+    if (!currentSubStory) return;
+    pauseStoryTimer();
+    setIsStoryViewersModalVisible(true);
+    setIsLoadingStoryViewers(true);
+    try {
+      const viewers = await getStoryViewersApi(currentSubStory.id);
+      const filtered = (viewers || []).filter(
+        (v) => !user?.id || String(v.userId) !== String(user.id),
+      );
+      setStoryViewersList(filtered);
+    } catch (err) {
+      console.log("[NewsFeed] Failed to load story viewers:", err);
+      setStoryViewersList([]);
+    } finally {
+      setIsLoadingStoryViewers(false);
+    }
+  };
+
+  const handleCloseStoryViewers = () => {
+    setIsStoryViewersModalVisible(false);
+    resumeStoryTimer();
+  };
+
+  const handleSendStoryReply = async () => {
+    const trimmed = storyReplyText.trim();
+    if (!trimmed || !currentStoryUser?.userId || isSendingStoryReply) return;
+
+    setIsSendingStoryReply(true);
+    try {
+      await sendMessageApi({
+        receiverId: String(currentStoryUser.userId),
+        messageText: `Replied to your story: "${trimmed}"`,
+      });
+      showToast(`Message sent to ${currentStoryUser.userName}!`, "success");
+      setStoryReplyText("");
+      setIsReplyingStory(false);
+      Keyboard.dismiss();
+      resumeStoryTimer();
+    } catch (err: any) {
+      console.error("[NewsFeed] Error sending story reply:", err);
+      showToast(err?.message || "Failed to send message.", "error");
+    } finally {
+      setIsSendingStoryReply(false);
+    }
+  };
+
+  const handleSendStoryReaction = async (emoji: string) => {
+    if (!currentStoryUser?.userId || isSendingStoryReply) return;
+
+    setIsSendingStoryReply(true);
+    try {
+      await sendMessageApi({
+        receiverId: String(currentStoryUser.userId),
+        messageText: `Reacted ${emoji} to your story`,
+      });
+      showToast(`Sent ${emoji} to ${currentStoryUser.userName}!`, "success");
+      setIsReplyingStory(false);
+      Keyboard.dismiss();
+      resumeStoryTimer();
+    } catch (err: any) {
+      console.error("[NewsFeed] Error sending story reaction:", err);
+      showToast(err?.message || "Failed to send reaction.", "error");
+    } finally {
+      setIsSendingStoryReply(false);
+    }
+  };
 
   return (
     <SafeAreaView
@@ -1113,9 +1486,9 @@ export default function NewsFeed() {
                     {/* Avatar Container */}
                     <View className="relative">
                       <View className="w-16 h-16 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-200">
-                        {user?.avatarUrl ? (
+                        {Boolean(user?.avatarUrl && user.avatarUrl.trim()) ? (
                           <Image
-                            source={{ uri: user.avatarUrl }}
+                            source={{ uri: user!.avatarUrl!.trim() }}
                             style={{ width: "100%", height: "100%" }}
                             resizeMode="cover"
                           />
@@ -1137,6 +1510,16 @@ export default function NewsFeed() {
                 {/* Items 2+: Other Users' Stories (Grouped per User) */}
                 {userStories.map((userStory, index) => {
                   const hasUnseen = userStory.stories.some((s) => !s.isSeen);
+                  const isSelf = Boolean(
+                    user &&
+                      (String(userStory.userId) === String(user.id) ||
+                        (user.username &&
+                          userStory.userName?.trim().toLowerCase() ===
+                            user.username.trim().toLowerCase()) ||
+                        (user.name &&
+                          userStory.userName?.trim().toLowerCase() ===
+                            user.name.trim().toLowerCase())),
+                  );
 
                   return (
                     <View key={userStory.userId} className="items-center mr-4">
@@ -1160,22 +1543,26 @@ export default function NewsFeed() {
                           }
                         >
                           <View className="w-full h-full rounded-full bg-gray-200 items-center justify-center overflow-hidden">
-                            {userStory.userAvatar ? (
+                            {Boolean(userStory.userAvatar && userStory.userAvatar.trim()) ? (
                               <Image
-                                source={{ uri: userStory.userAvatar }}
+                                source={{ uri: userStory.userAvatar!.trim() }}
                                 style={{ width: "100%", height: "100%" }}
                                 resizeMode="cover"
                               />
                             ) : (
-                              <Ionicons name="person" size={28} color="#6B7280" />
+                              <Ionicons
+                                name="person"
+                                size={28}
+                                color="#6B7280"
+                              />
                             )}
                           </View>
                         </View>
                         <Text
-                          className="text-xs font-medium text-gray-700 mt-1 truncate w-16 text-center"
+                          className="text-xs font-medium text-gray-700 mt-1 max-w-[76px] text-center"
                           numberOfLines={1}
                         >
-                          {userStory.userName}
+                          {isSelf ? "My story" : userStory.userName}
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -1215,11 +1602,13 @@ export default function NewsFeed() {
                   .map((post) => {
                     const isExpanded = expandedPostId === post.id;
                     const isReactionMenuOpen = activeReactionPostId === post.id;
-                    const isShareMenuOpen = activeSharePostId === post.id;
-                    const isCardElevated =
-                      isReactionMenuOpen || isShareMenuOpen;
+                    const isCardElevated = isReactionMenuOpen;
 
-                    const currentReaction = selectedReactions[post.id];
+                    const currentReaction =
+                      selectedReactions[post.id] !== undefined
+                        ? selectedReactions[post.id]
+                        : ((post.userReaction as ReactionType) ||
+                          (post.isLiked ? "like" : null));
                     const currentReactionConfig = REACTIONS.find(
                       (r) => r.type === currentReaction,
                     );
@@ -1263,43 +1652,6 @@ export default function NewsFeed() {
                           </View>
                         )}
 
-                        {/* Inline Share Popover Menu (Absolute Positioning) */}
-                        {isShareMenuOpen && (
-                          <View
-                            className="absolute bottom-12 right-4 z-50 w-56 bg-white rounded-xl shadow-lg border border-gray-100 py-1"
-                            style={{
-                              elevation: 8,
-                              boxShadow: "0 4px 10px rgba(0, 0, 0, 0.15)",
-                            }}
-                          >
-                            {SHARE_OPTIONS.map((option, idx) => {
-                              const isLast = idx === SHARE_OPTIONS.length - 1;
-
-                              return (
-                                <TouchableOpacity
-                                  key={option.id}
-                                  onPress={() =>
-                                    handleShareOptionClick(post.id, option.id)
-                                  }
-                                  className={`flex-row items-center px-4 py-3 active:bg-gray-50 ${
-                                    !isLast ? "border-b border-gray-100" : ""
-                                  }`}
-                                  activeOpacity={0.7}
-                                >
-                                  <Ionicons
-                                    name={option.icon}
-                                    size={20}
-                                    color="#374151"
-                                  />
-                                  <Text className="text-sm font-medium text-gray-800 ml-3">
-                                    {option.title}
-                                  </Text>
-                                </TouchableOpacity>
-                              );
-                            })}
-                          </View>
-                        )}
-
                         <View className="p-4">
                           {/* Temporary Flash Post Urgency Banner */}
                           {post.category === "Temporary" && (
@@ -1314,7 +1666,7 @@ export default function NewsFeed() {
                                   className="text-xs font-bold text-amber-900"
                                   numberOfLines={1}
                                 >
-                                  Flash Post
+                                  Temporary Post
                                 </Text>
                                 {Boolean(post.durationLabel) && (
                                   <Text className="text-[11px] text-amber-700 font-medium">
@@ -1330,6 +1682,34 @@ export default function NewsFeed() {
                                 />
                                 <Text className="text-[11px] font-bold text-amber-900">
                                   {formatTemporaryRemainingTime(post.expiresAt)}
+                                </Text>
+                              </View>
+                            </View>
+                          )}
+
+                          {/* Live Replay Banner */}
+                          {(post.content.includes("[Live Replay]") ||
+                            post.content.includes("🔴 [Live Replay]")) && (
+                            <View className="flex-row items-center justify-between px-3 py-2 mb-3 bg-red-50 border border-red-200 rounded-xl">
+                              <View className="flex-row items-center gap-1.5 flex-1 mr-2">
+                                <View className="w-2.5 h-2.5 rounded-full bg-red-600 mr-0.5" />
+                                <Text className="text-xs font-bold text-red-800 tracking-wide">
+                                  LIVE BROADCAST REPLAY
+                                </Text>
+                                {Boolean(post.durationLabel) && (
+                                  <Text className="text-[11px] text-red-600 font-medium">
+                                    • {post.durationLabel}
+                                  </Text>
+                                )}
+                              </View>
+                              <View className="flex-row items-center gap-1 bg-red-100 px-2.5 py-0.5 rounded-full border border-red-200">
+                                <Ionicons
+                                  name="videocam"
+                                  size={12}
+                                  color="#DC2626"
+                                />
+                                <Text className="text-[11px] font-bold text-red-800">
+                                  Recorded
                                 </Text>
                               </View>
                             </View>
@@ -1402,9 +1782,9 @@ export default function NewsFeed() {
                               className="flex-row items-center flex-1 pr-2"
                             >
                               <View className="h-10 w-10 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
-                                {post.avatarUri ? (
+                                {Boolean(post.avatarUri && post.avatarUri.trim()) ? (
                                   <Image
-                                    source={{ uri: post.avatarUri }}
+                                    source={{ uri: post.avatarUri.trim() }}
                                     style={{ width: "100%", height: "100%" }}
                                     resizeMode="cover"
                                   />
@@ -1421,7 +1801,10 @@ export default function NewsFeed() {
                                   <Text className="font-bold text-gray-900 mr-1.5 text-base">
                                     {post.authorName}
                                   </Text>
-                                  {Boolean(post.taggedUsers && post.taggedUsers.length > 0) && (
+                                  {Boolean(
+                                    post.taggedUsers &&
+                                    post.taggedUsers.length > 0,
+                                  ) && (
                                     <Text className="text-xs text-gray-500 mr-1.5 font-normal">
                                       is with{" "}
                                       <Text className="font-semibold text-gray-800">
@@ -1550,10 +1933,10 @@ export default function NewsFeed() {
                                 className="flex-row items-center mb-2"
                               >
                                 <View className="h-8 w-8 rounded-full border border-gray-300 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
-                                  {post.originalPost.avatarUri ? (
+                                  {Boolean(post.originalPost.avatarUri && post.originalPost.avatarUri.trim()) ? (
                                     <Image
                                       source={{
-                                        uri: post.originalPost.avatarUri,
+                                        uri: post.originalPost.avatarUri.trim(),
                                       }}
                                       style={{ width: "100%", height: "100%" }}
                                       resizeMode="cover"
@@ -1606,17 +1989,25 @@ export default function NewsFeed() {
                               )}
 
                               {/* Original Image */}
-                              {post.originalPost.imageUrl ? (
-                                <TouchableOpacity
-                                  activeOpacity={0.9}
-                                  onPress={() =>
+                              {post.originalPost.imageUrl || (post.originalPost.images && post.originalPost.images.length > 0) ? (
+                                <PostImageGrid
+                                  images={post.originalPost.images}
+                                  fallbackImageUrl={post.originalPost.imageUrl}
+                                  onPressImage={(clickedUri, clickedIdx) =>
                                     handleOpenPreview({
-                                      uri: post.originalPost!.imageUrl,
-                                      caption: post.originalPost!.content,
-                                      authorName: post.originalPost!.authorName,
-                                      timeAgo: post.originalPost!.timeAgo,
+                                      uri: clickedUri,
+                                      images:
+                                        post.originalPost?.images && post.originalPost.images.length > 0
+                                          ? post.originalPost.images
+                                          : post.originalPost?.imageUrl
+                                            ? [post.originalPost.imageUrl]
+                                            : [],
+                                      initialIndex: clickedIdx,
+                                      caption: post.originalPost?.content,
+                                      authorName: post.originalPost?.authorName,
+                                      timeAgo: post.originalPost?.timeAgo,
                                       postId: post.id,
-                                      authorRole: post.authorRole,
+                                      authorRole: post.originalPost?.authorRole,
                                       avatarUri: post.avatarUri,
                                       isVerified: post.isVerified,
                                       likes: post.likes,
@@ -1629,27 +2020,24 @@ export default function NewsFeed() {
                                       ),
                                     })
                                   }
-                                >
-                                  <Image
-                                    source={{ uri: post.originalPost.imageUrl }}
-                                    className="w-full rounded-lg bg-gray-100"
-                                    style={{
-                                      width: "100%",
-                                      height: 180,
-                                      borderRadius: 8,
-                                    }}
-                                    resizeMode="cover"
-                                  />
-                                </TouchableOpacity>
+                                />
                               ) : null}
                             </View>
-                          ) : /* Standard Post Image */
-                          post.imageUrl ? (
-                            <TouchableOpacity
-                              activeOpacity={0.9}
-                              onPress={() =>
+                          ) : /* Standard Post Images */
+                          (post.images && post.images.length > 0) || post.imageUrl ? (
+                            <PostImageGrid
+                              images={post.images}
+                              fallbackImageUrl={post.imageUrl}
+                              onPressImage={(clickedUri, clickedIdx) =>
                                 handleOpenPreview({
-                                  uri: post.imageUrl,
+                                  uri: clickedUri,
+                                  images:
+                                    post.images && post.images.length > 0
+                                      ? post.images
+                                      : post.imageUrl
+                                        ? [post.imageUrl]
+                                        : [],
+                                  initialIndex: clickedIdx,
                                   caption: post.content,
                                   authorName: post.authorName,
                                   timeAgo: post.timeAgo,
@@ -1666,18 +2054,7 @@ export default function NewsFeed() {
                                   ),
                                 })
                               }
-                            >
-                              <Image
-                                source={{ uri: post.imageUrl }}
-                                className="w-full rounded-lg mb-4 bg-gray-100"
-                                style={{
-                                  width: "100%",
-                                  height: 224,
-                                  borderRadius: 8,
-                                }}
-                                resizeMode="cover"
-                              />
-                            </TouchableOpacity>
+                            />
                           ) : (post as any).imageSource ? (
                             <TouchableOpacity
                               activeOpacity={0.9}
@@ -1711,6 +2088,55 @@ export default function NewsFeed() {
                                 }}
                                 resizeMode="cover"
                               />
+                            </TouchableOpacity>
+                          ) : (post.content.includes("[Live Replay]") ||
+                            post.content.includes("🔴 [Live Replay]")) ? (
+                            <TouchableOpacity
+                              activeOpacity={0.9}
+                              onPress={() => {
+                                setLiveViewerData({
+                                  authorName: post.authorName,
+                                  authorAvatar:
+                                    post.avatarUri ||
+                                    "https://images.unsplash.com/photo-1544717305-2782549b5136?auto=format&fit=crop&w=400&q=80",
+                                  streamTitle:
+                                    post.content
+                                      .split("\n")[0]
+                                      .replace("🔴 [Live Replay]", "")
+                                      .trim() || "Recorded Live Broadcast",
+                                  location: post.location || "Iligan City",
+                                  isReplay: true,
+                                });
+                                setIsLiveViewerVisible(true);
+                              }}
+                              className="w-full h-44 rounded-2xl mb-4 bg-gray-900 overflow-hidden items-center justify-center relative border border-gray-800"
+                            >
+                              <View className="w-14 h-14 rounded-full bg-red-600 items-center justify-center shadow-lg active:scale-95">
+                                <Ionicons
+                                  name="play"
+                                  size={26}
+                                  color="#FFFFFF"
+                                  style={{ marginLeft: 3 }}
+                                />
+                              </View>
+                              <View className="absolute top-3 left-3 flex-row items-center bg-red-600 px-2.5 py-1 rounded-full">
+                                <Text className="text-white text-[10px] font-extrabold tracking-wider">
+                                  REPLAY
+                                </Text>
+                              </View>
+                              <View className="absolute bottom-3 left-3 right-3 flex-row items-center justify-between">
+                                <Text
+                                  className="text-white text-xs font-semibold"
+                                  numberOfLines={1}
+                                >
+                                  Recorded Live Stream
+                                </Text>
+                                {Boolean(post.durationLabel) && (
+                                  <Text className="text-gray-300 text-xs font-medium">
+                                    {post.durationLabel}
+                                  </Text>
+                                )}
+                              </View>
                             </TouchableOpacity>
                           ) : null}
 
@@ -1765,12 +2191,18 @@ export default function NewsFeed() {
                                 >
                                   <LeafletMap
                                     latitude={
-                                      getStaticLocationCoords(post.location)
-                                        .latitude
+                                      getPostLocationCoords(
+                                        post.location,
+                                        post.latitude,
+                                        post.longitude,
+                                      ).latitude
                                     }
                                     longitude={
-                                      getStaticLocationCoords(post.location)
-                                        .longitude
+                                      getPostLocationCoords(
+                                        post.location,
+                                        post.latitude,
+                                        post.longitude,
+                                      ).longitude
                                     }
                                     zoom={14}
                                     locationTitle={post.location}
@@ -1856,32 +2288,38 @@ export default function NewsFeed() {
 
                               {/* Share Button Trigger */}
                               <TouchableOpacity
-                                onPress={() => handleToggleShare(post.id)}
+                                onPress={() => handleOpenShareModal(post)}
                                 className="flex-row items-center gap-1.5 active:opacity-70"
                               >
                                 <Ionicons
                                   name="share-social-outline"
                                   size={22}
-                                  color={
-                                    isShareMenuOpen ? "#72AF5B" : "#6b7280"
-                                  }
+                                  color="#6b7280"
                                 />
-                                <Text
-                                  className={`font-medium ${
-                                    isShareMenuOpen
-                                      ? "text-[#72AF5B] font-bold"
-                                      : "text-gray-500"
-                                  }`}
-                                >
+                                <Text className="font-medium text-gray-500">
                                   {post.shares}
                                 </Text>
                               </TouchableOpacity>
                             </View>
 
-                            {/* Bookmark / Save Button Trigger */}
+                            {/* Bookmark / Save Button Trigger - Opens Instagram Save To Collection Modal */}
                             <TouchableOpacity
-                              onPress={() => handleToggleSavePost(post.id)}
-                              onLongPress={() => setBookmarkPostId(post.id)}
+                              onPress={() => {
+                                const postImg =
+                                  post.images && post.images.length > 0
+                                    ? post.images[0]
+                                    : post.imageUrl ||
+                                      post.originalPost?.imageUrl ||
+                                      (post.originalPost?.images && post.originalPost.images.length > 0
+                                        ? post.originalPost.images[0]
+                                        : "") ||
+                                      "";
+                                setSaveModalPost({
+                                  id: post.id,
+                                  imageUrl: postImg,
+                                  collectionName: bookmarkedPosts[post.id] || (post.isSaved ? "All Saved" : "All Saved"),
+                                });
+                              }}
                               className="active:opacity-70 p-0.5"
                               accessibilityRole="button"
                               accessibilityLabel="Save post"
@@ -1891,7 +2329,7 @@ export default function NewsFeed() {
                                   isBookmarked ? "bookmark" : "bookmark-outline"
                                 }
                                 size={24}
-                                color={isBookmarked ? "#72AF5B" : "#6b7280"}
+                                color={isBookmarked ? "#000000" : "#6b7280"}
                               />
                             </TouchableOpacity>
                           </View>
@@ -1927,388 +2365,30 @@ export default function NewsFeed() {
         </View>
       </Pressable>
 
-      {/* Facebook-style Share to Feed Dialog Modal */}
-      <Modal
-        visible={shareDialogPost !== null}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => {
-          if (!isSharingPost) {
-            setShareDialogPost(null);
-            setShareCaption("");
+      {/* Facebook-style Share Post Modal */}
+      <SharePostModal
+        visible={shareModalPost !== null}
+        post={shareModalPost}
+        onClose={() => setShareModalPost(null)}
+        onShareSuccess={handleShareSuccess}
+        onShowToast={showToast}
+      />
+
+      {/* Instagram-style Save to Collection Modal */}
+      <SaveToCollectionModal
+        visible={saveModalPost !== null}
+        postId={saveModalPost?.id || null}
+        postImageUrl={saveModalPost?.imageUrl}
+        currentCollectionName={saveModalPost?.collectionName}
+        onClose={() => setSaveModalPost(null)}
+        onSaveToCollection={async (collectionName) => {
+          if (saveModalPost) {
+            await handleToggleSavePost(saveModalPost.id, collectionName);
           }
         }}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          className="flex-1 bg-black/60 justify-center items-center p-4"
-        >
-          <Pressable
-            className="absolute inset-0"
-            onPress={() => {
-              if (!isSharingPost) {
-                setShareDialogPost(null);
-                setShareCaption("");
-              }
-            }}
-          />
-          <View
-            className="w-full max-w-lg bg-white rounded-3xl overflow-hidden shadow-2xl z-10 max-h-[85vh] flex-col"
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 10 },
-              shadowOpacity: 0.25,
-              shadowRadius: 20,
-              elevation: 10,
-            }}
-          >
-            {/* Modal Header */}
-            <View className="flex-row items-center justify-between px-5 py-4 border-b border-gray-100">
-              <Text className="text-lg font-bold text-gray-900">
-                Share to Feed
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setShareDialogPost(null);
-                  setShareCaption("");
-                }}
-                disabled={isSharingPost}
-                className="w-8 h-8 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
-                accessibilityRole="button"
-                accessibilityLabel="Close share dialog"
-              >
-                <Ionicons name="close" size={20} color="#4B5563" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              className="flex-1 px-5 py-4"
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {/* Logged-in User Profile Row */}
-              <View className="flex-row items-center mb-3">
-                <View className="w-11 h-11 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
-                  {user?.avatarUrl ? (
-                    <Image
-                      source={{ uri: user.avatarUrl }}
-                      className="w-full h-full"
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <Ionicons name="person" size={22} color="#9CA3AF" />
-                  )}
-                </View>
-                <View className="flex-1">
-                  <Text className="font-bold text-gray-900 text-base">
-                    {user?.name || user?.username || "You"}
-                  </Text>
-                  <View className="flex-row items-center mt-1 bg-green-50 self-start px-2 py-0.5 rounded-full border border-green-200/60">
-                    <Ionicons name="globe-outline" size={12} color="#166534" />
-                    <Text className="text-xs font-semibold text-green-800 ml-1">
-                      Public
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Custom Description / Thoughts Input */}
-              <TextInput
-                value={shareCaption}
-                onChangeText={setShareCaption}
-                placeholder="Say something about this post..."
-                placeholderTextColor="#9CA3AF"
-                multiline
-                className="text-base text-gray-800 min-h-[90px] text-top mb-4"
-                style={{ textAlignVertical: "top" }}
-                autoFocus={true}
-              />
-
-              {/* Original Post Preview Box (Facebook Embed Style) */}
-              {shareDialogPost && (
-                <View className="border border-gray-200 rounded-2xl p-3.5 bg-gray-50/70 mb-2">
-                  {/* Original Author Info */}
-                  <View className="flex-row items-center mb-2.5">
-                    <View className="w-8 h-8 rounded-full border border-green-400 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
-                      {shareDialogPost.originalPost?.avatarUri ||
-                      shareDialogPost.avatarUri ? (
-                        <Image
-                          source={{
-                            uri:
-                              shareDialogPost.originalPost?.avatarUri ||
-                              shareDialogPost.avatarUri,
-                          }}
-                          className="w-full h-full"
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <Ionicons name="person" size={16} color="#9CA3AF" />
-                      )}
-                    </View>
-                    <View className="flex-1">
-                      <Text
-                        className="font-bold text-gray-900 text-xs"
-                        numberOfLines={1}
-                      >
-                        {shareDialogPost.originalPost?.authorName ||
-                          shareDialogPost.authorName}
-                      </Text>
-                      <Text
-                        className="text-[11px] text-gray-500"
-                        numberOfLines={1}
-                      >
-                        {shareDialogPost.originalPost?.authorRole ||
-                          shareDialogPost.authorRole}{" "}
-                        •{" "}
-                        {shareDialogPost.originalPost?.timeAgo ||
-                          shareDialogPost.timeAgo}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* Original Post Content Snippet */}
-                  {shareDialogPost.originalPost?.content ||
-                  shareDialogPost.content ? (
-                    <Text
-                      className="text-sm text-gray-700 mb-2 leading-relaxed"
-                      numberOfLines={4}
-                    >
-                      {shareDialogPost.originalPost?.content ||
-                        shareDialogPost.content}
-                    </Text>
-                  ) : null}
-
-                  {/* Original Post Image (if any) */}
-                  {shareDialogPost.originalPost?.imageUrl ||
-                  shareDialogPost.imageUrl ? (
-                    <Image
-                      source={{
-                        uri:
-                          shareDialogPost.originalPost?.imageUrl ||
-                          shareDialogPost.imageUrl,
-                      }}
-                      className="w-full h-40 rounded-xl bg-gray-200"
-                      resizeMode="cover"
-                    />
-                  ) : null}
-                </View>
-              )}
-            </ScrollView>
-
-            {/* Modal Bottom Share Button */}
-            <View className="px-5 py-3.5 border-t border-gray-100 bg-white">
-              <TouchableOpacity
-                onPress={handleConfirmShare}
-                disabled={isSharingPost}
-                className="w-full py-3.5 rounded-xl bg-[#72AF5B] items-center justify-center flex-row shadow-sm active:bg-[#5e944a]"
-                activeOpacity={0.85}
-              >
-                {isSharingPost ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <>
-                    <Ionicons name="arrow-redo" size={18} color="#ffffff" />
-                    <Text className="text-white font-bold text-base ml-2">
-                      Share Now
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
-
-      {/* Bookmark / Save Post Modal (Bottom Sheet) */}
-      <Modal
-        visible={bookmarkPostId !== null}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setBookmarkPostId(null)}
-      >
-        <Pressable
-          className="flex-1 justify-end"
-          onPress={() => setBookmarkPostId(null)}
-        >
-          <Pressable onPress={(e) => e.stopPropagation()}>
-            <View className="w-full bg-white rounded-t-3xl p-5 pb-8 shadow-2xl">
-              {/* Top Drag Indicator */}
-              <View className="items-center mb-3">
-                <View className="w-10 h-1 bg-gray-300 rounded-full" />
-              </View>
-
-              {/* Modal Header */}
-              <View className="flex-row justify-between items-center mb-4 pb-2 border-b border-gray-100">
-                <Text className="text-lg font-semibold text-gray-900">
-                  Save Post
-                </Text>
-                <TouchableOpacity
-                  onPress={() => setBookmarkPostId(null)}
-                  className="p-1 rounded-full active:bg-gray-100"
-                  accessibilityRole="button"
-                  accessibilityLabel="Close save modal"
-                >
-                  <Ionicons name="close" size={24} color="#6b7280" />
-                </TouchableOpacity>
-              </View>
-
-              {/* Save Options (Vertical List) */}
-              <View className="mb-2">
-                {bookmarkCollections.map((col) => {
-                  const isSelected =
-                    bookmarkPostId !== null &&
-                    bookmarkedPosts[bookmarkPostId] === col.id;
-
-                  return (
-                    <TouchableOpacity
-                      key={col.id}
-                      onPress={() => {
-                        if (bookmarkPostId) {
-                          handleToggleSavePost(bookmarkPostId, col.name);
-                        }
-                        setBookmarkPostId(null);
-                      }}
-                      className={`flex-row items-center justify-between px-4 py-3.5 rounded-xl mb-3 ${
-                        isSelected
-                          ? "bg-green-50 border border-green-200"
-                          : "bg-gray-100"
-                      }`}
-                      activeOpacity={0.7}
-                    >
-                      <View className="flex-row items-center flex-1">
-                        <Ionicons
-                          name={col.icon}
-                          size={20}
-                          color={isSelected ? "#72AF5B" : "#374151"}
-                        />
-                        <Text
-                          className={`text-base font-medium ml-3 ${
-                            isSelected
-                              ? "text-green-800 font-bold"
-                              : "text-gray-800"
-                          }`}
-                        >
-                          {col.name}
-                        </Text>
-                      </View>
-                      {/* Plus Button Action on Right */}
-                      <View
-                        className={`w-8 h-8 rounded-full items-center justify-center ${
-                          isSelected
-                            ? "bg-green-600 shadow-xs"
-                            : "bg-white border border-gray-300"
-                        }`}
-                      >
-                        <Ionicons
-                          name={isSelected ? "checkmark" : "add"}
-                          size={20}
-                          color={isSelected ? "#FFFFFF" : "#374151"}
-                        />
-                      </View>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-
-              {/* New Collection Button */}
-              <TouchableOpacity
-                onPress={() => {
-                  setNewCollectionName("");
-                  setNewCollectionModalVisible(true);
-                }}
-                className="flex-row items-center mt-2 p-2 active:opacity-70"
-                activeOpacity={0.7}
-              >
-                <Ionicons name="add" size={22} color="#16a34a" />
-                <Text className="text-base font-medium text-green-600 ml-1">
-                  + New Collection
-                </Text>
-              </TouchableOpacity>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
-
-      {/* Create New Collection Modal (Slide-up Bottom Sheet) */}
-      <Modal
-        visible={isNewCollectionModalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setNewCollectionModalVisible(false)}
-      >
-        <Pressable
-          className="flex-1 justify-end"
-          onPress={() => setNewCollectionModalVisible(false)}
-        >
-          <Pressable onPress={(e) => e.stopPropagation()}>
-            <View className="w-full bg-white rounded-t-3xl p-5 pb-8 shadow-2xl">
-              {/* Top Drag Indicator */}
-              <View className="items-center mb-3">
-                <View className="w-10 h-1 bg-gray-300 rounded-full" />
-              </View>
-
-              {/* Modal Header */}
-              <View className="flex-row justify-between items-center mb-2 pb-2 border-b border-gray-100">
-                <Text className="text-lg font-semibold text-gray-900">
-                  New Collection
-                </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    setNewCollectionName("");
-                    setNewCollectionModalVisible(false);
-                  }}
-                  className="p-1 rounded-full active:bg-gray-100"
-                  accessibilityRole="button"
-                  accessibilityLabel="Close new collection modal"
-                >
-                  <Ionicons name="close" size={24} color="#6b7280" />
-                </TouchableOpacity>
-              </View>
-
-              <Text className="text-sm text-gray-500 mb-4">
-                Create a collection to organize your saved posts.
-              </Text>
-
-              <TextInput
-                value={newCollectionName}
-                onChangeText={setNewCollectionName}
-                placeholder="Collection name (e.g. My Favorites)"
-                placeholderTextColor="#9CA3AF"
-                autoFocus={true}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3.5 text-base text-gray-800 mb-6"
-              />
-
-              <View className="flex-row justify-end gap-3">
-                <TouchableOpacity
-                  onPress={() => {
-                    setNewCollectionName("");
-                    setNewCollectionModalVisible(false);
-                  }}
-                  className="px-5 py-3 rounded-xl border border-gray-300 bg-white active:bg-gray-100"
-                >
-                  <Text className="text-sm font-semibold text-gray-700">
-                    Cancel
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  onPress={handleCreateCollection}
-                  disabled={!newCollectionName.trim()}
-                  className={`px-6 py-3 rounded-xl ${
-                    newCollectionName.trim()
-                      ? "bg-[#72AF5B] active:opacity-80"
-                      : "bg-gray-300 opacity-60"
-                  }`}
-                >
-                  <Text className="text-sm font-bold text-white">
-                    Create & Save
-                  </Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+        onCollectionCreated={() => {}}
+        onShowToast={showToast}
+      />
 
       {/* Animated Fullscreen Story Viewer Modal */}
       {currentStoryUser && currentSubStory && (
@@ -2316,7 +2396,7 @@ export default function NewsFeed() {
           visible={activeStoryIndex !== null}
           transparent={false}
           animationType="fade"
-          onRequestClose={() => setActiveStoryIndex(null)}
+          onRequestClose={handleCloseStoryViewer}
         >
           <SafeAreaView
             {...panResponder.panHandlers}
@@ -2327,16 +2407,25 @@ export default function NewsFeed() {
               backgroundColor: "#000000",
             }}
           >
-            {/* Fullscreen Background Story Image */}
-            <View className="absolute inset-0 w-full h-full">
-              <Image
-                source={{ uri: currentSubStory.imageUrl }}
-                className="w-full h-full"
-                resizeMode="cover"
+            {/* Fullscreen Background: Image OR Rich Aesthetic Gradient for Text Stories */}
+            {Boolean(currentSubStory.imageUrl && currentSubStory.imageUrl.trim()) ? (
+              <View className="absolute inset-0 w-full h-full">
+                <Image
+                  source={{ uri: currentSubStory.imageUrl.trim() }}
+                  className="w-full h-full"
+                  resizeMode="cover"
+                />
+                {/* Subtle Dark Gradient Overlay */}
+                <View className="absolute inset-0 bg-black/30" />
+              </View>
+            ) : (
+              <LinearGradient
+                colors={getStoryGradient(currentSubStory.backgroundColor)}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                className="absolute inset-0 w-full h-full"
               />
-              {/* Subtle Dark Gradient Overlay */}
-              <View className="absolute inset-0 bg-black/30" />
-            </View>
+            )}
 
             {/* Top Overlay Controls (Progress bars & Header) */}
             <View className="pt-3 px-4 z-20 w-full">
@@ -2376,9 +2465,9 @@ export default function NewsFeed() {
                     className="h-10 w-10 rounded-full border-2 items-center justify-center bg-gray-800 mr-3 overflow-hidden"
                     style={{ borderColor: "#72AF5B" }}
                   >
-                    {currentStoryUser.userAvatar ? (
+                    {Boolean(currentStoryUser.userAvatar && currentStoryUser.userAvatar.trim()) ? (
                       <Image
-                        source={{ uri: currentStoryUser.userAvatar }}
+                        source={{ uri: currentStoryUser.userAvatar!.trim() }}
                         style={{ width: "100%", height: "100%" }}
                         resizeMode="cover"
                       />
@@ -2388,18 +2477,35 @@ export default function NewsFeed() {
                   </View>
                   <View>
                     <Text className="text-white font-bold text-base">
-                      {currentStoryUser.userName}
+                      {isOwnActiveStory ? "My story" : currentStoryUser.userName}
                     </Text>
-                    {currentSubStory.timeAgo && (
-                      <Text className="text-white/80 text-xs">
-                        {currentSubStory.timeAgo}
+                    <View className="flex-row items-center gap-1.5 mt-0.5">
+                      {currentSubStory.timeAgo && (
+                        <Text className="text-white/80 text-xs">
+                          {currentSubStory.timeAgo}
+                        </Text>
+                      )}
+                      <Text className="text-white/50 text-xs">•</Text>
+                      <Ionicons
+                        name={
+                          currentSubStory.privacy === "Only me"
+                            ? "lock-closed"
+                            : currentSubStory.privacy === "Friends"
+                              ? "people"
+                              : "globe-outline"
+                        }
+                        size={11}
+                        color="rgba(255,255,255,0.75)"
+                      />
+                      <Text className="text-white/70 text-[10px]">
+                        {currentSubStory.privacy || "Public"}
                       </Text>
-                    )}
+                    </View>
                   </View>
                 </View>
 
                 <TouchableOpacity
-                  onPress={() => setActiveStoryIndex(null)}
+                  onPress={handleCloseStoryViewer}
                   className="w-10 h-10 rounded-full bg-black/40 items-center justify-center active:bg-black/60"
                   accessibilityRole="button"
                   accessibilityLabel="Close story viewer"
@@ -2409,23 +2515,56 @@ export default function NewsFeed() {
               </View>
             </View>
 
-            {/* Story Text Content (Centered / Bottom Overlay) */}
-            {currentSubStory.content ? (
-              <View className="flex-1 justify-end items-center pb-24 px-5 z-10 w-full">
-                <Animated.View
-                  style={{
-                    transform: [{ scale: cardScaleAnim }],
-                    opacity: cardOpacityAnim,
-                    width: "100%",
-                    maxWidth: 500,
-                  }}
-                  className="bg-black/60 px-5 py-3.5 rounded-2xl border border-white/10"
+            {/* Story Text Content: Centered bold typography for Text Stories, Bottom Caption for Image Stories */}
+            {Boolean(currentSubStory.content && currentSubStory.content.trim()) ? (
+              Boolean(currentSubStory.imageUrl && currentSubStory.imageUrl.trim()) ? (
+                /* 1. Image Story: Bottom Caption Overlay */
+                <View
+                  className="flex-1 justify-end items-center pb-24 px-5 z-10 w-full"
+                  pointerEvents="box-none"
                 >
-                  <Text className="text-white text-base font-semibold text-center leading-6">
-                    {currentSubStory.content}
-                  </Text>
-                </Animated.View>
-              </View>
+                  <Animated.View
+                    style={{
+                      transform: [{ scale: cardScaleAnim }],
+                      opacity: cardOpacityAnim,
+                      width: "100%",
+                      maxWidth: 500,
+                    }}
+                    className="bg-black/65 px-5 py-3.5 rounded-2xl border border-white/15 shadow-lg"
+                  >
+                    <Text className="text-white text-base font-semibold text-center leading-6">
+                      {currentSubStory.content}
+                    </Text>
+                  </Animated.View>
+                </View>
+              ) : (
+                /* 2. Text Story: Centered Bold Typography (Instagram/Facebook Style) */
+                <View
+                  className="flex-1 justify-center items-center px-8 z-10 w-full"
+                  pointerEvents="box-none"
+                >
+                  <Animated.View
+                    style={{
+                      transform: [{ scale: cardScaleAnim }],
+                      opacity: cardOpacityAnim,
+                      width: "100%",
+                      maxWidth: 480,
+                    }}
+                    className="items-center justify-center p-4"
+                  >
+                    <Text
+                      className="text-white text-2xl sm:text-3xl font-extrabold text-center leading-9 sm:leading-10 tracking-wide"
+                      style={{
+                        textShadowColor: "rgba(0, 0, 0, 0.55)",
+                        textShadowOffset: { width: 0, height: 2 },
+                        textShadowRadius: 8,
+                      }}
+                    >
+                      {currentSubStory.content}
+                    </Text>
+                  </Animated.View>
+                </View>
+              )
             ) : (
               <View className="flex-1" />
             )}
@@ -2437,80 +2576,244 @@ export default function NewsFeed() {
             >
               {/* Left Tap Zone */}
               <TouchableOpacity
-                onPress={handlePrevStory}
-                className="w-1/3 h-full justify-center items-start pl-2"
+                onPress={handleTapLeft}
+                className="w-1/2 h-full"
                 activeOpacity={1}
-              >
-                {(activeStoryIndex! > 0 || activeSubStoryIndex > 0) && (
-                  <View className="w-10 h-10 rounded-full bg-black/30 items-center justify-center">
-                    <Ionicons name="chevron-back" size={24} color="white" />
-                  </View>
-                )}
-              </TouchableOpacity>
-
-              {/* Center Zone */}
-              <View className="w-1/3 h-full" />
+                accessibilityRole="button"
+                accessibilityLabel="Previous story"
+              />
 
               {/* Right Tap Zone */}
               <TouchableOpacity
-                onPress={handleNextStory}
-                className="w-1/3 h-full justify-center items-end pr-2"
+                onPress={handleTapRight}
+                className="w-1/2 h-full"
                 activeOpacity={1}
-              >
-                <View className="w-10 h-10 rounded-full bg-black/30 items-center justify-center">
-                  <Ionicons name="chevron-forward" size={24} color="white" />
-                </View>
-              </TouchableOpacity>
+                accessibilityRole="button"
+                accessibilityLabel="Next story"
+              />
             </View>
 
-            {/* Bottom Navigation Guidance */}
-            <View className="absolute bottom-6 left-4 right-4 flex-row justify-between items-center z-20">
-              <TouchableOpacity
-                disabled={activeStoryIndex === 0 && activeSubStoryIndex === 0}
-                onPress={handlePrevStory}
-                className={`flex-row items-center bg-black/40 px-3 py-1.5 rounded-full ${
-                  activeStoryIndex === 0 && activeSubStoryIndex === 0
-                    ? "opacity-30"
-                    : "opacity-100"
-                }`}
-              >
-                <Ionicons name="arrow-back" size={16} color="white" />
-                <Text className="text-white text-xs ml-1 font-medium">
-                  Prev
-                </Text>
-              </TouchableOpacity>
-
-              <View className="bg-black/50 px-3 py-1 rounded-full">
-                <Text className="text-white text-xs font-medium">
-                  {activeSubStoryIndex + 1} of {currentStoryUser.stories.length}
-                </Text>
+            {/* Bottom Bar: If own story, show Viewer pill button */}
+            {isOwnActiveStory ? (
+              <View className="absolute bottom-8 left-4 z-20">
+                <TouchableOpacity
+                  onPress={handleOpenStoryViewers}
+                  activeOpacity={0.8}
+                  className="flex-row items-center bg-black/60 px-4 py-2.5 rounded-full border border-white/20"
+                >
+                  <Ionicons name="eye-outline" size={18} color="white" />
+                  <Text className="text-white text-xs font-semibold ml-2">
+                    {currentSubStory?.viewsCount ?? 0}{" "}
+                    {(currentSubStory?.viewsCount ?? 0) === 1 ? "view" : "views"}
+                  </Text>
+                  <Ionicons
+                    name="chevron-up"
+                    size={14}
+                    color="#d1d5db"
+                    style={{ marginLeft: 4 }}
+                  />
+                </TouchableOpacity>
               </View>
-
-              <TouchableOpacity
-                onPress={handleNextStory}
-                className="flex-row items-center bg-black/40 px-3 py-1.5 rounded-full"
+            ) : (
+              /* Instagram / Facebook style Story Message & Quick Reactions Bar */
+              <KeyboardAvoidingView
+                behavior={Platform.OS === "ios" ? "padding" : undefined}
+                keyboardVerticalOffset={Platform.OS === "ios" ? 12 : 0}
+                className="absolute bottom-0 left-0 right-0 z-30 px-4 pb-6 pt-2"
+                style={{
+                  backgroundColor: isReplyingStory
+                    ? "rgba(0, 0, 0, 0.75)"
+                    : "transparent",
+                }}
               >
-                <Text className="text-white text-xs mr-1 font-medium">
-                  {activeStoryIndex === userStories.length - 1 &&
-                  activeSubStoryIndex === currentStoryUser.stories.length - 1
-                    ? "Close"
-                    : "Next"}
-                </Text>
-                <Ionicons
-                  name={
-                    activeStoryIndex === userStories.length - 1 &&
-                    activeSubStoryIndex === currentStoryUser.stories.length - 1
-                      ? "close"
-                      : "arrow-forward"
-                  }
-                  size={16}
-                  color="white"
-                />
-              </TouchableOpacity>
-            </View>
+                {/* Floating Quick Reaction Emojis (shown when input is focused) */}
+                {isReplyingStory && (
+                  <View className="flex-row items-center justify-around mb-3 px-2 py-2 bg-black/70 rounded-full border border-white/20">
+                    {["❤️", "🙌", "🔥", "👏", "😂", "😮", "😢", "😍"].map(
+                      (emoji) => (
+                        <TouchableOpacity
+                          key={emoji}
+                          onPress={() => handleSendStoryReaction(emoji)}
+                          className="w-9 h-9 items-center justify-center active:scale-125"
+                          hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+                        >
+                          <Text className="text-2xl">{emoji}</Text>
+                        </TouchableOpacity>
+                      ),
+                    )}
+                  </View>
+                )}
+
+                <View className="flex-row items-center gap-2">
+                  {/* Rounded Message Input Pill */}
+                  <View className="flex-1 flex-row items-center bg-black/50 border border-white/25 rounded-full px-4 py-1.5 h-12">
+                    <TextInput
+                      ref={storyReplyInputRef}
+                      value={storyReplyText}
+                      onChangeText={setStoryReplyText}
+                      onFocus={handleFocusStoryReply}
+                      onBlur={handleBlurStoryReply}
+                      placeholder={`Send message to ${
+                        currentStoryUser.userName
+                          ? currentStoryUser.userName.split(" ")[0]
+                          : "user"
+                      }...`}
+                      placeholderTextColor="rgba(255, 255, 255, 0.6)"
+                      className="flex-1 text-white text-sm py-1.5 mr-2"
+                      returnKeyType="send"
+                      onSubmitEditing={handleSendStoryReply}
+                    />
+
+                    {storyReplyText.trim().length > 0 && (
+                      <TouchableOpacity
+                        onPress={handleSendStoryReply}
+                        disabled={isSendingStoryReply}
+                        className="bg-[#72AF5B] w-8 h-8 rounded-full items-center justify-center active:opacity-80"
+                      >
+                        {isSendingStoryReply ? (
+                          <ActivityIndicator size="small" color="white" />
+                        ) : (
+                          <Ionicons name="arrow-up" size={18} color="white" />
+                        )}
+                      </TouchableOpacity>
+                    )}
+                  </View>
+
+                  {/* Quick Heart Reaction Button (Instagram style) */}
+                  {storyReplyText.trim().length === 0 && (
+                    <TouchableOpacity
+                      onPress={() => handleSendStoryReaction("❤️")}
+                      activeOpacity={0.7}
+                      className="w-12 h-12 rounded-full bg-black/50 border border-white/25 items-center justify-center active:scale-110"
+                      accessibilityLabel="Send love reaction"
+                    >
+                      <Ionicons name="heart" size={26} color="#ef4444" />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </KeyboardAvoidingView>
+            )}
           </SafeAreaView>
         </Modal>
       )}
+
+      {/* Story Viewers Bottom Sheet Modal */}
+      <Modal
+        visible={isStoryViewersModalVisible}
+        transparent={true}
+        animationType="slide"
+        statusBarTranslucent={true}
+        onRequestClose={handleCloseStoryViewers}
+      >
+        <View className="flex-1 justify-end bg-black/60">
+          <Pressable
+            className="flex-1"
+            onPress={handleCloseStoryViewers}
+            accessibilityRole="button"
+            accessibilityLabel="Close story viewers backdrop"
+          />
+          <View className="bg-white rounded-t-3xl max-h-[75%] min-h-[40%] pb-8 pt-3 px-5 shadow-2xl">
+            {/* Drag handle */}
+            <View className="items-center mb-3">
+              <View className="w-12 h-1.5 rounded-full bg-gray-300" />
+            </View>
+
+            {/* Header */}
+            <View className="flex-row justify-between items-center pb-3 border-b border-gray-100">
+              <View className="flex-row items-center">
+                <Ionicons name="eye" size={20} color="#16a34a" />
+                <Text className="text-lg font-bold text-gray-900 ml-2">
+                  Story Viewers
+                </Text>
+                <View className="bg-gray-100 px-2.5 py-0.5 rounded-full ml-2">
+                  <Text className="text-xs font-semibold text-gray-600">
+                    {storyViewersList.length}
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                onPress={handleCloseStoryViewers}
+                className="w-8 h-8 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
+                accessibilityRole="button"
+                accessibilityLabel="Close viewers sheet"
+              >
+                <Ionicons name="close" size={18} color="#4b5563" />
+              </TouchableOpacity>
+            </View>
+
+            <Text className="text-xs text-gray-500 my-2.5">
+              Only you can see who viewed this story.
+            </Text>
+
+            {/* Content */}
+            {isLoadingStoryViewers ? (
+              <View className="py-12 items-center justify-center">
+                <ActivityIndicator size="large" color="#16a34a" />
+                <Text className="text-sm text-gray-500 mt-3 font-medium">
+                  Loading viewers...
+                </Text>
+              </View>
+            ) : storyViewersList.length === 0 ? (
+              <View className="py-12 items-center justify-center px-4">
+                <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
+                  <Ionicons name="eye-off-outline" size={32} color="#9ca3af" />
+                </View>
+                <Text className="text-base font-bold text-gray-800">
+                  No views yet
+                </Text>
+                <Text className="text-xs text-gray-500 text-center mt-1">
+                  When someone views your story, their profile will appear here.
+                </Text>
+              </View>
+            ) : (
+              <FlatList
+                data={storyViewersList}
+                keyExtractor={(item, index) => `${item.userId}-${index}`}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingTop: 8, paddingBottom: 16 }}
+                renderItem={({ item }) => (
+                  <View className="flex-row items-center justify-between py-3 border-b border-gray-50">
+                    <View className="flex-row items-center flex-1 mr-3">
+                      {Boolean(item.avatarUrl && item.avatarUrl.trim()) ? (
+                        <Image
+                          source={{ uri: item.avatarUrl.trim() }}
+                          className="w-11 h-11 rounded-full bg-gray-100"
+                        />
+                      ) : (
+                        <View className="w-11 h-11 rounded-full bg-green-100 items-center justify-center">
+                          <Text className="text-green-800 font-bold text-base">
+                            {(item.name || item.username || "U")[0]?.toUpperCase()}
+                          </Text>
+                        </View>
+                      )}
+                      <View className="ml-3 flex-1">
+                        <View className="flex-row items-center">
+                          <Text
+                            className="font-semibold text-gray-900 text-sm"
+                            numberOfLines={1}
+                          >
+                            {item.name}
+                          </Text>
+                          {item.role && (
+                            <View className="ml-2 bg-green-50 px-2 py-0.5 rounded-full border border-green-200">
+                              <Text className="text-[10px] text-green-700 font-medium">
+                                {item.role}
+                              </Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                    <Text className="text-xs text-gray-400 font-medium">
+                      {item.viewedAt}
+                    </Text>
+                  </View>
+                )}
+              />
+            )}
+          </View>
+        </View>
+      </Modal>
 
       {/* Create & Edit Story Full-Screen Modal */}
       <Modal
@@ -2528,245 +2831,366 @@ export default function NewsFeed() {
         }}
       >
         {storyStep === "SELECT_MEDIA" ? (
-          /* Step 1: Full-Screen Gallery Picker */
-          <SafeAreaView className="flex-1 bg-white px-2">
+          /* Step 1: Facebook / Instagram Style Device Photo Picker */
+          <SafeAreaView className="flex-1 bg-white">
             {/* Header */}
-            <View className="flex-row justify-between items-center px-3 pt-2 mb-4">
-              <Text className="text-2xl font-bold text-gray-900">
-                Create Story
+            <View className="flex-row justify-between items-center px-4 pt-2 pb-3 border-b border-gray-100">
+              <Text className="text-xl font-bold text-gray-900">
+                Create story
               </Text>
               <TouchableOpacity
                 onPress={() => setStoryModalVisible(false)}
-                className="w-10 h-10 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
+                className="w-9 h-9 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
                 accessibilityRole="button"
                 accessibilityLabel="Close create story modal"
               >
-                <Ionicons name="close" size={28} color="#111827" />
+                <Ionicons name="close" size={24} color="#111827" />
               </TouchableOpacity>
             </View>
 
-            {/* Top Option Buttons */}
-            <View className="flex-row gap-3 px-3 mb-5">
-              {/* Option 1: Text */}
+            {/* Top Quick Action Cards */}
+            <View className="flex-row gap-2.5 px-4 pt-3 pb-3">
+              {/* Aa Text Story */}
               <TouchableOpacity
                 onPress={() => {
                   setSelectedStoryImage(null);
                   setStoryTextContent("");
                   setStoryStep("EDIT_STORY");
                 }}
-                className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
+                className="flex-1 bg-indigo-50 border border-indigo-100 rounded-2xl p-3 items-center justify-center active:opacity-80"
                 activeOpacity={0.7}
               >
-                <Text className="text-xl font-bold text-gray-800 mb-1 font-serif">
-                  Aa
-                </Text>
-                <Text className="text-xs font-semibold text-gray-700">
+                <View className="w-10 h-10 rounded-full bg-indigo-600 items-center justify-center mb-1 shadow-sm">
+                  <Text className="text-white text-lg font-bold font-serif">
+                    Aa
+                  </Text>
+                </View>
+                <Text className="text-xs font-semibold text-gray-800">
                   Text
                 </Text>
               </TouchableOpacity>
 
-              {/* Option 2: Camera */}
+              {/* Camera Snap */}
               <TouchableOpacity
                 onPress={handlePickCamera}
-                className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
+                className="flex-1 bg-blue-50 border border-blue-100 rounded-2xl p-3 items-center justify-center active:opacity-80"
                 activeOpacity={0.7}
               >
-                <Ionicons name="camera-outline" size={24} color="#1F2937" />
-                <Text className="text-xs font-semibold text-gray-700 mt-1">
+                <View className="w-10 h-10 rounded-full bg-blue-600 items-center justify-center mb-1 shadow-sm">
+                  <Ionicons name="camera" size={20} color="#FFFFFF" />
+                </View>
+                <Text className="text-xs font-semibold text-gray-800">
                   Camera
                 </Text>
               </TouchableOpacity>
 
-              {/* Option 3: Gallery */}
+              {/* Browse Gallery / Files */}
               <TouchableOpacity
                 onPress={handlePickGallery}
-                className="flex-1 bg-gray-100 rounded-xl p-4 items-center justify-center active:bg-gray-200"
+                className="flex-1 bg-emerald-50 border border-emerald-100 rounded-2xl p-3 items-center justify-center active:opacity-80"
                 activeOpacity={0.7}
               >
-                <Ionicons
-                  name="images-outline"
-                  size={24}
-                  color="#1F2937"
-                />
-                <Text className="text-xs font-semibold text-gray-700 mt-1">
-                  Gallery
+                <View className="w-10 h-10 rounded-full bg-[#72AF5B] items-center justify-center mb-1 shadow-sm">
+                  <Ionicons name="images" size={20} color="#FFFFFF" />
+                </View>
+                <Text className="text-xs font-semibold text-gray-800">
+                  Browse
                 </Text>
               </TouchableOpacity>
             </View>
 
-            {/* Media Options Section */}
-            <ScrollView
-              showsVerticalScrollIndicator={false}
-              className="flex-1 px-3"
-              contentContainerStyle={{ paddingBottom: 32 }}
-            >
+            {/* Recents Bar */}
+            <View className="flex-row items-center justify-between px-4 py-2 bg-gray-50 border-y border-gray-100">
+              <View className="flex-row items-center">
+                <Text className="text-sm font-bold text-gray-800">Recents</Text>
+                <Ionicons
+                  name="chevron-down"
+                  size={16}
+                  color="#4B5563"
+                  style={{ marginLeft: 4 }}
+                />
+              </View>
               <TouchableOpacity
                 onPress={handlePickGallery}
-                activeOpacity={0.8}
-                className="bg-green-50 border border-green-200 rounded-2xl p-5 mb-3 flex-row items-center"
+                className="px-2.5 py-1 rounded-full bg-white border border-gray-200"
+                activeOpacity={0.7}
               >
-                <View className="w-14 h-14 rounded-full bg-[#72AF5B] items-center justify-center mr-4 shadow-sm">
-                  <Ionicons name="images" size={28} color="#FFFFFF" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-base font-bold text-gray-900">
-                    Choose from Gallery
-                  </Text>
-                  <Text className="text-xs text-gray-600 mt-0.5">
-                    Select photos from your device library to share
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#72AF5B" />
+                <Text className="text-xs font-medium text-gray-600">
+                  Browse all
+                </Text>
               </TouchableOpacity>
+            </View>
 
-              <TouchableOpacity
-                onPress={handlePickCamera}
-                activeOpacity={0.8}
-                className="bg-blue-50 border border-blue-200 rounded-2xl p-5 mb-3 flex-row items-center"
-              >
-                <View className="w-14 h-14 rounded-full bg-blue-500 items-center justify-center mr-4 shadow-sm">
-                  <Ionicons name="camera" size={28} color="#FFFFFF" />
+            {/* Photos Grid or Fallback State */}
+            {loadingDevicePhotos && devicePhotos.length === 0 ? (
+              <View className="flex-1 items-center justify-center py-20">
+                <ActivityIndicator size="large" color="#72AF5B" />
+                <Text className="text-sm text-gray-500 mt-3 font-medium">
+                  Loading photos from your device...
+                </Text>
+              </View>
+            ) : mediaPermissionDenied ? (
+              <View className="flex-1 items-center justify-center px-6 py-12">
+                <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-4">
+                  <Ionicons name="images-outline" size={32} color="#6B7280" />
                 </View>
-                <View className="flex-1">
-                  <Text className="text-base font-bold text-gray-900">
-                    Take Photo
+                <Text className="text-base font-bold text-gray-800 text-center mb-1">
+                  Allow Access to Your Photos
+                </Text>
+                <Text className="text-xs text-gray-500 text-center mb-6 leading-5">
+                  Grant permission to view your device photos and share them directly as stories.
+                </Text>
+                <TouchableOpacity
+                  onPress={() => loadDevicePhotos(true)}
+                  className="bg-[#72AF5B] px-6 py-2.5 rounded-full mb-3"
+                  activeOpacity={0.8}
+                >
+                  <Text className="text-white text-sm font-semibold">
+                    Grant Permission
                   </Text>
-                  <Text className="text-xs text-gray-600 mt-0.5">
-                    Snap a fresh photo of your crops or farm today
+                </TouchableOpacity>
+                <TouchableOpacity
+                  onPress={handlePickGallery}
+                  className="px-4 py-2"
+                  activeOpacity={0.7}
+                >
+                  <Text className="text-xs text-gray-600">
+                    Or select from file picker
                   </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#3B82F6" />
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                onPress={() => {
-                  setSelectedStoryImage(null);
-                  setStoryTextContent("");
-                  setStoryStep("EDIT_STORY");
-                }}
-                activeOpacity={0.8}
-                className="bg-amber-50 border border-amber-200 rounded-2xl p-5 mb-3 flex-row items-center"
-              >
-                <View className="w-14 h-14 rounded-full bg-amber-500 items-center justify-center mr-4 shadow-sm">
-                  <Ionicons name="create" size={28} color="#FFFFFF" />
-                </View>
-                <View className="flex-1">
-                  <Text className="text-base font-bold text-gray-900">
-                    Create Text Story
-                  </Text>
-                  <Text className="text-xs text-gray-600 mt-0.5">
-                    Share an update, announcement, or farming tip
-                  </Text>
-                </View>
-                <Ionicons name="chevron-forward" size={20} color="#F59E0B" />
-              </TouchableOpacity>
-            </ScrollView>
-          </SafeAreaView>
-        ) : storyStep === "PRIVACY_SETTINGS" ? (
-          /* Step 3: WHO CAN SEE POST ? (PRIVACY) VIEW */
-          <View
-            className="flex-1 bg-white justify-between px-5 pt-3 pb-4 h-full"
-            style={{
-              flex: 1,
-              height: "100%",
-              minHeight: "100%",
-              justifyContent: "space-between",
-            }}
-          >
-            {/* Top Content */}
-            <View>
-              {/* Back Arrow Button */}
-              <TouchableOpacity
-                onPress={() => setStoryStep("EDIT_STORY")}
-                className="p-1 -ml-2 mb-2 self-start active:opacity-70"
-                accessibilityRole="button"
-                accessibilityLabel="Go back"
-              >
-                <Ionicons name="chevron-back" size={28} color="#111827" />
-              </TouchableOpacity>
-
-              {/* Header Title */}
-              <Text className="text-2xl font-bold text-gray-900 mb-1.5">
-                Who can see post ?
-              </Text>
-              <Text className="text-sm text-gray-500 mb-8 leading-5">
-                Your post will show up in Feed, on your profile and search
-                result
-              </Text>
-
-              {/* Privacy Options List */}
-              <View className="space-y-4">
-                {[
-                  { id: "Public", title: "Public", icon: "globe" as const },
-                  { id: "Friends", title: "Friends", icon: "people" as const },
-                  {
-                    id: "Only me",
-                    title: "Only me",
-                    icon: "lock-closed" as const,
-                  },
-                ].map((option) => {
-                  const isSelected = storyPrivacy === option.title;
-
+                </TouchableOpacity>
+              </View>
+            ) : (
+              <FlatList
+                data={storyGridItems}
+                keyExtractor={(item) => item.id}
+                numColumns={3}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingBottom: 40 }}
+                renderItem={({ item }) => {
+                  if (item.id === "__camera_tile__") {
+                    return (
+                      <TouchableOpacity
+                        key="__camera_tile__"
+                        onPress={handlePickCamera}
+                        style={{
+                          width: (screenWidth - 4) / 3,
+                          height: (screenWidth - 4) / 3,
+                          margin: 0.6,
+                        }}
+                        className="bg-gray-900 items-center justify-center active:opacity-80"
+                        activeOpacity={0.7}
+                      >
+                        <View className="w-10 h-10 rounded-full bg-white/20 items-center justify-center mb-1">
+                          <Ionicons name="camera" size={22} color="#FFFFFF" />
+                        </View>
+                        <Text className="text-white text-xs font-semibold">
+                          Camera
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  }
                   return (
                     <TouchableOpacity
-                      key={option.id}
-                      onPress={() => setStoryPrivacy(option.title as any)}
-                      className="flex-row items-center py-3.5 active:opacity-70"
-                      activeOpacity={0.7}
+                      key={item.id}
+                      onPress={() => {
+                        setSelectedStoryImage(item.uri);
+                        setStoryStep("EDIT_STORY");
+                      }}
+                      activeOpacity={0.8}
+                      style={{
+                        width: (screenWidth - 4) / 3,
+                        height: (screenWidth - 4) / 3,
+                        margin: 0.6,
+                      }}
+                      className="bg-gray-100"
                     >
-                      <Ionicons
-                        name={option.icon}
-                        size={23}
-                        color={isSelected ? "#111827" : "#4B5563"}
+                      <Image
+                        source={{ uri: item.uri }}
+                        style={{ width: "100%", height: "100%" }}
+                        resizeMode="cover"
                       />
-                      <Text
-                        className={`text-md ml-4 ${
-                          isSelected
-                            ? "font-bold text-gray-900"
-                            : "font-semibold text-gray-800"
-                        }`}
-                      >
-                        {option.title}
-                      </Text>
                     </TouchableOpacity>
                   );
-                })}
-              </View>
-            </View>
+                }}
+                ListEmptyComponent={
+                  <View className="items-center justify-center py-16 px-4">
+                    <Ionicons name="images-outline" size={40} color="#9CA3AF" />
+                    <Text className="text-sm font-semibold text-gray-700 mt-3">
+                      No photos found on device
+                    </Text>
+                    <Text className="text-xs text-gray-400 text-center mt-1 mb-4">
+                      Take a new picture or choose from the system picker
+                    </Text>
+                    <TouchableOpacity
+                      onPress={handlePickGallery}
+                      className="bg-[#72AF5B] px-5 py-2 rounded-full"
+                    >
+                      <Text className="text-white text-xs font-semibold">
+                        Browse Gallery
+                      </Text>
+                    </TouchableOpacity>
+                  </View>
+                }
+                ListFooterComponent={
+                  devicePhotos.length === 0 ? (
+                    <View className="items-center justify-center py-12 px-6">
+                      <View className="w-14 h-14 rounded-full bg-gray-100 items-center justify-center mb-3">
+                        <Ionicons
+                          name="images-outline"
+                          size={28}
+                          color="#9CA3AF"
+                        />
+                      </View>
+                      <Text className="text-sm font-bold text-gray-800 text-center mb-1">
+                        No photos in emulator storage
+                      </Text>
+                      <Text className="text-xs text-gray-500 text-center mb-4 leading-4">
+                        Emulators start with an empty camera roll. Snap a photo with the Camera above, or tap Browse All to select from Google Photos or downloads.
+                      </Text>
+                      <TouchableOpacity
+                        onPress={handlePickGallery}
+                        className="bg-[#72AF5B] px-5 py-2.5 rounded-full shadow-sm active:opacity-80"
+                        activeOpacity={0.8}
+                      >
+                        <Text className="text-white text-xs font-semibold">
+                          Browse All / Google Photos
+                        </Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : null
+                }
+              />
+            )}
+          </SafeAreaView>
+        ) : storyStep === "PRIVACY_SETTINGS" ? (
+          /* Step 3: Story Privacy Settings (Dynamic & Modern) */
+          <SafeAreaView className="flex-1 bg-white">
+            <View className="flex-1 justify-between px-5 pt-2 pb-4 h-full">
+              {/* Top Content */}
+              <View>
+                {/* Back Arrow Button */}
+                <TouchableOpacity
+                  onPress={() => setStoryStep("EDIT_STORY")}
+                  className="w-10 h-10 -ml-2 mb-2 rounded-full items-center justify-center active:bg-gray-100"
+                  accessibilityRole="button"
+                  accessibilityLabel="Go back"
+                >
+                  <Ionicons name="chevron-back" size={28} color="#111827" />
+                </TouchableOpacity>
 
-            {/* Bottom Actions */}
-            <View className="mt-auto pb-2">
-              {/* Set as default audience Row */}
-              <View className="flex-row justify-between items-center mb-3 px-1">
-                <Text className="text-sm text-gray-600 font-medium">
-                  Set as default audience
+                {/* Header Title */}
+                <Text className="text-2xl font-bold text-gray-900 mb-1.5">
+                  Story Privacy
                 </Text>
-                <Switch
-                  value={isDefaultStoryAudience}
-                  onValueChange={setIsDefaultStoryAudience}
-                  trackColor={{ false: "#E5E7EB", true: "#72AF5B" }}
-                  thumbColor="#FFFFFF"
-                />
+                <Text className="text-sm text-gray-500 mb-6 leading-5">
+                  Choose who can see your story. Your story will stay visible on LocalFarm for 24 hours.
+                </Text>
+
+                {/* Privacy Options List */}
+                <View>
+                  {STORY_PRIVACY_OPTIONS.map((option) => {
+                    const isSelected = storyPrivacy === option.title;
+
+                    return (
+                      <TouchableOpacity
+                        key={option.id}
+                        onPress={() => setStoryPrivacy(option.title as any)}
+                        className={`flex-row items-center p-4 rounded-2xl mb-3 border ${
+                          isSelected
+                            ? "bg-green-50/70 border-[#72AF5B]"
+                            : "bg-white border-gray-200"
+                        }`}
+                        activeOpacity={0.7}
+                      >
+                        <View
+                          className={`w-11 h-11 rounded-full items-center justify-center mr-3.5 ${
+                            isSelected ? "bg-[#72AF5B]" : "bg-gray-100"
+                          }`}
+                        >
+                          <Ionicons
+                            name={option.icon}
+                            size={22}
+                            color={isSelected ? "#FFFFFF" : "#4B5563"}
+                          />
+                        </View>
+                        <View className="flex-1 mr-2">
+                          <Text
+                            className={`text-base mb-0.5 ${
+                              isSelected
+                                ? "font-bold text-gray-900"
+                                : "font-semibold text-gray-800"
+                            }`}
+                          >
+                            {option.title}
+                          </Text>
+                          <Text className="text-xs text-gray-500 leading-4">
+                            {option.subtitle}
+                          </Text>
+                        </View>
+                        <Ionicons
+                          name={
+                            isSelected ? "radio-button-on" : "radio-button-off"
+                          }
+                          size={22}
+                          color={isSelected ? "#72AF5B" : "#D1D5DB"}
+                        />
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
 
-              {/* Done Button */}
-              <TouchableOpacity
-                onPress={() => setStoryStep("EDIT_STORY")}
-                className="w-full bg-[#72AF5B] py-3.5 rounded-xl items-center justify-center active:opacity-80 shadow-md"
-                activeOpacity={0.8}
-              >
-                <Text className="text-white font-bold text-base">Done</Text>
-              </TouchableOpacity>
+              {/* Bottom Actions */}
+              <View className="mt-auto pb-2">
+                {/* Set as default audience Row */}
+                <View className="flex-row justify-between items-center mb-4 px-1 py-3 border-t border-gray-100">
+                  <View className="flex-1 mr-3">
+                    <Text className="text-sm text-gray-900 font-semibold">
+                      Set as default audience
+                    </Text>
+                    <Text className="text-xs text-gray-400 mt-0.5">
+                      Remember this privacy setting for future stories
+                    </Text>
+                  </View>
+                  <Switch
+                    value={isDefaultStoryAudience}
+                    onValueChange={(val) => {
+                      setIsDefaultStoryAudience(val);
+                      if (val) {
+                        AsyncStorage.setItem(
+                          "localfarm_default_story_privacy",
+                          storyPrivacy,
+                        ).catch(() => {});
+                      } else {
+                        AsyncStorage.removeItem(
+                          "localfarm_default_story_privacy",
+                        ).catch(() => {});
+                      }
+                    }}
+                    trackColor={{ false: "#E5E7EB", true: "#72AF5B" }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {/* Done Button */}
+                <TouchableOpacity
+                  onPress={handleSaveStoryPrivacy}
+                  className="w-full bg-[#72AF5B] py-3.5 rounded-xl items-center justify-center active:opacity-80 shadow-md"
+                  activeOpacity={0.8}
+                >
+                  <Text className="text-white font-bold text-base">Done</Text>
+                </TouchableOpacity>
+              </View>
             </View>
-          </View>
+          </SafeAreaView>
         ) : (
           /* Step 2: Full Screen Edit Story View */
           <View className="flex-1 bg-black relative">
             {/* Main Media */}
-            {selectedStoryImage ? (
+            {Boolean(selectedStoryImage && selectedStoryImage.trim()) ? (
               <View className="flex-1 w-full relative">
                 <Image
-                  source={{ uri: selectedStoryImage }}
+                  source={{ uri: selectedStoryImage!.trim() }}
                   className="flex-1 w-full"
                   resizeMode="cover"
                 />
@@ -2781,17 +3205,40 @@ export default function NewsFeed() {
                 </View>
               </View>
             ) : (
-              <View className="flex-1 w-full bg-[#1e293b] items-center justify-center p-8">
+              <LinearGradient
+                colors={getStoryGradient(selectedStoryBg)}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                className="flex-1 w-full items-center justify-center p-8 relative"
+              >
                 <TextInput
                   value={storyTextContent}
                   onChangeText={setStoryTextContent}
                   placeholder="Type your story here... ✍️"
-                  placeholderTextColor="#94A3B8"
+                  placeholderTextColor="rgba(255, 255, 255, 0.65)"
                   multiline
                   className="text-white text-2xl font-bold text-center w-full px-4"
                   autoFocus
                 />
-              </View>
+
+                {/* Color Selector Pills */}
+                <View className="absolute bottom-28 flex-row gap-3 items-center justify-center">
+                  {Object.entries(STORY_GRADIENT_PRESETS).map(([key, colors]) => (
+                    <TouchableOpacity
+                      key={key}
+                      onPress={() => setSelectedStoryBg(key)}
+                      className={`w-7 h-7 rounded-full border-2 ${
+                        selectedStoryBg === key
+                          ? "border-white scale-110"
+                          : "border-transparent opacity-80"
+                      }`}
+                      style={{ backgroundColor: colors[1] }}
+                      accessibilityRole="button"
+                      accessibilityLabel={`Select ${key} gradient`}
+                    />
+                  ))}
+                </View>
+              </LinearGradient>
             )}
 
             {/* Top Controls (Absolute) */}
@@ -2896,7 +3343,11 @@ export default function NewsFeed() {
                 accessibilityLabel="Share story"
               >
                 {isSharingStory ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" className="mr-2" />
+                  <ActivityIndicator
+                    size="small"
+                    color="#FFFFFF"
+                    className="mr-2"
+                  />
                 ) : (
                   <>
                     <Text className="text-white font-bold text-base mr-2">
@@ -2955,7 +3406,11 @@ export default function NewsFeed() {
                     className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
                   >
                     <View className="w-10 h-10 rounded-full bg-[#72AF5B] items-center justify-center mr-3">
-                      <Ionicons name="create-outline" size={22} color="#ffffff" />
+                      <Ionicons
+                        name="create-outline"
+                        size={22}
+                        color="#ffffff"
+                      />
                     </View>
                     <View className="flex-1">
                       <Text className="text-sm font-semibold text-gray-900">
@@ -2976,7 +3431,11 @@ export default function NewsFeed() {
                     className="flex-row items-center py-3 px-2 rounded-xl active:bg-gray-100"
                   >
                     <View className="w-10 h-10 rounded-full bg-[#72AF5B] items-center justify-center mr-3">
-                      <Ionicons name="globe-outline" size={22} color="#ffffff" />
+                      <Ionicons
+                        name="globe-outline"
+                        size={22}
+                        color="#ffffff"
+                      />
                     </View>
                     <View className="flex-1">
                       <Text className="text-sm font-semibold text-gray-900">
@@ -2986,7 +3445,11 @@ export default function NewsFeed() {
                         Current: {selectedPostForMenu?.privacy || "Public"}
                       </Text>
                     </View>
-                    <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                    <Ionicons
+                      name="chevron-forward"
+                      size={18}
+                      color="#9CA3AF"
+                    />
                   </TouchableOpacity>
 
                   {/* Delete Post */}
@@ -2998,7 +3461,11 @@ export default function NewsFeed() {
                     className="flex-row items-center py-3 px-2 rounded-xl active:bg-red-50"
                   >
                     <View className="w-10 h-10 rounded-full bg-[#E45742] items-center justify-center mr-3">
-                      <Ionicons name="trash-outline" size={22} color="#ffffff" />
+                      <Ionicons
+                        name="trash-outline"
+                        size={22}
+                        color="#ffffff"
+                      />
                     </View>
                     <View className="flex-1">
                       <Text className="text-sm font-semibold text-red-600">
@@ -3074,7 +3541,6 @@ export default function NewsFeed() {
           </Animated.View>
         </Pressable>
       </Modal>
-
 
       {/* 2. Edit Post Modal */}
       <Modal
@@ -3485,9 +3951,9 @@ export default function NewsFeed() {
                                     isReply ? "h-7 w-7" : "h-8 w-8"
                                   } rounded-full mr-2.5 bg-gray-200 items-center justify-center overflow-hidden border border-gray-100`}
                                 >
-                                  {comment.avatarUri ? (
+                                  {Boolean(comment.avatarUri && comment.avatarUri.trim()) ? (
                                     <Image
-                                      source={{ uri: comment.avatarUri }}
+                                      source={{ uri: comment.avatarUri!.trim() }}
                                       style={{
                                         width: "100%",
                                         height: "100%",
@@ -3804,58 +4270,138 @@ export default function NewsFeed() {
         statusBarTranslucent={true}
         onRequestClose={handleCloseLightbox}
       >
-        <View className="flex-1 bg-black/95 justify-between relative">
-          {/* Top Bar with Close Button */}
-          <View
-            style={{ paddingTop: Math.max(insets.top, 16) + 8 }}
-            className="px-4 pb-3 flex-row items-center justify-end z-20"
-          >
-            <TouchableOpacity
-              onPress={handleCloseLightbox}
-              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center active:bg-white/30"
-              accessibilityRole="button"
-              accessibilityLabel="Close image preview"
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            >
-              <Ionicons name="close" size={24} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
+        {(() => {
+          if (!previewImage) return null;
+          const imagesList =
+            previewImage.images && previewImage.images.length > 0
+              ? previewImage.images.filter((img) => Boolean(typeof img === "string" ? img.trim() : img))
+              : previewImage.uri && previewImage.uri.trim()
+                ? [previewImage.uri.trim()]
+                : previewImage.source
+                  ? [previewImage.source]
+                  : [];
 
-          {/* Centered Image with Tap-to-close on background */}
-          <Pressable
-            className="flex-1 items-center justify-center px-2"
-            onPress={handleCloseLightbox}
-          >
-            {previewImage && (
-              <Image
-                source={
-                  previewImage.uri
-                    ? { uri: previewImage.uri }
-                    : previewImage.source
-                }
-                style={{ width: "100%", height: "100%" }}
-                resizeMode="contain"
-              />
-            )}
-          </Pressable>
-
-          {/* Bottom Caption (if available) */}
-          {previewImage?.caption ? (
-            <View
-              style={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
-              className="bg-black/75 border-t border-white/10 z-10 px-5 pt-3 pb-2"
-            >
-              <ScrollView
-                style={{ maxHeight: 90 }}
-                showsVerticalScrollIndicator={false}
+          return (
+            <View className="flex-1 bg-black/95 justify-between relative">
+              {/* Top Bar with Pagination Counter & Close Button */}
+              <View
+                style={{ paddingTop: Math.max(insets.top, 16) + 8 }}
+                className="px-4 pb-3 flex-row items-center justify-between z-20"
               >
-                <Text className="text-white/95 text-sm leading-5">
-                  {previewImage.caption}
-                </Text>
-              </ScrollView>
+                {imagesList.length > 1 ? (
+                  <View className="bg-white/20 px-3 py-1 rounded-full">
+                    <Text className="text-white text-xs font-semibold">
+                      {(previewImage.currentIndex ?? 0) + 1} / {imagesList.length}
+                    </Text>
+                  </View>
+                ) : (
+                  <View className="w-10" />
+                )}
+
+                <TouchableOpacity
+                  onPress={handleCloseLightbox}
+                  className="w-10 h-10 rounded-full bg-white/20 items-center justify-center active:bg-white/30"
+                  accessibilityRole="button"
+                  accessibilityLabel="Close image preview"
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                  <Ionicons name="close" size={24} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Horizontal Swipeable Image Gallery (Slide Left / Right) */}
+              <View className="flex-1 justify-center relative">
+                <FlatList
+                  ref={lightboxListRef}
+                  data={imagesList}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  initialScrollIndex={
+                    previewImage.currentIndex &&
+                    previewImage.currentIndex >= 0 &&
+                    previewImage.currentIndex < imagesList.length
+                      ? previewImage.currentIndex
+                      : 0
+                  }
+                  getItemLayout={(_, index) => ({
+                    length: screenWidth,
+                    offset: screenWidth * index,
+                    index,
+                  })}
+                  onScrollToIndexFailed={(info) => {
+                    setTimeout(() => {
+                      lightboxListRef.current?.scrollToOffset({
+                        offset: info.index * screenWidth,
+                        animated: false,
+                      });
+                    }, 50);
+                  }}
+                  onMomentumScrollEnd={(e) => {
+                    const offsetX = e.nativeEvent.contentOffset.x;
+                    const newIdx = Math.round(offsetX / screenWidth);
+                    if (
+                      newIdx >= 0 &&
+                      newIdx < imagesList.length &&
+                      newIdx !== previewImage.currentIndex
+                    ) {
+                      setPreviewImage((prev) =>
+                        prev ? { ...prev, currentIndex: newIdx } : null,
+                      );
+                    }
+                  }}
+                  keyExtractor={(_, idx) => `lightbox-feed-img-${idx}`}
+                  renderItem={({ item }) => (
+                    <Pressable
+                      style={{ width: screenWidth }}
+                      className="flex-1 items-center justify-center px-2"
+                      onPress={handleCloseLightbox}
+                    >
+                      <Image
+                        source={typeof item === "string" ? { uri: item } : item}
+                        style={{ width: "100%", height: "100%" }}
+                        resizeMode="contain"
+                      />
+                    </Pressable>
+                  )}
+                />
+              </View>
+
+              {/* Dot Indicators for multi-image gallery */}
+              {imagesList.length > 1 && (
+                <View className="flex-row justify-center items-center gap-1.5 pb-2 z-20">
+                  {imagesList.map((_, dotIdx) => (
+                    <View
+                      key={dotIdx}
+                      className={`h-1.5 rounded-full ${
+                        dotIdx === (previewImage.currentIndex ?? 0)
+                          ? "w-5 bg-white"
+                          : "w-1.5 bg-white/40"
+                      }`}
+                    />
+                  ))}
+                </View>
+              )}
+
+              {/* Bottom Caption (if available) */}
+              {previewImage?.caption ? (
+                <View
+                  style={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
+                  className="bg-black/75 border-t border-white/10 z-10 px-5 pt-3 pb-2"
+                >
+                  <ScrollView
+                    style={{ maxHeight: 90 }}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <Text className="text-white/95 text-sm leading-5">
+                      {previewImage.caption}
+                    </Text>
+                  </ScrollView>
+                </View>
+              ) : null}
             </View>
-          ) : null}
-        </View>
+          );
+        })()}
       </Modal>
 
       {/* Create Post Modal */}
@@ -3863,6 +4409,17 @@ export default function NewsFeed() {
         isVisible={isCreatePostVisible}
         onClose={() => setCreatePostVisible(false)}
         onPost={handleNewPostCreated}
+      />
+
+      {/* Live Stream Viewer Simulation Modal */}
+      <LiveViewerModal
+        isVisible={isLiveViewerVisible}
+        onClose={() => setIsLiveViewerVisible(false)}
+        authorName={liveViewerData.authorName}
+        authorAvatar={liveViewerData.authorAvatar}
+        streamTitle={liveViewerData.streamTitle}
+        location={liveViewerData.location}
+        isReplay={liveViewerData.isReplay}
       />
 
       {/* Bottom Navigation Bar */}

@@ -1,4 +1,4 @@
-import { apiFetch } from "@/lib/api";
+import { apiFetch, getAuthToken } from "@/lib/api";
 
 export interface ConnectionRequestItem {
   id: string; // connection_id
@@ -63,10 +63,16 @@ export interface NearbyUserItem {
 
 
 export async function getConnectionRequestsApi(): Promise<ConnectionRequestItem[]> {
-  const res = await apiFetch<{ requests: ConnectionRequestItem[]; count: number }>(
-    "/connections/requests"
-  );
-  return res.requests || [];
+  const token = await getAuthToken();
+  if (!token) return [];
+  try {
+    const res = await apiFetch<{ requests: ConnectionRequestItem[]; count: number }>(
+      "/connections/requests"
+    );
+    return res.requests || [];
+  } catch {
+    return [];
+  }
 }
 
 export async function respondToConnectionRequestApi(
@@ -80,22 +86,40 @@ export async function respondToConnectionRequestApi(
 }
 
 export async function getFriendsApi(): Promise<FriendItem[]> {
-  const res = await apiFetch<{ friends: FriendItem[]; count: number }>("/connections/friends");
-  return res.friends || [];
+  const token = await getAuthToken();
+  if (!token) return [];
+  try {
+    const res = await apiFetch<{ friends: FriendItem[]; count: number }>("/connections/friends");
+    return res.friends || [];
+  } catch {
+    return [];
+  }
 }
 
 export async function getSuggestionsApi(): Promise<SuggestionUserItem[]> {
-  const res = await apiFetch<{ suggestions: SuggestionUserItem[]; count: number }>(
-    "/connections/suggestions"
-  );
-  return res.suggestions || [];
+  const token = await getAuthToken();
+  if (!token) return [];
+  try {
+    const res = await apiFetch<{ suggestions: SuggestionUserItem[]; count: number }>(
+      "/connections/suggestions"
+    );
+    return res.suggestions || [];
+  } catch {
+    return [];
+  }
 }
 
 export async function getSentRequestsApi(): Promise<SentRequestItem[]> {
-  const res = await apiFetch<{ sentRequests: SentRequestItem[]; count: number }>(
-    "/connections/sent"
-  );
-  return res.sentRequests || [];
+  const token = await getAuthToken();
+  if (!token) return [];
+  try {
+    const res = await apiFetch<{ sentRequests: SentRequestItem[]; count: number }>(
+      "/connections/sent"
+    );
+    return res.sentRequests || [];
+  } catch {
+    return [];
+  }
 }
 
 export async function searchUsersToConnectApi(

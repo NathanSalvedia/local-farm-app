@@ -1,4 +1,4 @@
-import React, { useEffect } from "react";
+import React, { useEffect, useRef } from "react";
 import { Platform, StyleSheet, View } from "react-native";
 import { WebView } from "react-native-webview";
 
@@ -6,7 +6,6 @@ export interface LeafletMapProps {
   latitude?: number;
   longitude?: number;
   zoom?: number;
-  popupImage?: string;
   locationTitle?: string;
   interactive?: boolean;
   onLocationSelect?: (lat: number, lng: number) => void;
@@ -16,11 +15,13 @@ export default function LeafletMap({
   latitude = 8.228,
   longitude = 124.2452,
   zoom = 14,
-  popupImage = "https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=300&q=80",
   locationTitle,
   interactive = true,
   onLocationSelect,
 }: LeafletMapProps) {
+  const webViewRef = useRef<WebView>(null);
+  const iframeRef = useRef<any>(null);
+  const isFirstRender = useRef(true);
   const isInteractive = interactive !== false;
   const escapedTitle = (locationTitle || "Location").replace(/'/g, "\\'");
   const leafletHtml = `
@@ -42,41 +43,24 @@ export default function LeafletMap({
           pointer-events: auto;
           cursor: pointer;
         }
-        .popup-card {
-          min-width: 100px;
-          max-width: 140px;
-          height: 65px;
-          border-radius: 10px;
-          overflow: hidden;
-          border: 2px solid white;
-          box-shadow: 0 4px 12px rgba(0,0,0,0.3);
-          background: #e2e8f0;
-          margin-bottom: 2px;
-          position: relative;
-        }
-        .popup-card img {
-          width: 100%;
-          height: 100%;
-          object-fit: cover;
-          display: block;
-        }
         .pin-label-bar {
-          position: absolute;
-          bottom: 0;
-          left: 0;
-          right: 0;
-          background: rgba(0,0,0,0.65);
-          color: #ffffff;
-          font-size: 8px;
-          font-weight: bold;
-          padding: 2px 4px;
+          background: #ffffff;
+          color: #1f2937;
+          font-size: 11px;
+          font-weight: 700;
+          padding: 4px 10px;
+          border-radius: 9999px;
+          border: 1.5px solid #72AF5B;
+          box-shadow: 0 4px 10px rgba(0,0,0,0.18);
           white-space: nowrap;
+          max-width: 170px;
           overflow: hidden;
           text-overflow: ellipsis;
           text-align: center;
+          margin-bottom: 3px;
         }
         .pin-icon {
-          filter: drop-shadow(0 2px 5px rgba(0,0,0,0.35));
+          filter: drop-shadow(0 3px 6px rgba(0,0,0,0.3));
         }
       </style>
     </head>
@@ -99,11 +83,8 @@ export default function LeafletMap({
         var customIcon = L.divIcon({
           className: 'custom-leaflet-marker',
           html: '<div class="custom-pin-container">' +
-                  '<div class="popup-card">' +
-                    '<img src="${popupImage}" alt="Location Preview" />' +
-                    '<div class="pin-label-bar">${escapedTitle}</div>' +
-                  '</div>' +
-                  '<svg class="pin-icon" width="28" height="28" viewBox="0 0 24 24" fill="#16a34a" xmlns="http://www.w3.org/2000/svg">' +
+                  '<div class="pin-label-bar">${escapedTitle}</div>' +
+                  '<svg class="pin-icon" width="34" height="34" viewBox="0 0 24 24" fill="#72AF5B" xmlns="http://www.w3.org/2000/svg">' +
                     '<path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/>' +
                   '</svg>' +
                 '</div>',
@@ -112,6 +93,30 @@ export default function LeafletMap({
         });
 
         var marker = L.marker([${latitude}, ${longitude}], { icon: customIcon }).addTo(map);
+
+        window.leafletMap = map;
+        window.leafletMarker = marker;
+
+        function updatePin(lat, lng, title) {
+          if (map && marker) {
+            map.flyTo([lat, lng], 15, { animate: true, duration: 0.8 });
+            marker.setLatLng([lat, lng]);
+            if (title) {
+              var el = document.querySelector('.pin-label-bar');
+              if (el) el.textContent = title;
+            }
+          }
+        }
+        window.updatePin = updatePin;
+
+        window.addEventListener('message', function(e) {
+          try {
+            var d = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+            if (d && d.type === 'UPDATE_PIN' && d.latitude && d.longitude) {
+              updatePin(d.latitude, d.longitude, d.title);
+            }
+          } catch(err) {}
+        });
 
         setTimeout(function() {
           map.invalidateSize();
@@ -147,6 +152,33 @@ export default function LeafletMap({
   };
 
   useEffect(() => {
+    if (isFirstRender.current) {
+      isFirstRender.current = false;
+      return;
+    }
+    const safeTitle = escapedTitle.replace(/"/g, '\\"');
+    if (Platform.OS === "web") {
+      iframeRef.current?.contentWindow?.postMessage?.(
+        {
+          type: "UPDATE_PIN",
+          latitude,
+          longitude,
+          title: locationTitle,
+        },
+        "*",
+      );
+    } else {
+      const js = `
+        if (typeof window.updatePin === 'function') {
+          window.updatePin(${latitude}, ${longitude}, "${safeTitle}");
+        }
+        true;
+      `;
+      webViewRef.current?.injectJavaScript(js);
+    }
+  }, [latitude, longitude, escapedTitle, locationTitle]);
+
+  useEffect(() => {
     if (Platform.OS !== "web") return;
     const handleWebMessage = (event: MessageEvent) => {
       try {
@@ -167,6 +199,7 @@ export default function LeafletMap({
     <View style={styles.container}>
       {Platform.OS === "web" ? (
         <iframe
+          ref={iframeRef}
           srcDoc={leafletHtml}
           style={{
             width: "100%",
@@ -178,6 +211,7 @@ export default function LeafletMap({
         />
       ) : (
         <WebView
+          ref={webViewRef}
           originWhitelist={["*"]}
           source={{ html: leafletHtml }}
           onMessage={handleNativeMessage}

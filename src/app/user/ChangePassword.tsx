@@ -94,6 +94,27 @@ export default function ChangePassword() {
       showToast("New password must be at least 8 characters long.", "warning");
       return;
     }
+    if (!hasUppercase) {
+      showToast(
+        "New password must contain at least one uppercase letter (A–Z).",
+        "warning",
+      );
+      return;
+    }
+    if (!hasNumber) {
+      showToast(
+        "New password must contain at least one number (0–9).",
+        "warning",
+      );
+      return;
+    }
+    if (!hasSpecial) {
+      showToast(
+        "New password must contain at least one special character (!@#$).",
+        "warning",
+      );
+      return;
+    }
     if (newPassword !== confirmPassword) {
       showToast("New passwords do not match.", "warning");
       return;
@@ -108,8 +129,11 @@ export default function ChangePassword() {
 
     setIsSubmitting(true);
     try {
-      await changePasswordApi(currentPassword, newPassword);
-      showToast("Password updated successfully!", "success");
+      const res = await changePasswordApi(currentPassword, newPassword);
+      showToast(
+        res.message || "Password updated! Other devices have been logged out.",
+        "success",
+      );
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");

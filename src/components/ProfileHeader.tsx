@@ -17,7 +17,7 @@ export interface ProfileHeaderProps {
 
 export const ProfileHeader: React.FC<ProfileHeaderProps> = ({
   coverPhotoUri = "https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=1000&auto=format&fit=crop&q=80",
-  avatarUri = "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
+  avatarUri,
   isOwnProfile = false,
   isVerified = false,
   isUpdatingCover = false,
@@ -124,12 +124,16 @@ export const ProfileHeader: React.FC<ProfileHeaderProps> = ({
 
       {/* Avatar */}
       <View className="absolute -bottom-10 left-4 z-10">
-        <View className="w-24 h-24 rounded-full border-4 border-white bg-gray-300 items-center justify-center overflow-hidden">
-          <Image
-            source={{ uri: avatarUri }}
-            className="w-full h-full"
-            resizeMode="cover"
-          />
+        <View className="w-24 h-24 rounded-full border-4 border-white bg-gray-200 items-center justify-center overflow-hidden">
+          {avatarUri ? (
+            <Image
+              source={{ uri: avatarUri }}
+              className="w-full h-full"
+              resizeMode="cover"
+            />
+          ) : (
+            <Ionicons name="person" size={48} color="#6B7280" />
+          )}
         </View>
 
         {/* Camera icon on bottom right of avatar if own profile */}

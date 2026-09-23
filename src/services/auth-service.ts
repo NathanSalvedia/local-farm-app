@@ -4,6 +4,7 @@ import {
   removeAuthToken,
   getAuthToken,
 } from "@/lib/api";
+import { getClientDeviceInfo } from "@/utils/device-info";
 
 export type UserRole = "user" | "admin";
 
@@ -22,20 +23,32 @@ export interface User {
   coverPhotoUrl?: string;
   bio?: string;
   about?: string;
+  location?: string;
+  farmName?: string;
+  farmLocation?: string;
+  primaryCrops?: string;
+  roleId?: number;
+  twoFactorEnabled?: boolean;
+  twoFactorMethod?: "none" | "email" | "authenticator" | string;
+  createdAt?: string;
 }
 
 export interface AuthResponse {
-  user: User;
-  token?: string;
   message?: string;
+  token?: string;
+  user?: User;
+  requires2FA?: boolean;
+  method?: string;
+  email?: string;
+  devOtp?: string;
 }
 
 export interface SignUpParams {
-  name: string;
-  email: string;
-  password: string;
+  name?: string;
   firstName?: string;
   lastName?: string;
+  email: string;
+  password?: string;
   username?: string;
   phoneNumber?: string;
   gender?: string;
@@ -46,11 +59,13 @@ export async function loginApi(
   email: string,
   password: string,
 ): Promise<AuthResponse> {
+  const deviceInfo = await getClientDeviceInfo();
   const response = await apiFetch<AuthResponse>("/auth/login", {
     method: "POST",
     body: JSON.stringify({
       email: email.trim(),
       password,
+      deviceInfo,
     }),
   });
 
@@ -66,6 +81,7 @@ export async function signUpApi(
   email?: string,
   password?: string,
 ): Promise<AuthResponse> {
+  const deviceInfo = await getClientDeviceInfo();
   let payload: Record<string, any> = {};
 
   if (typeof params === "object") {
@@ -79,6 +95,7 @@ export async function signUpApi(
       phoneNumber: params.phoneNumber,
       gender: params.gender,
       role: params.role || (params.email.toLowerCase().includes("admin") ? "admin" : "user"),
+      deviceInfo,
     };
   } else {
     payload = {
@@ -86,6 +103,7 @@ export async function signUpApi(
       email: (email || "").trim(),
       password: password || "",
       role: (email || "").toLowerCase().includes("admin") ? "admin" : "user",
+      deviceInfo,
     };
   }
 
@@ -117,6 +135,9 @@ export async function getCurrentUserApi(): Promise<User | null> {
 }
 
 export async function logoutApi(): Promise<void> {
+  try {
+    await apiFetch("/auth/logout", { method: "POST" });
+  } catch {}
   await removeAuthToken();
 }
 
@@ -205,6 +226,143 @@ export async function changePasswordApi(
   return await apiFetch<{ message: string }>("/auth/change-password", {
     method: "POST",
     body: JSON.stringify({ currentPassword, newPassword }),
+  });
+}
+
+export interface UserProfileResponse {
+  user: User;
+  relationship: "none" | "pending_sent" | "pending_received" | "accepted" | "blocked";
+  connectionId?: string | null;
+  postsCount: number;
+  friendsCount: number;
+}
+
+export async function getUserProfileByIdApi(
+  userId: string,
+): Promise<UserProfileResponse | null> {
+  try {
+    return await apiFetch<UserProfileResponse>(`/users/${userId}`);
+  } catch (err) {
+    console.warn("Failed to fetch user profile by ID:", err);
+    return null;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// TWO-FACTOR AUTHENTICATION (2FA) API
+// -----------------------------------------------------------------------------
+
+export async function verify2FALoginApi(
+  email: string,
+  otp: string,
+): Promise<{ message: string; user: User; token: string }> {
+  const deviceInfo = await getClientDeviceInfo();
+  const response = await apiFetch<{ message: string; user: User; token: string }>(
+    "/auth/2fa/verify-login",
+    {
+      method: "POST",
+      body: JSON.stringify({ email: email.trim(), otp: otp.trim(), deviceInfo }),
+    },
+  );
+
+  if (response.token) {
+    await setAuthToken(response.token);
+  }
+
+  return response;
+}
+
+export async function send2FASetupOtpApi(): Promise<{
+  message: string;
+  email: string;
+  devOtp?: string;
+}> {
+  return await apiFetch<{ message: string; email: string; devOtp?: string }>(
+    "/auth/2fa/send-setup-otp",
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function confirm2FASetupApi(
+  otp: string,
+  method: string = "email",
+): Promise<{
+  message: string;
+  twoFactorEnabled: boolean;
+  twoFactorMethod: string;
+  user: User;
+}> {
+  return await apiFetch<{
+    message: string;
+    twoFactorEnabled: boolean;
+    twoFactorMethod: string;
+    user: User;
+  }>("/auth/2fa/confirm-setup", {
+    method: "POST",
+    body: JSON.stringify({ otp: otp.trim(), method }),
+  });
+}
+
+export async function disable2FAApi(): Promise<{
+  message: string;
+  twoFactorEnabled: boolean;
+  twoFactorMethod: string;
+  user: User;
+}> {
+  return await apiFetch<{
+    message: string;
+    twoFactorEnabled: boolean;
+    twoFactorMethod: string;
+    user: User;
+  }>("/auth/2fa/disable", {
+    method: "POST",
+  });
+}
+
+export async function resend2FAOtpApi(
+  email?: string,
+  type: "2fa_login" | "2fa_setup" = "2fa_login",
+): Promise<{ message: string; devOtp?: string }> {
+  return await apiFetch<{ message: string; devOtp?: string }>(
+    "/auth/2fa/resend",
+    {
+      method: "POST",
+      body: JSON.stringify({ email: email ? email.trim() : undefined, type }),
+    },
+  );
+}
+
+export async function getGoogleAuthSetupApi(): Promise<{
+  secret: string;
+  otpauthUrl: string;
+  accountName: string;
+}> {
+  return await apiFetch<{
+    secret: string;
+    otpauthUrl: string;
+    accountName: string;
+  }>("/auth/2fa/authenticator/setup");
+}
+
+export async function confirmGoogleAuthSetupApi(
+  token: string,
+  secret: string,
+): Promise<{
+  message: string;
+  twoFactorEnabled: boolean;
+  twoFactorMethod: string;
+  user: User;
+}> {
+  return await apiFetch<{
+    message: string;
+    twoFactorEnabled: boolean;
+    twoFactorMethod: string;
+    user: User;
+  }>("/auth/2fa/authenticator/confirm", {
+    method: "POST",
+    body: JSON.stringify({ token: token.trim(), secret: secret.trim() }),
   });
 }
 

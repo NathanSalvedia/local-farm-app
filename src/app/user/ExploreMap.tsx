@@ -1450,6 +1450,8 @@ export default function ExploreMap() {
                   router.push({
                     pathname: "/user/ChatConversation",
                     params: {
+                      userId: String(selectedLocation.id || ""),
+                      farmerId: String(selectedLocation.id || ""),
                       name:
                         selectedLocation.farmerName || selectedLocation.title,
                       avatarUrl: selectedLocation.imageUrl,

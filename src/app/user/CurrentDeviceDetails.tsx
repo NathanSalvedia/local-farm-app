@@ -1,11 +1,40 @@
 import { useAuth } from "@/hooks/use-auth";
+import { ActiveSession } from "@/services/device-service";
+import { getClientDeviceInfo } from "@/utils/device-info";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { Alert, ScrollView, Text, TouchableOpacity, View } from "react-native";
+import { router, useLocalSearchParams } from "expo-router";
+import React, { useEffect, useState } from "react";
+import {
+  Alert,
+  ScrollView,
+  Text,
+  TouchableOpacity,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 export default function CurrentDeviceDetails() {
   const { signOut } = useAuth();
+  const params = useLocalSearchParams<{ session?: string }>();
+
+  const [session, setSession] = useState<ActiveSession | null>(() => {
+    if (params.session) {
+      try {
+        return JSON.parse(params.session);
+      } catch {}
+    }
+    return null;
+  });
+
+  const [detectedOs, setDetectedOs] = useState("");
+  const [detectedName, setDetectedName] = useState("");
+
+  useEffect(() => {
+    getClientDeviceInfo().then((info) => {
+      setDetectedName(info.deviceName);
+      setDetectedOs(`${info.osName} ${info.osVersion}`.trim());
+    });
+  }, []);
 
   const handleBack = () => {
     try {
@@ -42,12 +71,40 @@ export default function CurrentDeviceDetails() {
               router.replace("/auth/Login" as any);
             } catch (e) {
               console.warn("Logout error:", e);
+              router.replace("/auth/Login" as any);
             }
           },
         },
       ],
     );
   };
+
+  const getDeviceIcon = (
+    type?: "phone" | "tablet" | "desktop",
+  ): keyof typeof Ionicons.glyphMap => {
+    if (type === "desktop") return "laptop-outline";
+    if (type === "tablet") return "tablet-portrait-outline";
+    return "phone-portrait-outline";
+  };
+
+  const displayName =
+    session?.deviceName || session?.name || detectedName || "This Device";
+  const displayOs =
+    (session?.osName ? `${session.osName} ${session.osVersion || ""}`.trim() : "") ||
+    detectedOs ||
+    "Mobile OS";
+  const displayApp = session?.browserOrApp || "LocalFarm Mobile App";
+  const displayLocation = session?.location || "Iligan City, Lanao Del Norte";
+  const displayIp = session?.ipAddress || "127.0.0.1";
+  const displayDate = session?.createdAt
+    ? new Date(session.createdAt).toLocaleDateString("en-US", {
+        month: "long",
+        day: "numeric",
+        year: "numeric",
+        hour: "numeric",
+        minute: "numeric",
+      })
+    : "Current Session";
 
   return (
     <SafeAreaView
@@ -80,7 +137,7 @@ export default function CurrentDeviceDetails() {
             {/* Device Icon Badge */}
             <View className="w-14 h-14 rounded-2xl bg-[#72AF5B] items-center justify-center mr-4 shadow-xs">
               <Ionicons
-                name="phone-portrait-outline"
+                name={getDeviceIcon(session?.deviceType)}
                 size={28}
                 color="#FFFFFF"
               />
@@ -89,7 +146,7 @@ export default function CurrentDeviceDetails() {
             {/* Device Specs & Status */}
             <View className="flex-1">
               <Text className="text-xl font-bold text-gray-900 leading-tight">
-                HONOR X8d
+                {displayName}
               </Text>
 
               {/* Status Badges */}
@@ -97,7 +154,11 @@ export default function CurrentDeviceDetails() {
                 <View className="flex-row items-center gap-1 bg-white px-2 py-0.5 rounded-md border border-[#72AF5B]">
                   <Ionicons name="checkmark-circle" size={12} color="#72AF5B" />
                   <Text className="text-sm font-bold text-[#72AF5B]">
-                    This Phone
+                    {session?.deviceType === "desktop"
+                      ? "This PC"
+                      : session?.deviceType === "tablet"
+                      ? "This Tablet"
+                      : "This Phone"}
                   </Text>
                 </View>
 
@@ -128,7 +189,27 @@ export default function CurrentDeviceDetails() {
           </Text>
 
           <View className="bg-white rounded-2xl border border-gray-100 shadow-2xs overflow-hidden">
-            {/* Row 1: Approximate Location */}
+            {/* Row 1: Operating System & Client */}
+            <View className="p-4 flex-row items-center justify-between border-b border-gray-50">
+              <View className="flex-row items-center gap-3">
+                <View className="w-8 h-8 rounded-xl bg-gray-100 items-center justify-center">
+                  <Ionicons name="hardware-chip-outline" size={18} color="#72AF5B" />
+                </View>
+                <View>
+                  <Text className="text-xs text-gray-500 font-medium">
+                    System & Application
+                  </Text>
+                  <Text className="text-sm font-bold text-gray-900 mt-0.5">
+                    {displayOs}
+                  </Text>
+                  <Text className="text-[11px] text-gray-400">
+                    {displayApp}
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            {/* Row 2: Approximate Location */}
             <View className="p-4 flex-row items-center justify-between border-b border-gray-50">
               <View className="flex-row items-center gap-3">
                 <View className="w-8 h-8 rounded-xl bg-gray-100 items-center justify-center">
@@ -139,16 +220,16 @@ export default function CurrentDeviceDetails() {
                     Approximate Location
                   </Text>
                   <Text className="text-sm font-bold text-gray-900 mt-0.5">
-                    Iligan City, Lanao del Norte
+                    {displayLocation}
                   </Text>
                   <Text className="text-[11px] text-gray-400">
-                    Northern Mindanao, Philippines
+                    IP Address: {displayIp}
                   </Text>
                 </View>
               </View>
             </View>
 
-            {/* Row 4: Initial Sign-in */}
+            {/* Row 3: Initial Sign-in */}
             <View className="p-4 flex-row items-center justify-between">
               <View className="flex-row items-center gap-3">
                 <View className="w-8 h-8 rounded-xl bg-gray-100 items-center justify-center">
@@ -156,10 +237,10 @@ export default function CurrentDeviceDetails() {
                 </View>
                 <View>
                   <Text className="text-xs text-gray-500 font-medium">
-                    First Authorized
+                    Authorized At
                   </Text>
                   <Text className="text-sm font-bold text-gray-900 mt-0.5">
-                    April 22, 2026 • 9:14 AM
+                    {displayDate}
                   </Text>
                 </View>
               </View>
@@ -170,7 +251,7 @@ export default function CurrentDeviceDetails() {
         {/* Section 2: Recent Activity Timeline */}
         <View className="mb-5">
           <Text className="text-xs font-bold text-gray-500 uppercase tracking-wider mb-2.5 px-1">
-            Recent Activity on this Phone
+            Recent Activity on this Device
           </Text>
 
           <View className="bg-white rounded-2xl p-4 border border-gray-100 shadow-2xs">
@@ -182,7 +263,7 @@ export default function CurrentDeviceDetails() {
                   Active Session
                 </Text>
                 <Text className="text-xs text-gray-600 mt-0.5">
-                  Iligan City, Philippines • Just now
+                  {displayLocation} • Just now
                 </Text>
               </View>
             </View>

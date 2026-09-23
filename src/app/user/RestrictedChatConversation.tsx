@@ -1,7 +1,16 @@
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { useState } from "react";
 import {
+  ChatMessage,
+  getMessagesApi,
+  restrictUserApi,
+} from "@/services/chat-service";
+import { Ionicons } from "@expo/vector-icons";
+import { useLocalSearchParams, useRouter } from "expo-router";
+import React, { useEffect, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
+  Platform,
   ScrollView,
   Text,
   TouchableOpacity,
@@ -9,52 +18,42 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-interface Message {
-  id: string;
-  sender: "user" | "other";
-  text: string;
-  showAvatar?: boolean;
-}
-
-const MOCK_MESSAGES: Message[] = [
-  {
-    id: "1",
-    sender: "other",
-    text: "boanga ato uy swak ang gatas unya milo diay HAHHAHAHAAHAHAHA",
-    showAvatar: false,
-  },
-  {
-    id: "2",
-    sender: "user",
-    text: "HAHHAHAHAAHAHAHAH",
-  },
-  {
-    id: "3",
-    sender: "user",
-    text: "taga aha diay daw to ana sya?",
-  },
-  {
-    id: "4",
-    sender: "other",
-    text: "wala ko kabalo raba. ask sya",
-    showAvatar: true,
-  },
-  {
-    id: "5",
-    sender: "user",
-    text: "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis",
-  },
-  {
-    id: "6",
-    sender: "other",
-    text: "AJAHAJ DUHHHHHHHHHH",
-    showAvatar: true,
-  },
-];
-
 export default function RestrictedChatConversation() {
   const router = useRouter();
+  const params = useLocalSearchParams<{
+    userId?: string;
+    name?: string;
+    avatarUrl?: string;
+    conversationId?: string;
+  }>();
+
+  const otherUserId = params.userId;
+  const otherUserName = params.name || "User";
+  const otherUserAvatar = params.avatarUrl || "";
+  const conversationId = params.conversationId;
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
   const [isRestricted, setIsRestricted] = useState(true);
+
+  const fetchMessages = async () => {
+    try {
+      setIsLoading(true);
+      const data = await getMessagesApi({
+        conversationId: conversationId || undefined,
+        userId: otherUserId,
+      });
+      setMessages(data.messages || []);
+    } catch (e) {
+      console.warn("Failed to load restricted chat messages:", e);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchMessages();
+  }, [conversationId, otherUserId]);
 
   const handleBack = () => {
     try {
@@ -68,11 +67,21 @@ export default function RestrictedChatConversation() {
     }
   };
 
-  const handleUnrestrict = () => {
-    setIsRestricted(false);
-    setTimeout(() => {
-      handleBack();
-    }, 400);
+  const handleUnrestrict = async () => {
+    if (!otherUserId) return;
+    try {
+      setIsRestricted(false);
+      await restrictUserApi(otherUserId, false);
+      const msg = `${otherUserName} has been unrestricted.`;
+      if (Platform.OS === "web") {
+        window.alert(msg);
+      } else {
+        Alert.alert("Unrestricted", msg);
+      }
+      setTimeout(handleBack, 400);
+    } catch {
+      setIsRestricted(true);
+    }
   };
 
   return (
@@ -80,115 +89,114 @@ export default function RestrictedChatConversation() {
       className="flex-1 bg-white relative"
       style={{ flex: 1, backgroundColor: "#FFFFFF" }}
     >
-      {/*  Top Header  */}
+      {/* Top Header */}
       <View className="flex-row items-center justify-between px-4 py-3 bg-white border-b border-gray-100 shadow-2xs z-10">
-        {/* Left Section: Back & Profile */}
         <View className="flex-row items-center gap-3 flex-1 pr-2">
-          {/* Back Button */}
           <TouchableOpacity
             onPress={handleBack}
             className="p-1 -ml-2 active:opacity-70"
-            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
             accessibilityRole="button"
             accessibilityLabel="Go back"
           >
             <Ionicons name="chevron-back" size={28} color="#000000" />
           </TouchableOpacity>
 
-          {/* Profile Avatar */}
-          <View className="w-10 h-10 rounded-full bg-gray-300 items-center justify-center overflow-hidden border border-gray-200">
-            <Ionicons name="person" size={24} color="#FFFFFF" />
+          <View className="w-10 h-10 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-200">
+            {otherUserAvatar ? (
+              <Image source={{ uri: otherUserAvatar }} className="w-full h-full" resizeMode="cover" />
+            ) : (
+              <Ionicons name="person" size={22} color="#9CA3AF" />
+            )}
           </View>
 
-          {/* User Name */}
-          <Text
-            className="text-base font-bold text-gray-900 leading-tight"
-            numberOfLines={1}
-          >
-            Baby2
-          </Text>
+          <View className="flex-1">
+            <Text
+              className="text-base font-bold text-gray-900 leading-tight"
+              numberOfLines={1}
+            >
+              {otherUserName}
+            </Text>
+            <Text className="text-xs text-gray-400 font-medium">Restricted</Text>
+          </View>
         </View>
-
-        <TouchableOpacity
-          className="p-1 active:opacity-70"
-          accessibilityRole="button"
-          accessibilityLabel="Information"
-        >
-          <Ionicons name="information-circle" size={28} color="#77af5c" />
-        </TouchableOpacity>
       </View>
 
-      {/*  Messages List (Scroll Area)  */}
+      {/* Messages List */}
       <ScrollView
         className="flex-1 bg-[#F9F9F9] px-4 pt-4"
         showsVerticalScrollIndicator={false}
-        contentContainerStyle={{ paddingBottom: 24 }}
+        contentContainerStyle={{ flexGrow: 1, justifyContent: messages.length === 0 ? "center" : "flex-end", paddingBottom: 24 }}
       >
-        {MOCK_MESSAGES.map((item) => {
-          const isUser = item.sender === "user";
-
-          return (
-            <View key={item.id} className="mb-2">
-              <View
-                className={`flex-row items-end ${
-                  isUser ? "justify-end" : "justify-start"
-                }`}
-              >
-                {/* Left Avatar for Received Messages */}
-                {!isUser && (
-                  <View className="w-7 h-7 mr-2 items-center justify-center">
-                    {item.showAvatar ? (
-                      <View className="w-7 h-7 rounded-full bg-gray-300 items-center justify-center overflow-hidden border border-gray-200 shadow-2xs">
-                        <Ionicons name="person" size={16} color="#FFFFFF" />
-                      </View>
-                    ) : (
-                      <View className="w-7 h-7" />
-                    )}
-                  </View>
-                )}
-
-                {/* Message Bubble */}
+        {isLoading ? (
+          <View className="items-center justify-center py-12">
+            <ActivityIndicator size="small" color="#72AF5B" />
+          </View>
+        ) : messages.length === 0 ? (
+          <View className="items-center justify-center py-12">
+            <Text className="text-xs text-gray-400">No messages found.</Text>
+          </View>
+        ) : (
+          messages.map((item) => {
+            const isUser = item.sender === "user";
+            return (
+              <View key={item.id} className="mb-2.5">
                 <View
-                  className={`px-4 py-2.5 max-w-[76%] ${
-                    isUser
-                      ? "bg-[#77af5c] rounded-2xl rounded-br-xs"
-                      : "bg-[#F0F0F0] rounded-2xl rounded-bl-xs"
+                  className={`flex-row items-end ${
+                    isUser ? "justify-end" : "justify-start"
                   }`}
                 >
-                  <Text
-                    className={`text-sm leading-snug ${
-                      isUser ? "text-white" : "text-gray-900"
+                  {!isUser && (
+                    <View className="w-7 h-7 rounded-full bg-gray-200 mr-2 items-center justify-center overflow-hidden border border-gray-200">
+                      {otherUserAvatar ? (
+                        <Image source={{ uri: otherUserAvatar }} className="w-full h-full" resizeMode="cover" />
+                      ) : (
+                        <Ionicons name="person" size={14} color="#9CA3AF" />
+                      )}
+                    </View>
+                  )}
+
+                  <View
+                    className={`px-4 py-2.5 max-w-[76%] rounded-2xl ${
+                      isUser
+                        ? "bg-[#72AF5B] rounded-br-xs"
+                        : "bg-[#F0F0F0] rounded-bl-xs shadow-2xs"
                     }`}
                   >
-                    {item.text}
-                  </Text>
+                    <Text
+                      className={`text-sm leading-snug ${
+                        isUser ? "text-white" : "text-gray-900"
+                      }`}
+                    >
+                      {item.text || (item.type === "image" ? "📷 [Photo]" : "Shared attachment")}
+                    </Text>
+                  </View>
                 </View>
               </View>
-            </View>
-          );
-        })}
+            );
+          })
+        )}
       </ScrollView>
 
-      {/*  Bottom Action */}
-      <View className="px-4 pt-3 pb-6">
-        <Text className="text-sm text-gray-800 text-center mb-2.5 font-normal">
+      {/* Bottom Action */}
+      <View className="px-4 pt-3.5 pb-6 bg-white border-t border-gray-100">
+        <Text className="text-xs text-gray-500 text-center mb-2.5 font-medium">
           {isRestricted
-            ? "You restricted Baby2"
-            : "Baby2 has been unrestricted"}
+            ? `You restricted ${otherUserName}. They won't see when you're online or read messages.`
+            : `${otherUserName} has been unrestricted.`}
         </Text>
 
         <TouchableOpacity
           onPress={handleUnrestrict}
           disabled={!isRestricted}
-          className={`w-full rounded-lg py-2 items-center justify-center shadow-2xs ${
-            isRestricted ? "bg-gray-500 active:bg-gray-600" : "bg-green-600"
+          className={`w-full rounded-xl py-3 items-center justify-center shadow-2xs ${
+            isRestricted ? "bg-gray-800 active:bg-gray-900" : "bg-green-600"
           }`}
           activeOpacity={0.8}
           accessibilityRole="button"
           accessibilityLabel="Unrestrict user"
         >
           <Text className="text-sm font-bold text-white">
-            {isRestricted ? "Unrestrict" : "Unrestricted"}
+            {isRestricted ? "Unrestrict" : "Unrestricted ✓"}
           </Text>
         </TouchableOpacity>
       </View>

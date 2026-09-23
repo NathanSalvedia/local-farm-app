@@ -5,6 +5,7 @@ import {
   markNotificationAsReadApi,
   NotificationItem,
 } from "@/services/notification-service";
+import { useAuth } from "@/hooks/use-auth";
 import { Ionicons } from "@expo/vector-icons";
 import { useRouter } from "expo-router";
 import React, { useCallback, useEffect, useState } from "react";
@@ -37,6 +38,7 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
   onUnreadCountChange,
 }) => {
   const router = useRouter();
+  const { user } = useAuth();
   const [notifications, setNotifications] = useState<NotificationItem[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -45,16 +47,26 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
 
   const loadNotifications = useCallback(async () => {
     try {
-      const { notifications: list, unreadCount } =
-        await getNotificationsApi();
-      setNotifications(list);
+      const { notifications: list, unreadCount } = await getNotificationsApi();
+      // Filter out any self-notifications (e.g. user commented/liked/shared their own post)
+      const filtered = list.filter((n) => {
+        if (!user) return true;
+        const isSelfActorId =
+          n.user?.id && String(n.user.id) === String(user.id);
+        const isSelfActorName =
+          user.name &&
+          n.user?.name &&
+          n.user.name.trim().toLowerCase() === user.name.trim().toLowerCase();
+        return !isSelfActorId && !isSelfActorName;
+      });
+      setNotifications(filtered);
       if (onUnreadCountChange) {
-        onUnreadCountChange(unreadCount);
+        onUnreadCountChange(filtered.filter((n) => n.isUnread).length);
       }
     } catch (err) {
       console.warn("[NotificationModal] Load error:", err);
     }
-  }, [onUnreadCountChange]);
+  }, [onUnreadCountChange, user]);
 
   useEffect(() => {
     if (visible) {
@@ -301,11 +313,11 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
                 {unreadCount > 0 && (
                   <TouchableOpacity
                     onPress={handleMarkAllAsRead}
-                    className="py-1 px-2 rounded-md bg-emerald-50 active:bg-emerald-100"
+                    className="py-1 px-2 rounded-md bg-white border border-[#72AF5B]"
                     accessibilityRole="button"
                     accessibilityLabel="Mark all as read"
                   >
-                    <Text className="text-xs font-semibold text-[#72AF5B]">
+                    <Text className="text-xs font-semibold text-[#000000]">
                       Mark all read
                     </Text>
                   </TouchableOpacity>
@@ -401,7 +413,14 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
                       activeOpacity={0.8}
                     >
                       {/* Left Column (Avatar Person Icon & Badge) */}
-                      <View className="relative mr-3.5">
+                      <TouchableOpacity
+                        activeOpacity={0.8}
+                        onPress={() => {
+                          onClose();
+                          router.push("/user/Friends" as any);
+                        }}
+                        className="relative mr-3.5"
+                      >
                         <View className="w-14 h-14 rounded-full bg-gray-200 border border-gray-300 items-center justify-center overflow-hidden">
                           {item.user.avatarUrl ? (
                             <Image
@@ -410,53 +429,60 @@ export const NotificationModal: React.FC<NotificationModalProps> = ({
                               resizeMode="cover"
                             />
                           ) : (
-                            <Ionicons
-                              name="person"
-                              size={28}
-                              color="#6B7280"
-                            />
+                            <Ionicons name="person" size={28} color="#6B7280" />
                           )}
                         </View>
                         {getReactionBadge(item.type)}
-                      </View>
+                      </TouchableOpacity>
 
-                      {/* Middle Column (Text Content & Actions) */}
+                      {/* Middle Column (Text Content) */}
                       <View className="flex-1 pr-2">
-                        {/* Main Text Content with Nested Bolds */}
-                        <Text className="text-[14px] text-gray-900 leading-snug">
-                          <Text className="font-bold text-black">
-                            {item.user.name}
-                          </Text>{" "}
-                          {item.content}{" "}
-                          {item.entityName ? (
-                            <Text className="font-bold text-black">
-                              {item.entityName}
+                        {/* Main Text Content */}
+                        {(() => {
+                          let bodyText = item.content || "";
+                          if (
+                            item.user.name &&
+                            bodyText
+                              .toLowerCase()
+                              .startsWith(item.user.name.toLowerCase())
+                          ) {
+                            bodyText = bodyText
+                              .slice(item.user.name.length)
+                              .trim();
+                          }
+
+                          const showEntityName =
+                            item.entityName &&
+                            !["connection", "post"].includes(
+                              item.entityName.toLowerCase(),
+                            );
+
+                          return (
+                            <Text className="text-[14px] text-gray-900 leading-snug">
+                              <Text
+                                className="font-bold text-black"
+                                onPress={() => {
+                                  onClose();
+                                  router.push("/user/Friends" as any);
+                                }}
+                              >
+                                {item.user.name}
+                              </Text>{" "}
+                              {bodyText}
+                              {showEntityName ? (
+                                <Text className="font-bold text-black">
+                                  {" "}
+                                  {item.entityName}
+                                </Text>
+                              ) : null}
                             </Text>
-                          ) : null}
-                        </Text>
+                          );
+                        })()}
 
                         {/* Timestamp */}
                         <Text className="text-xs text-gray-500 mt-1">
                           {item.time}
                         </Text>
-
-                        {/* Action Buttons for friend requests */}
-                        {item.type === "friend_request" && (
-                          <View className="flex-row gap-2 mt-2.5">
-                            <TouchableOpacity
-                              onPress={() => {
-                                onClose();
-                                router.push("/user/Friends" as any);
-                              }}
-                              className="bg-[#72AF5B] rounded-lg py-1.5 px-4 items-center justify-center active:opacity-85"
-                              activeOpacity={0.8}
-                            >
-                              <Text className="text-white font-semibold text-xs">
-                                View Request
-                              </Text>
-                            </TouchableOpacity>
-                          </View>
-                        )}
                       </View>
 
                       {/* Right Column (Options: Horizontal Ellipsis) */}

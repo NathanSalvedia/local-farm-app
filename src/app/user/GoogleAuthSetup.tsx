@@ -1,9 +1,14 @@
 import { useToast } from "@/context/toast-context";
 import { useAuth } from "@/hooks/use-auth";
+import {
+  confirmGoogleAuthSetupApi,
+  getGoogleAuthSetupApi,
+} from "@/services/auth-service";
 import { Ionicons } from "@expo/vector-icons";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import * as Clipboard from "expo-clipboard";
 import { router } from "expo-router";
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -20,12 +25,15 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { TWO_FACTOR_STORAGE_KEY } from "./TwoFactorOtp";
 
-const SECRET_KEY = "LFARM-9842-AUTH-K901";
-
 export default function GoogleAuthSetupScreen() {
   const insets = useSafeAreaInsets();
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const { showToast } = useToast();
+
+  const [secretKey, setSecretKey] = useState("");
+  const [accountName, setAccountName] = useState("");
+  const [isLoadingSetup, setIsLoadingSetup] = useState(true);
+  const [fetchError, setFetchError] = useState("");
 
   const [otp, setOtp] = useState<string[]>(["", "", "", "", "", ""]);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -35,9 +43,34 @@ export default function GoogleAuthSetupScreen() {
   // References for 6 input boxes
   const inputRefs = useRef<Array<RNTextInput | null>>([]);
 
-  const handleCopyKey = () => {
-    if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
-      navigator.clipboard.writeText(SECRET_KEY);
+  const loadSetupDetails = async () => {
+    try {
+      setIsLoadingSetup(true);
+      setFetchError("");
+      const res = await getGoogleAuthSetupApi();
+      setSecretKey(res.secret || "");
+      setAccountName(res.accountName || `Local Farm (${user?.email || "Account"})`);
+    } catch (err: any) {
+      setFetchError(
+        err?.message || "Failed to generate Authenticator setup key. Please try again."
+      );
+    } finally {
+      setIsLoadingSetup(false);
+    }
+  };
+
+  useEffect(() => {
+    loadSetupDetails();
+  }, [user?.email]);
+
+  const handleCopyKey = async () => {
+    if (!secretKey) return;
+    try {
+      await Clipboard.setStringAsync(secretKey);
+    } catch {
+      if (Platform.OS === "web" && typeof navigator !== "undefined" && navigator.clipboard) {
+        navigator.clipboard.writeText(secretKey);
+      }
     }
     setCopied(true);
     showToast("Setup key copied to clipboard!", "success");
@@ -85,28 +118,40 @@ export default function GoogleAuthSetupScreen() {
       return;
     }
 
+    if (!secretKey) {
+      setErrorMsg("Secret key not generated yet. Please wait or reload.");
+      return;
+    }
+
     setIsSubmitting(true);
     setErrorMsg("");
 
-    setTimeout(async () => {
-      try {
-        await AsyncStorage.setItem(
-          TWO_FACTOR_STORAGE_KEY,
-          JSON.stringify({
-            isEnabled: true,
-            method: "authenticator",
-            updatedAt: new Date().toISOString(),
-          })
-        );
+    try {
+      const res = await confirmGoogleAuthSetupApi(fullCode, secretKey);
+      await updateUser({
+        twoFactorEnabled: true,
+        twoFactorMethod: "authenticator",
+      });
 
-        setIsSubmitting(false);
-        showToast("Google Authenticator enabled successfully!", "success");
-        router.replace("/user/TwoFactorAuth" as any);
-      } catch {
-        setIsSubmitting(false);
-        setErrorMsg("Failed to save settings. Please try again.");
-      }
-    }, 600);
+      await AsyncStorage.setItem(
+        TWO_FACTOR_STORAGE_KEY,
+        JSON.stringify({
+          isEnabled: true,
+          method: "authenticator",
+          updatedAt: new Date().toISOString(),
+        })
+      );
+
+      setIsSubmitting(false);
+      showToast("Google Authenticator enabled successfully!", "success");
+      router.replace("/user/TwoFactorAuth" as any);
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setErrorMsg(
+        err?.message ||
+          "Invalid verification code. Please check the 6-digit code currently shown in Google Authenticator."
+      );
+    }
   };
 
   return (
@@ -193,17 +238,35 @@ export default function GoogleAuthSetupScreen() {
 
             {/* Secret Key Display Box */}
             <View className="ml-8 bg-white border border-gray-300 rounded-xl p-3 flex-row items-center justify-between mb-2 shadow-sm">
-              <View>
+              <View className="flex-1 pr-2">
                 <Text className="text-[10px] text-gray-400 font-bold uppercase tracking-wider mb-0.5">
                   Your Secret Key
                 </Text>
-                <Text className="text-sm font-mono font-bold text-gray-900 tracking-wider">
-                  {SECRET_KEY}
-                </Text>
+                {isLoadingSetup ? (
+                  <View className="flex-row items-center py-1">
+                    <ActivityIndicator size="small" color="#77af5c" />
+                    <Text className="text-xs text-gray-400 ml-2">Generating secure key...</Text>
+                  </View>
+                ) : fetchError ? (
+                  <View className="flex-row items-center py-1">
+                    <Text className="text-xs text-red-500 mr-2">Failed to load key</Text>
+                    <TouchableOpacity onPress={loadSetupDetails}>
+                      <Text className="text-xs font-bold text-[#77af5c]">Retry</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <Text
+                    className="text-sm font-mono font-bold text-gray-900 tracking-wider"
+                    selectable
+                  >
+                    {secretKey.match(/.{1,4}/g)?.join(" ") || secretKey}
+                  </Text>
+                )}
               </View>
 
               <TouchableOpacity
                 onPress={handleCopyKey}
+                disabled={isLoadingSetup || !secretKey}
                 className={`px-3 py-2 rounded-lg flex-row items-center gap-1.5 active:opacity-75 ${
                   copied ? "bg-[#77af5c]" : "bg-[#E8F5E9]"
                 }`}
@@ -227,7 +290,10 @@ export default function GoogleAuthSetupScreen() {
 
             <View className="ml-8 bg-gray-50 rounded-lg p-2 border border-gray-200">
               <Text className="text-[11px] text-gray-500">
-                Account name: <Text className="font-semibold text-gray-700">Local Farm ({user?.email || "Account"})</Text>
+                Account name:{" "}
+                <Text className="font-semibold text-gray-700">
+                  {accountName || `Local Farm (${user?.email || "Account"})`}
+                </Text>
               </Text>
               <Text className="text-[11px] text-gray-500 mt-0.5">
                 Key type: <Text className="font-semibold text-gray-700">Time-based</Text>

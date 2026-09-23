@@ -291,13 +291,7 @@ export default function MenuProfile() {
 
               {/* Item 2: Privacy Center */}
               <TouchableOpacity
-                onPress={() =>
-                  Alert.alert(
-                    "Privacy Center",
-                    "Privacy Center settings are currently being updated. Please check back soon!",
-                    [{ text: "OK" }]
-                  )
-                }
+                onPress={() => router.push("/user/PrivacyCenter" as any)}
                 className="flex-row items-center px-4 py-3.5 gap-3.5 active:bg-gray-50"
                 activeOpacity={0.7}
                 accessibilityRole="button"

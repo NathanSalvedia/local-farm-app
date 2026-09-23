@@ -53,7 +53,7 @@ export default function People() {
       const data = await getConnectionRequestsApi();
       setRequests(data);
     } catch (err: any) {
-      console.warn("Failed to fetch connection requests:", err);
+      console.log("Failed to fetch connection requests:", err);
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
@@ -67,7 +67,7 @@ export default function People() {
         if (isMounted) setRequests(data);
       })
       .catch((err: any) => {
-        console.warn("Failed to fetch connection requests:", err);
+        console.log("Failed to fetch connection requests:", err);
       })
       .finally(() => {
         if (isMounted) setIsLoading(false);

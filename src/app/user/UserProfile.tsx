@@ -24,13 +24,14 @@ import BottomSheet, {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as ImagePicker from "expo-image-picker";
 import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
   BackHandler,
   Alert,
   Dimensions,
+  FlatList,
   Image,
   KeyboardAvoidingView,
   Modal,
@@ -51,6 +52,8 @@ import CreatePostModal from "../../components/CreatePostModal";
 import BottomNavBar from "../../components/Navigation";
 import { ProfileHeader } from "../../components/ProfileHeader";
 import ShareProfileModal from "../../components/ShareProfileModal";
+import SharePostModal from "../../components/SharePostModal";
+import PostImageGrid from "../../components/PostImageGrid";
 
 const DEFAULT_COVER_PHOTO =
   "https://images.unsplash.com/photo-1500382017468-9049fed747ef?w=1000&auto=format&fit=crop&q=80";
@@ -64,125 +67,17 @@ export interface GridPostItem {
   timeAgo: string;
   isLiked?: boolean;
   isSaved?: boolean;
+  basePostId?: string;
+  authorName?: string;
+  authorRole?: string;
+  avatarUri?: string;
+  location?: string;
+  isVerified?: boolean;
+  photoIndex?: number;
+  totalPostPhotos?: number;
 }
 
-const INITIAL_GRID_POSTS: GridPostItem[] = [
-  {
-    id: "grid-1",
-    imageUri:
-      "https://images.unsplash.com/photo-1540420773420-3366772f4999?w=600&auto=format&fit=crop&q=80",
-    caption:
-      "Fresh harvest from our greenhouse! Crispy greens, radishes, and organic garden salad bowl. 🥗🌱",
-    likesCount: 142,
-    commentsCount: 18,
-    timeAgo: "3 days ago",
-    isLiked: false,
-    isSaved: false,
-  },
-  {
-    id: "grid-2",
-    imageUri:
-      "https://images.unsplash.com/photo-1500937386664-56d1dfef3854?w=600&auto=format&fit=crop&q=80",
-    caption:
-      "Golden hour over the wheat fields. Prepping the soil and inspecting crops for the upcoming season. 🌾✨",
-    likesCount: 98,
-    commentsCount: 9,
-    timeAgo: "5 days ago",
-    isLiked: false,
-    isSaved: false,
-  },
-  {
-    id: "grid-3",
-    imageUri:
-      "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=600&auto=format&fit=crop&q=80",
-    caption:
-      "Fresh heirloom tomatoes harvested this morning! Rich, sweet, and bursting with local flavor. 🍅",
-    likesCount: 215,
-    commentsCount: 24,
-    timeAgo: "1 week ago",
-    isLiked: false,
-    isSaved: false,
-  },
-  {
-    id: "grid-4",
-    imageUri:
-      "https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?w=600&auto=format&fit=crop&q=80",
-    caption:
-      "Community planting day out in the paddies. Grateful for our hardworking team and fertile fields! 🚜🌾",
-    likesCount: 178,
-    commentsCount: 14,
-    timeAgo: "2 weeks ago",
-    isLiked: false,
-    isSaved: false,
-  },
-  {
-    id: "grid-5",
-    imageUri:
-      "https://images.unsplash.com/photo-1567306226416-28f0efdc88ce?w=600&auto=format&fit=crop&q=80",
-    caption:
-      "First batch of crisp orchard apples picked under the morning dew. Freshly boxed for delivery! 🍎🍏",
-    likesCount: 165,
-    commentsCount: 11,
-    timeAgo: "3 weeks ago",
-    isLiked: false,
-    isSaved: false,
-  },
-];
 
-const INITIAL_GRID_COMMENTS: Record<string, CommentItem[]> = {
-  "grid-1": [
-    {
-      id: "gc-1",
-      postId: "grid-1",
-      userId: "u-2",
-      authorName: "Elena Rostova",
-      avatarUri: "https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=200",
-      timeAgo: "2d ago",
-      content: "Those greens look so crisp and vibrant! Beautiful harvest. 🌱",
-      likes: 4,
-      isLiked: false,
-      isVerified: true,
-    },
-    {
-      id: "gc-2",
-      postId: "grid-1",
-      userId: "u-3",
-      authorName: "Marcus Vance",
-      avatarUri: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200",
-      timeAgo: "1d ago",
-      content: "Do you have any crates available for the weekend market?",
-      likes: 2,
-      isLiked: false,
-    },
-  ],
-  "grid-2": [
-    {
-      id: "gc-3",
-      postId: "grid-2",
-      userId: "u-4",
-      authorName: "Sarah Jenkins",
-      avatarUri: "https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200",
-      timeAgo: "4d ago",
-      content: "Stunning golden hour light over the fields! 🌾✨",
-      likes: 5,
-      isLiked: true,
-    },
-  ],
-  "grid-3": [
-    {
-      id: "gc-4",
-      postId: "grid-3",
-      userId: "u-5",
-      authorName: "David Chen",
-      avatarUri: "https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200",
-      timeAgo: "5d ago",
-      content: "Best heirloom tomatoes in the valley! So sweet and flavorful. 🍅",
-      likes: 7,
-      isLiked: false,
-      isVerified: true,
-    },
-  ],
-};
 
 export default function UserProfile() {
   const { user, updateUser } = useAuth();
@@ -197,6 +92,7 @@ export default function UserProfile() {
   }>();
 
   const insets = useSafeAreaInsets();
+  const screenWidth = Dimensions.get("window").width;
   const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
 
   const isOwnProfile =
@@ -209,6 +105,12 @@ export default function UserProfile() {
   const profileName =
     params.userName || user?.name || user?.username || rsbsaApp?.fullName || "Juan Dela Cruz";
 
+  const [farmDetails, setFarmDetails] = useState<{
+    farmName?: string;
+    farmLocation?: string;
+    primaryCrops?: string;
+  } | null>(null);
+
   useFocusEffect(
     useCallback(() => {
       let isMounted = true;
@@ -217,11 +119,44 @@ export default function UserProfile() {
           if (isMounted) setRsbsaApp(app);
         })
         .catch((err) => console.warn("Failed to load RSBSA in profile:", err));
+
+      if (isOwnProfile && (user?.farmName || user?.farmLocation || user?.primaryCrops)) {
+        setFarmDetails({
+          farmName: user.farmName,
+          farmLocation: user.farmLocation,
+          primaryCrops: user.primaryCrops,
+        });
+      } else {
+        AsyncStorage.getItem("localfarm_user_farm_details_v1")
+          .then((data) => {
+            if (isMounted && data) {
+              try {
+                setFarmDetails(JSON.parse(data));
+              } catch {}
+            }
+          })
+          .catch(() => {});
+      }
       return () => {
         isMounted = false;
       };
-    }, [])
+    }, [isOwnProfile, user?.farmName, user?.farmLocation, user?.primaryCrops])
   );
+
+  const profileLocation =
+    (isOwnProfile
+      ? user?.farmLocation || farmDetails?.farmLocation || rsbsaApp?.location || user?.location
+      : rsbsaApp?.location) || "";
+
+  const profileBio =
+    params.userBio ||
+    params.userAbout ||
+    (isOwnProfile ? user?.about || user?.bio : undefined) ||
+    ((user?.farmName || farmDetails?.farmName)
+      ? `Farmer at ${user?.farmName || farmDetails?.farmName}${(user?.primaryCrops || farmDetails?.primaryCrops) ? ` • ${user?.primaryCrops || farmDetails?.primaryCrops}` : ""}`
+      : rsbsaApp?.farmName
+      ? `Farmer at ${rsbsaApp.farmName}`
+      : "");
 
   const isRSBSAVerified = rsbsaApp?.status === "verified";
 
@@ -242,7 +177,7 @@ export default function UserProfile() {
   const profileAvatar =
     params.userAvatar ||
     (isOwnProfile ? user?.avatarUrl : undefined) ||
-    "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80";
+    undefined;
   const profileRole =
     params.userRole ||
     (isOwnProfile ? (user as any)?.role : undefined) ||
@@ -262,45 +197,25 @@ export default function UserProfile() {
   const [isViewingCoverPhoto, setIsViewingCoverPhoto] =
     useState<boolean>(false);
 
+  // Posts State
+  const [posts, setPosts] = useState<PostItem[]>([]);
+
   // Instagram-style Post Viewer State
-  const [gridPostsData, setGridPostsData] = useState<GridPostItem[]>(INITIAL_GRID_POSTS);
+  const [gridPostsData, setGridPostsData] = useState<GridPostItem[]>([]);
   const [selectedGridPostIndex, setSelectedGridPostIndex] = useState<number | null>(null);
+  const [postViewerHeight, setPostViewerHeight] = useState<number>(
+    Dimensions.get("window").height - 100
+  );
+  const initialGridPostIndexRef = useRef<number>(0);
+  const gridPostListRef = useRef<FlatList<GridPostItem>>(null);
 
   const handleOpenGridPost = (index: number) => {
+    initialGridPostIndexRef.current = index;
     setSelectedGridPostIndex(index);
   };
 
   const handleCloseGridPost = () => {
     setSelectedGridPostIndex(null);
-  };
-
-  const handleToggleGridPostLike = (index: number) => {
-    const post = gridPostsData[index];
-    if (!post) return;
-    const newIsLiked = !post.isLiked;
-    setGridPostsData((prev) =>
-      prev.map((p, idx) => {
-        if (idx !== index) return p;
-        return {
-          ...p,
-          isLiked: newIsLiked,
-          likesCount: newIsLiked ? p.likesCount + 1 : Math.max(0, p.likesCount - 1),
-        };
-      })
-    );
-    setPosts((prev) =>
-      prev.map((p) => {
-        if (p.id === post.id) {
-          return {
-            ...p,
-            isLiked: newIsLiked,
-            likes: newIsLiked ? p.likes + 1 : Math.max(0, p.likes - 1),
-          };
-        }
-        return p;
-      })
-    );
-    toggleLikePostApi(post.id).catch(() => {});
   };
 
   useEffect(() => {
@@ -314,25 +229,7 @@ export default function UserProfile() {
       onBackPress
     );
     return () => subscription.remove();
-
   }, [selectedGridPostIndex]);
-
-  const handleToggleGridPostSave = (index: number) => {
-    const post = gridPostsData[index];
-    if (!post) return;
-    const newIsSaved = !post.isSaved;
-    setGridPostsData((prev) =>
-      prev.map((p, idx) => (idx === index ? { ...p, isSaved: newIsSaved } : p))
-    );
-    setPosts((prev) =>
-      prev.map((p) => (p.id === post.id ? { ...p, isSaved: newIsSaved } : p))
-    );
-    showToast(
-      newIsSaved ? "Post saved to collection!" : "Post removed from saved.",
-      "success"
-    );
-    toggleSavePostApi(post.id).catch(() => {});
-  };
 
   useEffect(() => {
     let isMounted = true;
@@ -393,10 +290,15 @@ export default function UserProfile() {
         allowsEditing: true,
         aspect: [16, 9],
         quality: 0.85,
+        base64: true,
       });
 
       if (!result.canceled && result.assets && result.assets.length > 0) {
-        await applyCoverPhoto(result.assets[0].uri);
+        const asset = result.assets[0];
+        const uri = asset.base64
+          ? `data:image/jpeg;base64,${asset.base64}`
+          : asset.uri;
+        await applyCoverPhoto(uri);
         return;
       }
     } catch (error) {
@@ -484,14 +386,15 @@ export default function UserProfile() {
   };
 
   const [activeTab, setActiveTab] = useState<"posts" | "all" | "about">("all");
-  const [posts, setPosts] = useState<PostItem[]>([]);
   const [isLoadingPosts, setIsLoadingPosts] = useState<boolean>(true);
-  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>(INITIAL_GRID_COMMENTS);
+  const [postComments, setPostComments] = useState<Record<string, CommentItem[]>>({});
   const [loadingComments, setLoadingComments] = useState<Record<string, boolean>>({});
   const [commentInputs, setCommentInputs] = useState<Record<string, string>>({});
   const [submittingComments, setSubmittingComments] = useState<Record<string, boolean>>({});
   const [previewImage, setPreviewImage] = useState<{
     uri?: string;
+    images?: string[];
+    currentIndex?: number;
     source?: any;
     caption?: string;
     authorName?: string;
@@ -506,6 +409,19 @@ export default function UserProfile() {
     isLiked?: boolean;
     isSaved?: boolean;
   } | null>(null);
+  const lightboxListRef = useRef<FlatList>(null);
+
+  useEffect(() => {
+    if (previewImage && previewImage.currentIndex !== undefined && previewImage.currentIndex > 0) {
+      setTimeout(() => {
+        lightboxListRef.current?.scrollToOffset({
+          offset: (previewImage.currentIndex ?? 0) * screenWidth,
+          animated: false,
+        });
+      }, 50);
+    }
+  }, [previewImage?.uri, previewImage?.currentIndex]);
+
   const [activeCommentsPostId, setActiveCommentsPostId] = useState<
     string | null
   >(null);
@@ -558,6 +474,8 @@ export default function UserProfile() {
 
   const handleOpenPreview = (data: {
     uri?: string;
+    images?: string[];
+    initialIndex?: number;
     source?: any;
     caption?: string;
     authorName?: string;
@@ -572,7 +490,25 @@ export default function UserProfile() {
     isLiked?: boolean;
     isSaved?: boolean;
   }) => {
-    setPreviewImage(data);
+    const list =
+      data.images && data.images.length > 0
+        ? data.images
+        : data.uri
+          ? [data.uri]
+          : [];
+    const idx =
+      data.initialIndex !== undefined &&
+      data.initialIndex >= 0 &&
+      data.initialIndex < list.length
+        ? data.initialIndex
+        : 0;
+
+    setPreviewImage({
+      ...data,
+      images: list,
+      currentIndex: idx,
+      uri: list[idx] || data.uri,
+    });
   };
   const [commentReactions, setCommentReactions] = useState<
     Record<string, string | null>
@@ -650,69 +586,62 @@ export default function UserProfile() {
       });
 
       if (userPosts.length > 0) {
-        setPosts(userPosts);
-        const postsWithImages = userPosts.filter((p) => Boolean(p.imageUrl));
+        const sanitizedPosts = userPosts.map((p) => ({
+          ...p,
+          location:
+            p.location && p.location !== "Mill Creek Valley, CA"
+              ? p.location
+              : "",
+        }));
+        setPosts(sanitizedPosts);
+        const postsWithImages = sanitizedPosts.filter(
+          (p) => Boolean(p.imageUrl || (p.images && p.images.length > 0)),
+        );
         if (postsWithImages.length > 0) {
-          const mappedGridPosts: GridPostItem[] = postsWithImages.map((p) => ({
-            id: p.id,
-            imageUri: p.imageUrl,
-            caption: p.content,
-            likesCount: p.likes || 0,
-            commentsCount: p.comments || 0,
-            timeAgo: p.timeAgo || "Recently",
-            isLiked: p.isLiked,
-            isSaved: p.isSaved,
-          }));
-          setGridPostsData([...mappedGridPosts, ...INITIAL_GRID_POSTS]);
+          const mappedGridPosts: GridPostItem[] = [];
+          postsWithImages.forEach((p) => {
+            const imgs =
+              p.images && p.images.length > 0
+                ? p.images
+                : p.imageUrl
+                  ? [p.imageUrl]
+                  : [];
+            imgs.forEach((imgUri, imgIdx) => {
+              mappedGridPosts.push({
+                id: `${p.id}-${imgIdx}`,
+                basePostId: String(p.id),
+                imageUri: imgUri,
+                caption: p.content,
+                likesCount: p.likes || 0,
+                commentsCount: p.comments || 0,
+                timeAgo: p.timeAgo || "Recently",
+                isLiked: p.isLiked,
+                isSaved: p.isSaved,
+                authorName: p.authorName,
+                authorRole: p.authorRole,
+                avatarUri: p.avatarUri,
+                location:
+                  p.location && p.location !== "Mill Creek Valley, CA"
+                    ? p.location
+                    : "",
+                isVerified: p.isVerified,
+                photoIndex: imgIdx,
+                totalPostPhotos: imgs.length,
+              });
+            });
+          });
+          setGridPostsData(mappedGridPosts);
+        } else {
+          setGridPostsData([]);
         }
       } else {
-        setPosts([
-          {
-            id: "p-1",
-            userId: String(targetUserId || "1"),
-            authorName: profileName,
-            authorRole: isVerifiedProfile ? "RSBSA Verified Farmer" : profileRole,
-            avatarUri: profileAvatar,
-            location: "Mill Creek Valley, CA",
-            timeAgo: "2 hrs ago",
-            content:
-              "Fresh heirloom tomatoes harvested this morning at Mill Creek Valley Farm! 🍅 Ready for the weekend market.",
-            imageUrl:
-              "https://images.unsplash.com/photo-1592924357228-91a4daadcfea?w=1000&auto=format&fit=crop&q=80",
-            category: "Produce",
-            privacy: "Public",
-            likes: 120,
-            comments: 12,
-            shares: 5,
-            isLiked: false,
-            isSaved: false,
-            isVerified: isVerifiedProfile,
-          },
-          {
-            id: "p-2",
-            userId: String(targetUserId || "1"),
-            authorName: profileName,
-            authorRole: isVerifiedProfile ? "RSBSA Verified Farmer" : profileRole,
-            avatarUri: profileAvatar,
-            location: "Mill Creek Valley, CA",
-            timeAgo: "Yesterday",
-            content:
-              "Checking out the organic root crops and prepping the field for next week's planting season. 🌱",
-            imageUrl:
-              "https://images.unsplash.com/photo-1500937386664-56d1dfef3854?w=1000&auto=format&fit=crop&q=80",
-            category: "Field Update",
-            privacy: "Public",
-            likes: 84,
-            comments: 7,
-            shares: 2,
-            isLiked: false,
-            isSaved: false,
-            isVerified: isVerifiedProfile,
-          },
-        ]);
+        setPosts([]);
+        setGridPostsData([]);
       }
     } catch (err) {
       console.warn("Failed to load user posts:", err);
+      setPosts([]);
+      setGridPostsData([]);
     } finally {
       setIsLoadingPosts(false);
     }
@@ -728,6 +657,12 @@ export default function UserProfile() {
   useEffect(() => {
     loadUserPosts();
   }, [loadUserPosts]);
+
+  useFocusEffect(
+    useCallback(() => {
+      loadUserPosts();
+    }, [loadUserPosts])
+  );
 
   const handleQuickLike = async (postId: string) => {
     setPosts((prev) =>
@@ -785,45 +720,29 @@ export default function UserProfile() {
     }
   };
 
-  // Share to Feed Dialog Modal State
-  const [shareDialogPost, setShareDialogPost] = useState<PostItem | null>(null);
-  const [shareCaption, setShareCaption] = useState("");
-  const [isSharingPost, setIsSharingPost] = useState(false);
+  // Share Post Modal State
+  const [shareModalPost, setShareModalPost] = useState<PostItem | null>(null);
 
   const handleToggleShare = (postId: string) => {
     const targetPost = posts.find((p) => p.id === postId);
     if (targetPost) {
-      setShareCaption("");
-      setShareDialogPost(targetPost);
+      setShareModalPost(targetPost);
     }
   };
 
-  const handleConfirmShare = async () => {
-    if (!shareDialogPost) return;
-    setIsSharingPost(true);
-    try {
-      const res = await sharePostApi(
-        shareDialogPost.id,
-        "public",
-        shareCaption.trim()
+  const handleShareSuccess = (sharedPost?: PostItem | null, newSharesCount?: number) => {
+    if (!shareModalPost) return;
+    setPosts((prev) => {
+      const updated = prev.map((p) =>
+        p.id === shareModalPost.id
+          ? { ...p, shares: newSharesCount !== undefined ? newSharesCount : ((p.shares || 0) + 1) }
+          : p
       );
-      setPosts((prev) => {
-        const updated = prev.map((p) =>
-          p.id === shareDialogPost.id ? { ...p, shares: res.sharesCount } : p
-        );
-        if (res.sharedPost) {
-          return [res.sharedPost, ...updated];
-        }
-        return updated;
-      });
-      showToast("Post shared to your feed!", "success");
-      setShareDialogPost(null);
-      setShareCaption("");
-    } catch (err: any) {
-      showToast(err?.message || "Failed to share post.", "error");
-    } finally {
-      setIsSharingPost(false);
-    }
+      if (sharedPost) {
+        return [sharedPost, ...updated];
+      }
+      return updated;
+    });
   };
 
   const toggleExpandComments = async (postId: string) => {
@@ -1113,7 +1032,7 @@ export default function UserProfile() {
     bottomSheetRef.current?.close();
     Alert.alert(
       "About This Account",
-      `Account: ${profileName}\nRole: ${profileRole}\nHandle: ${profileHandle}\nStatus: Verified Farm Account\nMember since: 2024\nLocation: Mill Creek Valley, CA`,
+      `Account: ${profileName}\nRole: ${profileRole}\nHandle: ${profileHandle}\nStatus: Verified Farm Account\nMember since: 2024${profileLocation ? `\nLocation: ${profileLocation}` : ""}`,
       [{ text: "Done" }],
     );
   };
@@ -1124,8 +1043,17 @@ export default function UserProfile() {
   };
 
   const handleNewPostCreated = (newPostData: any) => {
+    const rawPhotos: string[] =
+      Array.isArray(newPostData?.photos) && newPostData.photos.length > 0
+        ? newPostData.photos
+        : Array.isArray(newPostData?.images) && newPostData.images.length > 0
+          ? newPostData.images
+          : newPostData?.imageUrl
+            ? [newPostData.imageUrl]
+            : [];
+
     const createdPost: PostItem = {
-      id: newPostData?.id || Date.now().toString(),
+      id: String(newPostData?.id || Date.now().toString()),
       userId: String(user?.id || newPostData?.userId || "me"),
       authorName:
         newPostData?.authorName ||
@@ -1139,14 +1067,16 @@ export default function UserProfile() {
         newPostData?.avatarUri ||
         user?.avatarUrl ||
         profileAvatar ||
-        "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80",
-      location: newPostData?.location || "Mill Creek Valley, CA",
+        "",
+      location:
+        newPostData?.location &&
+        newPostData.location !== "Mill Creek Valley, CA"
+          ? newPostData.location
+          : "",
       timeAgo: "Just now",
       content: newPostData?.content || "",
-      imageUrl:
-        newPostData?.imageUrl ||
-        (Array.isArray(newPostData?.photos) ? newPostData.photos[0] : "") ||
-        "",
+      imageUrl: rawPhotos[0] || "",
+      images: rawPhotos,
       category: newPostData?.category || "General",
       privacy: newPostData?.privacy || "Public",
       likes: newPostData?.likes ?? 0,
@@ -1157,353 +1087,425 @@ export default function UserProfile() {
       isVerified: Boolean(newPostData?.isVerified ?? isRSBSAVerified),
     };
     setPosts((prev) => [createdPost, ...prev]);
-    if (createdPost.imageUrl) {
-      setGridPostsData((prev) => [
-        {
-          id: createdPost.id,
-          imageUri: createdPost.imageUrl,
-          caption: createdPost.content,
-          likesCount: 0,
-          commentsCount: 0,
-          timeAgo: "Just now",
-          isLiked: false,
-          isSaved: false,
-        },
-        ...prev,
-      ]);
+    if (rawPhotos.length > 0) {
+      const newGridItems: GridPostItem[] = rawPhotos.map((imgUri: string, imgIdx: number) => ({
+        id: `${createdPost.id}-${imgIdx}`,
+        basePostId: String(createdPost.id),
+        imageUri: imgUri,
+        caption: createdPost.content,
+        likesCount: 0,
+        commentsCount: 0,
+        timeAgo: "Just now",
+        isLiked: false,
+        isSaved: false,
+        authorName: createdPost.authorName,
+        authorRole: createdPost.authorRole,
+        avatarUri: createdPost.avatarUri,
+        location: createdPost.location,
+        isVerified: createdPost.isVerified,
+        photoIndex: imgIdx,
+        totalPostPhotos: rawPhotos.length,
+      }));
+      setGridPostsData((prev) => [...newGridItems, ...prev]);
     }
     setCreatePostVisible(false);
+    loadUserPosts().catch(() => {});
   };
 
 // Dedicated Full-Page Section for Post Detail (NewsFeed post card format)
-  if (selectedGridPostIndex !== null) {
-    const currentPost = gridPostsData[selectedGridPostIndex];
-    if (currentPost) {
-      const currentPostComments = postComments[currentPost.id] || [];
-
-      return (
-        <SafeAreaView className="flex-1 bg-gray-100" edges={["top", "bottom", "left", "right"]}>
-          {/* Header Bar: Back arrow + "Posts" + Counter + Close button */}
-          <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200 bg-white shadow-xs">
-            <TouchableOpacity
-              onPress={handleCloseGridPost}
-              activeOpacity={0.7}
-              className="flex-row items-center py-1 pr-2"
-              accessibilityRole="button"
-              accessibilityLabel="Back to posts"
-            >
-              <Ionicons name="arrow-back" size={24} color="#111827" />
-              <Text className="ml-2.5 text-base font-bold text-gray-900">
-                Posts
-              </Text>
-            </TouchableOpacity>
-
-            <Text className="text-xs font-semibold text-gray-500">
-              {selectedGridPostIndex + 1} of {gridPostsData.length}
-            </Text>
-
-            <TouchableOpacity
-              onPress={handleCloseGridPost}
-              activeOpacity={0.7}
-              className="p-1"
-              accessibilityRole="button"
-              accessibilityLabel="Close post"
-            >
-              <Ionicons name="close" size={24} color="#6B7280" />
-            </TouchableOpacity>
-          </View>
-
-          {/* Scrollable Post Content */}
-          <ScrollView
-            className="flex-1 bg-gray-100"
-            showsVerticalScrollIndicator={false}
-            contentContainerStyle={{ paddingVertical: 12, paddingHorizontal: 12, paddingBottom: 60 }}
+  if (selectedGridPostIndex !== null && gridPostsData.length > 0) {
+    return (
+      <SafeAreaView className="flex-1 bg-gray-100" edges={["top", "bottom", "left", "right"]}>
+        {/* Header Bar: Back arrow + "Posts" + Counter + Close button */}
+        <View className="flex-row items-center justify-between px-4 py-3 border-b border-gray-200 bg-white shadow-xs">
+          <TouchableOpacity
+            onPress={handleCloseGridPost}
+            activeOpacity={0.7}
+            className="flex-row items-center py-1 pr-2"
+            accessibilityRole="button"
+            accessibilityLabel="Back to posts"
           >
-            {/* Post Card - Exact NewsFeed Design */}
-            <View className="bg-white rounded-xl shadow-xs border border-gray-100 overflow-hidden mb-4">
-              {/* Post Header */}
-              <View className="p-4 pb-2">
-                <View className="flex-row justify-between items-start mb-3">
-                  <View className="flex-row items-center flex-1 pr-2">
-                    {/* Avatar with #72AF5B ring */}
-                    <View className="h-10 w-10 rounded-full border border-[#72AF5B] items-center justify-center bg-gray-100 mr-3 overflow-hidden">
-                      {profileAvatar ? (
+            <Ionicons name="arrow-back" size={24} color="#111827" />
+            <Text className="ml-2.5 text-base font-bold text-gray-900">
+              Posts
+            </Text>
+          </TouchableOpacity>
+
+          <Text className="text-xs font-semibold text-gray-500">
+            {selectedGridPostIndex + 1} of {gridPostsData.length}
+          </Text>
+
+          <TouchableOpacity
+            onPress={handleCloseGridPost}
+            activeOpacity={0.7}
+            className="p-1"
+            accessibilityRole="button"
+            accessibilityLabel="Close post"
+          >
+            <Ionicons name="close" size={24} color="#6B7280" />
+          </TouchableOpacity>
+        </View>
+
+        {/* Horizontal FlatList for Smooth Left/Right Swipe/Slide Paging */}
+        <FlatList
+          ref={gridPostListRef}
+          data={gridPostsData}
+          horizontal
+          pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          initialScrollIndex={initialGridPostIndexRef.current}
+          getItemLayout={(_, index) => ({
+            length: screenWidth,
+            offset: screenWidth * index,
+            index,
+          })}
+          onLayout={() => {
+            if (initialGridPostIndexRef.current > 0) {
+              gridPostListRef.current?.scrollToOffset({
+                offset: initialGridPostIndexRef.current * screenWidth,
+                animated: false,
+              });
+            }
+          }}
+          onScrollToIndexFailed={(info) => {
+            setTimeout(() => {
+              gridPostListRef.current?.scrollToOffset({
+                offset: info.index * screenWidth,
+                animated: false,
+              });
+            }, 50);
+          }}
+          onScroll={(e) => {
+            const offsetX = e.nativeEvent.contentOffset.x;
+            const newIdx = Math.round(offsetX / screenWidth);
+            if (
+              newIdx >= 0 &&
+              newIdx < gridPostsData.length &&
+              newIdx !== selectedGridPostIndex
+            ) {
+              setSelectedGridPostIndex(newIdx);
+            }
+          }}
+          scrollEventThrottle={16}
+          keyExtractor={(item) => item.id}
+          renderItem={({ item: currentPost }) => {
+            const baseId =
+              currentPost.basePostId ||
+              (currentPost.id.includes("-")
+                ? currentPost.id.split("-")[0]
+                : currentPost.id);
+            const parentPost = posts.find((p) => String(p.id) === baseId);
+            const isLiked = parentPost ? parentPost.isLiked : currentPost.isLiked;
+            const likesCount = parentPost ? parentPost.likes : currentPost.likesCount;
+            const isSaved = parentPost ? parentPost.isSaved : currentPost.isSaved;
+            const currentPostComments =
+              postComments[baseId] || postComments[currentPost.id] || [];
+            const commentsCount =
+              currentPostComments.length > 0
+                ? currentPostComments.length
+                : (parentPost?.comments ?? currentPost.commentsCount);
+
+            return (
+              <View style={{ width: screenWidth }} className="flex-1">
+                <ScrollView
+                  className="flex-1 bg-gray-100"
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={{
+                    paddingVertical: 12,
+                    paddingHorizontal: 12,
+                    paddingBottom: 40,
+                  }}
+                >
+                  {/* Post Card - Exact NewsFeed Design */}
+                  <View className="bg-white rounded-xl shadow-xs border border-gray-100 overflow-hidden mb-4">
+                    {/* Post Header */}
+                    <View className="p-4 pb-2">
+                      <View className="flex-row justify-between items-start mb-3">
+                        <View className="flex-row items-center flex-1 pr-2">
+                          {/* Avatar with #72AF5B ring */}
+                          <View className="h-10 w-10 rounded-full border border-[#72AF5B] items-center justify-center bg-gray-100 mr-3 overflow-hidden">
+                            {currentPost.avatarUri || parentPost?.avatarUri || profileAvatar ? (
+                              <Image
+                                source={{
+                                  uri:
+                                    currentPost.avatarUri ||
+                                    parentPost?.avatarUri ||
+                                    profileAvatar,
+                                }}
+                                style={{ width: "100%", height: "100%" }}
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <Ionicons
+                                name="person"
+                                size={20}
+                                color="#72AF5B"
+                              />
+                            )}
+                          </View>
+                          {/* Author details */}
+                          <View className="flex-1">
+                            <View className="flex-row items-center flex-wrap">
+                              <Text className="font-bold text-gray-900 mr-1.5 text-base">
+                                {currentPost.authorName ||
+                                  parentPost?.authorName ||
+                                  profileName}
+                              </Text>
+                              {((parentPost?.isVerified ?? currentPost.isVerified) ??
+                                isVerifiedProfile) && (
+                                <Ionicons
+                                  name="checkmark-circle"
+                                  size={16}
+                                  color="#10B981"
+                                  style={{ marginRight: 6 }}
+                                />
+                              )}
+                              <Text
+                                className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+                                  ((parentPost?.isVerified ??
+                                    currentPost.isVerified) ??
+                                  isVerifiedProfile)
+                                    ? "text-emerald-700 bg-emerald-50"
+                                    : "text-green-600 bg-green-50"
+                                }`}
+                              >
+                                {currentPost.authorRole ||
+                                  parentPost?.authorRole ||
+                                  (isVerifiedProfile
+                                    ? "RSBSA Verified Farmer"
+                                    : profileRole)}
+                              </Text>
+                            </View>
+                            <View className="flex-row items-center mt-0.5">
+                              {Boolean(
+                                (currentPost.location || parentPost?.location) &&
+                                  (currentPost.location || parentPost?.location) !==
+                                    "Mill Creek Valley, CA",
+                              ) && (
+                                <>
+                                  <Ionicons
+                                    name="location"
+                                    size={12}
+                                    color="#72AF5B"
+                                  />
+                                  <Text className="text-xs text-gray-500 ml-1 mr-1.5">
+                                    {currentPost.location || parentPost?.location} •
+                                  </Text>
+                                </>
+                              )}
+                              <Text className="text-xs text-gray-500 mr-2">
+                                {currentPost.timeAgo || parentPost?.timeAgo}
+                              </Text>
+                              <Ionicons
+                                name="globe-outline"
+                                size={12}
+                                color="#9ca3af"
+                              />
+                            </View>
+                          </View>
+                        </View>
+
+                        {/* 3-dots post options */}
+                        <TouchableOpacity
+                          onPress={() => {
+                            Alert.alert("Post Options", undefined, [
+                              {
+                                text: "Share Post",
+                                onPress: () => handleToggleShare(baseId),
+                              },
+                              {
+                                text: isSaved
+                                  ? "Remove from Saved"
+                                  : "Save Post",
+                                onPress: () => handleToggleSavePost(baseId),
+                              },
+                              { text: "Cancel", style: "cancel" },
+                            ]);
+                          }}
+                          className="p-1.5 active:opacity-60"
+                          accessibilityRole="button"
+                          accessibilityLabel="Post options"
+                        >
+                          <Ionicons
+                            name="ellipsis-horizontal"
+                            size={20}
+                            color="#9ca3af"
+                          />
+                        </TouchableOpacity>
+                      </View>
+
+                      {/* Post Caption */}
+                      {!!(currentPost.caption || parentPost?.content) && (
+                        <Text className="text-gray-800 text-sm mb-3 leading-5">
+                          {currentPost.caption || parentPost?.content}
+                        </Text>
+                      )}
+
+                      {/* Post Image with tap-to-open Lightbox */}
+                      <TouchableOpacity
+                        activeOpacity={0.9}
+                        onPress={() =>
+                          handleOpenPreview({
+                            uri: currentPost.imageUri,
+                            caption:
+                              currentPost.caption || parentPost?.content,
+                            authorName:
+                              currentPost.authorName ||
+                              parentPost?.authorName ||
+                              profileName,
+                            authorRole:
+                              currentPost.authorRole ||
+                              parentPost?.authorRole ||
+                              "Farmer",
+                            avatarUri:
+                              currentPost.avatarUri ||
+                              parentPost?.avatarUri ||
+                              profileAvatar,
+                            timeAgo:
+                              currentPost.timeAgo || parentPost?.timeAgo,
+                            postId: baseId,
+                            isVerified:
+                              (parentPost?.isVerified ??
+                                currentPost.isVerified) ??
+                              isRSBSAVerified,
+                            likes: likesCount,
+                            comments: commentsCount,
+                            isLiked: isLiked,
+                            isSaved: isSaved,
+                          })
+                        }
+                      >
                         <Image
-                          source={{ uri: profileAvatar }}
-                          style={{ width: "100%", height: "100%" }}
+                          source={{ uri: currentPost.imageUri }}
+                          className="w-full rounded-lg mb-4 bg-gray-100"
+                          style={{
+                            width: "100%",
+                            height: 280,
+                            borderRadius: 8,
+                          }}
                           resizeMode="cover"
                         />
-                      ) : (
-                        <Ionicons name="person" size={20} color="#72AF5B" />
-                      )}
-                    </View>
-                    {/* Author details */}
-                    <View className="flex-1">
-                      <View className="flex-row items-center flex-wrap">
-                        <Text className="font-bold text-gray-900 mr-1.5 text-base">
-                          {profileName}
-                        </Text>
-                        {isVerifiedProfile && (
-                          <Ionicons
-                            name="checkmark-circle"
-                            size={16}
-                            color="#10B981"
-                            style={{ marginRight: 6 }}
-                          />
-                        )}
-                        <Text
-                          className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                            isVerifiedProfile
-                              ? "text-emerald-700 bg-emerald-50"
-                              : "text-green-600 bg-green-50"
-                          }`}
+                      </TouchableOpacity>
+
+                      {/* Interaction Bar */}
+                      <View className="flex-row justify-between items-center pt-2 border-t border-gray-100">
+                        <View className="flex-row gap-6">
+                          {/* Like Button */}
+                          <TouchableOpacity
+                            onPress={() => handleQuickLike(baseId)}
+                            className="flex-row items-center gap-1.5 active:opacity-70"
+                          >
+                            {isLiked ? (
+                              <>
+                                <Ionicons
+                                  name="heart"
+                                  size={24}
+                                  color="#EF4444"
+                                />
+                                <Text className="font-bold text-sm text-[#EF4444]">
+                                  {likesCount}
+                                </Text>
+                              </>
+                            ) : (
+                              <>
+                                <Ionicons
+                                  name="heart-outline"
+                                  size={24}
+                                  color="#6b7280"
+                                />
+                                <Text className="font-medium text-gray-500">
+                                  {likesCount}
+                                </Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+
+                          {/* Comment Button (Opens Lightbox Modal with Comments Sheet) */}
+                          <TouchableOpacity
+                            onPress={() => toggleExpandComments(baseId)}
+                            className="flex-row items-center gap-1.5 active:opacity-70"
+                          >
+                            <Ionicons
+                              name="chatbubble-outline"
+                              size={22}
+                              color="#6b7280"
+                            />
+                            <Text className="font-medium text-gray-500">
+                              {commentsCount}
+                            </Text>
+                          </TouchableOpacity>
+
+                          {/* Share Button */}
+                          <TouchableOpacity
+                            onPress={() => handleToggleShare(baseId)}
+                            className="flex-row items-center gap-1.5 active:opacity-70"
+                          >
+                            <Ionicons
+                              name="share-social-outline"
+                              size={22}
+                              color="#6b7280"
+                            />
+                            <Text className="font-medium text-gray-500">
+                              Share
+                            </Text>
+                          </TouchableOpacity>
+                        </View>
+
+                        {/* Save/Bookmark Button */}
+                        <TouchableOpacity
+                          onPress={() => handleToggleSavePost(baseId)}
+                          className="active:opacity-70 p-0.5"
+                          accessibilityRole="button"
+                          accessibilityLabel="Save post"
                         >
-                          {isVerifiedProfile ? "RSBSA Verified Farmer" : profileRole}
-                        </Text>
+                          <Ionicons
+                            name={
+                              isSaved
+                                ? "bookmark"
+                                : "bookmark-outline"
+                            }
+                            size={24}
+                            color={isSaved ? "#72AF5B" : "#6b7280"}
+                          />
+                        </TouchableOpacity>
                       </View>
-                      <View className="flex-row items-center mt-0.5">
-                        <Ionicons
-                          name="location"
-                          size={12}
-                          color="#72AF5B"
-                        />
-                        <Text className="text-xs text-gray-500 ml-1 mr-2">
-                          Mill Creek Valley, CA • {currentPost.timeAgo}
-                        </Text>
-                        <Ionicons
-                          name="globe-outline"
-                          size={12}
-                          color="#9ca3af"
-                        />
-                      </View>
+
+                      {/* View all comments trigger */}
+                      {commentsCount > 0 && (
+                        <TouchableOpacity
+                          onPress={() => toggleExpandComments(baseId)}
+                          className="mt-2.5 active:opacity-70"
+                        >
+                          <Text className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]">
+                            View all {commentsCount}{" "}
+                            {commentsCount === 1 ? "comment" : "comments"}
+                          </Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                   </View>
-
-                  {/* 3-dots post options */}
-                  <TouchableOpacity
-                    onPress={() => {
-                      Alert.alert("Post Options", undefined, [
-                        {
-                          text: "Share Post",
-                          onPress: () => handleToggleShare(currentPost.id),
-                        },
-                        {
-                          text: currentPost.isSaved ? "Remove from Saved" : "Save Post",
-                          onPress: () => handleToggleGridPostSave(selectedGridPostIndex),
-                        },
-                        { text: "Cancel", style: "cancel" },
-                      ]);
-                    }}
-                    className="p-1.5 active:opacity-60"
-                    accessibilityRole="button"
-                    accessibilityLabel="Post options"
-                  >
-                    <Ionicons
-                      name="ellipsis-horizontal"
-                      size={20}
-                      color="#9ca3af"
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                {/* Post Caption */}
-                {!!currentPost.caption && (
-                  <Text className="text-gray-800 text-sm mb-3 leading-5">
-                    {currentPost.caption}
-                  </Text>
-                )}
-
-                {/* Post Image with tap-to-open Lightbox */}
-                <TouchableOpacity
-                  activeOpacity={0.9}
-                  onPress={() =>
-                    handleOpenPreview({
-                      uri: currentPost.imageUri,
-                      caption: currentPost.caption,
-                      authorName: profileName,
-                      authorRole: "Farmer",
-                      avatarUri: profileAvatar,
-                      timeAgo: currentPost.timeAgo,
-                      postId: currentPost.id,
-                      isVerified: isRSBSAVerified,
-                      likes: currentPost.likesCount,
-                      comments: (postComments[currentPost.id] || []).length,
-                      isLiked: currentPost.isLiked,
-                    })
-                  }
-                >
-                  <Image
-                    source={{ uri: currentPost.imageUri }}
-                    className="w-full rounded-lg mb-4 bg-gray-100"
-                    style={{
-                      width: "100%",
-                      height: 280,
-                      borderRadius: 8,
-                    }}
-                    resizeMode="cover"
-                  />
-                </TouchableOpacity>
-
-                {/* Interaction Bar */}
-                <View className="flex-row justify-between items-center pt-2 border-t border-gray-100">
-                  <View className="flex-row gap-6">
-                    {/* Like Button */}
-                    <TouchableOpacity
-                      onPress={() => handleToggleGridPostLike(selectedGridPostIndex)}
-                      className="flex-row items-center gap-1.5 active:opacity-70"
-                    >
-                      {currentPost.isLiked ? (
-                        <>
-                          <Ionicons
-                            name="heart"
-                            size={24}
-                            color="#EF4444"
-                          />
-                          <Text className="font-bold text-sm text-[#EF4444]">
-                            {currentPost.likesCount}
-                          </Text>
-                        </>
-                      ) : (
-                        <>
-                          <Ionicons
-                            name="heart-outline"
-                            size={24}
-                            color="#6b7280"
-                          />
-                          <Text className="font-medium text-gray-500">
-                            {currentPost.likesCount}
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-
-                    {/* Comment Button (Opens Lightbox Modal with Comments Sheet) */}
-                    <TouchableOpacity
-                      onPress={() => toggleExpandComments(currentPost.id)}
-                      className="flex-row items-center gap-1.5 active:opacity-70"
-                    >
-                      <Ionicons
-                        name="chatbubble-outline"
-                        size={22}
-                        color="#6b7280"
-                      />
-                      <Text className="font-medium text-gray-500">
-                        {currentPostComments.length > 0
-                          ? currentPostComments.length
-                          : currentPost.commentsCount}
-                      </Text>
-                    </TouchableOpacity>
-
-                    {/* Share Button */}
-                    <TouchableOpacity
-                      onPress={() => handleToggleShare(currentPost.id)}
-                      className="flex-row items-center gap-1.5 active:opacity-70"
-                    >
-                      <Ionicons
-                        name="share-social-outline"
-                        size={22}
-                        color="#6b7280"
-                      />
-                      <Text className="font-medium text-gray-500">
-                        Share
-                      </Text>
-                    </TouchableOpacity>
-                  </View>
-
-                  {/* Save/Bookmark Button */}
-                  <TouchableOpacity
-                    onPress={() => handleToggleGridPostSave(selectedGridPostIndex)}
-                    className="active:opacity-70 p-0.5"
-                    accessibilityRole="button"
-                    accessibilityLabel="Save post"
-                  >
-                    <Ionicons
-                      name={
-                        currentPost.isSaved ? "bookmark" : "bookmark-outline"
-                      }
-                      size={24}
-                      color={currentPost.isSaved ? "#72AF5B" : "#6b7280"}
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                {/* View all comments trigger (Opens Lightbox Modal) */}
-                {((currentPostComments.length > 0
-                  ? currentPostComments.length
-                  : currentPost.commentsCount) > 0) && (
-                  <TouchableOpacity
-                    onPress={() => toggleExpandComments(currentPost.id)}
-                    className="mt-2.5 active:opacity-70"
-                  >
-                    <Text className="text-xs font-semibold text-gray-500 hover:text-[#72AF5B]">
-                      View all{" "}
-                      {currentPostComments.length > 0
-                        ? currentPostComments.length
-                        : currentPost.commentsCount}{" "}
-                      {(currentPostComments.length > 0
-                        ? currentPostComments.length
-                        : currentPost.commentsCount) === 1
-                        ? "comment"
-                        : "comments"}
-                    </Text>
-                  </TouchableOpacity>
-                )}
+                </ScrollView>
               </View>
-            </View>
+            );
+          }}
+        />
 
-            {/* Adjacent Posts Navigation (Previous / Next) */}
-            <View className="flex-row items-center justify-between px-2 py-3 bg-white rounded-xl border border-gray-200 mb-6">
-              <TouchableOpacity
-                onPress={() => {
-                  if (selectedGridPostIndex > 0) {
-                    const prevIdx = selectedGridPostIndex - 1;
-                    setSelectedGridPostIndex(prevIdx);
-                  }
-                }}
-                disabled={selectedGridPostIndex === 0}
-                className={`flex-row items-center px-4 py-2.5 rounded-xl ${
-                  selectedGridPostIndex === 0
-                    ? "opacity-30"
-                    : "bg-gray-100 border border-gray-200 active:bg-gray-200"
-                }`}
-              >
-                <Ionicons name="chevron-back" size={18} color="#374151" />
-                <Text className="text-xs font-semibold text-gray-700 ml-1">
-                  Previous
-                </Text>
-              </TouchableOpacity>
+        {/* Share Modal if opened from within post */}
+        <ShareProfileModal
+          visible={isShareModalVisible}
+          onClose={() => setIsShareModalVisible(false)}
+          username={profileName}
+        />
 
-              <TouchableOpacity
-                onPress={() => {
-                  if (selectedGridPostIndex < gridPostsData.length - 1) {
-                    const nextIdx = selectedGridPostIndex + 1;
-                    setSelectedGridPostIndex(nextIdx);
-                  }
-                }}
-                disabled={selectedGridPostIndex === gridPostsData.length - 1}
-                className={`flex-row items-center px-4 py-2.5 rounded-xl ${
-                  selectedGridPostIndex === gridPostsData.length - 1
-                    ? "opacity-30"
-                    : "bg-gray-100 border border-gray-200 active:bg-gray-200"
-                }`}
-              >
-                <Text className="text-xs font-semibold text-gray-700 mr-1">
-                  Next
-                </Text>
-                <Ionicons name="chevron-forward" size={18} color="#374151" />
-              </TouchableOpacity>
-            </View>
-          </ScrollView>
-
-          {/* Share Modal if opened from within post */}
-          <ShareProfileModal
-            visible={isShareModalVisible}
-            onClose={() => setIsShareModalVisible(false)}
-            username={profileName}
-          />
-        </SafeAreaView>
-      );
-    }
+        <SharePostModal
+          visible={shareModalPost !== null}
+          post={shareModalPost}
+          onClose={() => setShareModalPost(null)}
+          onShareSuccess={handleShareSuccess}
+          onShowToast={showToast}
+        />
+      </SafeAreaView>
+    );
   }
 
   return (
@@ -1565,19 +1567,15 @@ export default function UserProfile() {
           {/* Handle/Email */}
           <Text className="text-sm text-gray-800 mb-3">{profileHandle}</Text>
 
-          {/* Bio */}
-          <Text className="text-sm text-gray-800 leading-5 mb-3">
-            Heirloom vegetable grower at Mill Creek Valley Farm. Organic,
-            sustainable, community-first. Third generation farmer.
-          </Text>
-
           {/* Location */}
-          <View className="flex-row items-center mb-4">
-            <Ionicons name="location" size={16} color="#000000" />
-            <Text className="text-sm text-gray-800 ml-1">
-              Mill Creek Valley, CA
-            </Text>
-          </View>
+          {Boolean(profileLocation) && (
+            <View className="flex-row items-center mb-4">
+              <Ionicons name="location" size={16} color="#000000" />
+              <Text className="text-sm text-gray-800 ml-1">
+                {profileLocation}
+              </Text>
+            </View>
+          )}
 
           {/* Action Buttons Row */}
           <View className="flex-row items-center gap-2.5 mb-5">
@@ -1753,7 +1751,7 @@ export default function UserProfile() {
                   key={post.id}
                   onPress={() => handleOpenGridPost(index)}
                   activeOpacity={0.88}
-                  className="w-1/3 aspect-square border-[1px] border-white bg-gray-200 overflow-hidden"
+                  className="w-1/3 aspect-square border-[1px] border-white bg-gray-200 overflow-hidden relative"
                   accessibilityRole="button"
                   accessibilityLabel={`View post ${index + 1}`}
                 >
@@ -1912,13 +1910,24 @@ export default function UserProfile() {
                                 </Text>
                               </View>
                               <View className="flex-row items-center mt-0.5">
-                                <Ionicons
-                                  name="location"
-                                  size={12}
-                                  color="#72AF5B"
-                                />
-                                <Text className="text-xs text-gray-500 ml-1 mr-2">
-                                  {post.location} • {post.timeAgo}
+                                {Boolean(
+                                  post.location &&
+                                    post.location.trim().length > 0 &&
+                                    post.location !== "Mill Creek Valley, CA",
+                                ) && (
+                                  <>
+                                    <Ionicons
+                                      name="location"
+                                      size={12}
+                                      color="#72AF5B"
+                                    />
+                                    <Text className="text-xs text-gray-500 ml-1 mr-1.5">
+                                      {post.location} •
+                                    </Text>
+                                  </>
+                                )}
+                                <Text className="text-xs text-gray-500 mr-2">
+                                  {post.timeAgo}
                                 </Text>
                                 <Ionicons
                                   name={
@@ -1994,7 +2003,13 @@ export default function UserProfile() {
                                   </Text>
                                 </View>
                                 <Text className="text-[11px] text-gray-400 mt-0.5">
-                                  {post.originalPost.location} • {post.originalPost.timeAgo}
+                                  {Boolean(
+                                    post.originalPost.location &&
+                                      post.originalPost.location.trim().length > 0 &&
+                                      post.originalPost.location !== "Mill Creek Valley, CA",
+                                  )
+                                    ? `${post.originalPost.location} • ${post.originalPost.timeAgo}`
+                                    : post.originalPost.timeAgo}
                                 </Text>
                               </View>
                             </View>
@@ -2005,12 +2020,20 @@ export default function UserProfile() {
                               </Text>
                             )}
 
-                            {post.originalPost.imageUrl ? (
-                              <TouchableOpacity
-                                activeOpacity={0.9}
-                                onPress={() =>
+                            {post.originalPost.imageUrl || (post.originalPost.images && post.originalPost.images.length > 0) ? (
+                              <PostImageGrid
+                                images={post.originalPost.images}
+                                fallbackImageUrl={post.originalPost.imageUrl}
+                                onPressImage={(clickedUri, clickedIdx) =>
                                   handleOpenPreview({
-                                    uri: post.originalPost!.imageUrl,
+                                    uri: clickedUri,
+                                    images:
+                                      post.originalPost?.images && post.originalPost.images.length > 0
+                                        ? post.originalPost.images
+                                        : post.originalPost?.imageUrl
+                                          ? [post.originalPost.imageUrl]
+                                          : [],
+                                    initialIndex: clickedIdx,
                                     caption: post.originalPost!.content,
                                     authorName: post.originalPost!.authorName,
                                     timeAgo: post.originalPost!.timeAgo,
@@ -2025,28 +2048,25 @@ export default function UserProfile() {
                                     isSaved: post.isSaved,
                                   })
                                 }
-                              >
-                                <Image
-                                  source={{ uri: post.originalPost.imageUrl }}
-                                  className="w-full rounded-lg bg-gray-100"
-                                  style={{
-                                    width: "100%",
-                                    height: 180,
-                                    borderRadius: 8,
-                                  }}
-                                  resizeMode="cover"
-                                />
-                              </TouchableOpacity>
+                              />
                             ) : null}
                           </View>
                         ) : (
-                          /* Standard Post Image */
-                          post.imageUrl ? (
-                            <TouchableOpacity
-                              activeOpacity={0.9}
-                              onPress={() =>
+                          /* Standard Post Images */
+                          (post.images && post.images.length > 0) || post.imageUrl ? (
+                            <PostImageGrid
+                              images={post.images}
+                              fallbackImageUrl={post.imageUrl}
+                              onPressImage={(clickedUri, clickedIdx) =>
                                 handleOpenPreview({
-                                  uri: post.imageUrl,
+                                  uri: clickedUri,
+                                  images:
+                                    post.images && post.images.length > 0
+                                      ? post.images
+                                      : post.imageUrl
+                                        ? [post.imageUrl]
+                                        : [],
+                                  initialIndex: clickedIdx,
                                   caption: post.content,
                                   authorName: post.authorName,
                                   timeAgo: post.timeAgo,
@@ -2061,18 +2081,7 @@ export default function UserProfile() {
                                   isSaved: post.isSaved,
                                 })
                               }
-                            >
-                              <Image
-                                source={{ uri: post.imageUrl }}
-                                className="w-full rounded-lg mb-4 bg-gray-100"
-                                style={{
-                                  width: "100%",
-                                  height: 224,
-                                  borderRadius: 8,
-                                }}
-                                resizeMode="cover"
-                              />
-                            </TouchableOpacity>
+                            />
                           ) : null
                         )}
 
@@ -2251,7 +2260,13 @@ export default function UserProfile() {
                   {(isOwnProfile
                     ? user?.about || user?.bio
                     : params.userAbout || params.userBio) ||
-                    "Dedicated to regenerative agriculture, certified organic produce, and nourishing our local community since 1984. Specializing in heirloom tomatoes, root crops, and seasonal greens."}
+                    (farmDetails?.farmName
+                      ? `Welcome to ${farmDetails.farmName}! ${farmDetails.primaryCrops ? `Specializing in ${farmDetails.primaryCrops}. ` : ""}Committed to providing fresh, organic, and locally grown farm products.`
+                      : rsbsaApp?.farmName
+                      ? `Welcome to ${rsbsaApp.farmName}! Committed to providing fresh, organic, and locally grown farm products.`
+                      : isOwnProfile
+                      ? "No description added yet. Tap Edit below to write something about yourself or your farm."
+                      : "No description provided yet.")}
                 </Text>
 
                 {/* Separate Edit Button */}
@@ -2278,190 +2293,14 @@ export default function UserProfile() {
         )}
       </ScrollView>
 
-      {/* Facebook-style Share to Feed Dialog Modal */}
-      <Modal
-        visible={shareDialogPost !== null}
-        transparent={true}
-        animationType="fade"
-        onRequestClose={() => {
-          if (!isSharingPost) {
-            setShareDialogPost(null);
-            setShareCaption("");
-          }
-        }}
-      >
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : "height"}
-          className="flex-1 bg-black/60 justify-center items-center p-4"
-        >
-          <Pressable
-            className="absolute inset-0"
-            onPress={() => {
-              if (!isSharingPost) {
-                setShareDialogPost(null);
-                setShareCaption("");
-              }
-            }}
-          />
-          <View
-            className="w-full max-w-lg bg-white rounded-3xl overflow-hidden shadow-2xl z-10 max-h-[85vh] flex-col"
-            style={{
-              shadowColor: "#000",
-              shadowOffset: { width: 0, height: 10 },
-              shadowOpacity: 0.25,
-              shadowRadius: 20,
-              elevation: 10,
-            }}
-          >
-            {/* Modal Header */}
-            <View className="flex-row items-center justify-between px-5 py-4 border-b border-gray-100">
-              <Text className="text-lg font-bold text-gray-900">
-                Share to Feed
-              </Text>
-              <TouchableOpacity
-                onPress={() => {
-                  setShareDialogPost(null);
-                  setShareCaption("");
-                }}
-                disabled={isSharingPost}
-                className="w-8 h-8 rounded-full bg-gray-100 items-center justify-center active:bg-gray-200"
-                accessibilityRole="button"
-                accessibilityLabel="Close share dialog"
-              >
-                <Ionicons name="close" size={20} color="#4B5563" />
-              </TouchableOpacity>
-            </View>
-
-            <ScrollView
-              className="flex-1 px-5 py-4"
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
-              {/* Logged-in User Profile Row */}
-              <View className="flex-row items-center mb-3">
-                <View className="w-11 h-11 rounded-full border border-green-500 items-center justify-center bg-gray-100 mr-3 overflow-hidden">
-                  {user?.avatarUrl ? (
-                    <Image
-                      source={{ uri: user.avatarUrl }}
-                      className="w-full h-full"
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <Ionicons name="person" size={22} color="#9CA3AF" />
-                  )}
-                </View>
-                <View className="flex-1">
-                  <Text className="font-bold text-gray-900 text-base">
-                    {user?.name || user?.username || "You"}
-                  </Text>
-                  <View className="flex-row items-center mt-1 bg-green-50 self-start px-2 py-0.5 rounded-full border border-green-200/60">
-                    <Ionicons name="globe-outline" size={12} color="#166534" />
-                    <Text className="text-xs font-semibold text-green-800 ml-1">
-                      Public
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Custom Description / Thoughts Input */}
-              <TextInput
-                value={shareCaption}
-                onChangeText={setShareCaption}
-                placeholder="Say something about this post..."
-                placeholderTextColor="#9CA3AF"
-                multiline
-                className="text-base text-gray-800 min-h-[90px] text-top mb-4"
-                style={{ textAlignVertical: "top" }}
-                autoFocus={true}
-              />
-
-              {/* Original Post Preview Box (Facebook Embed Style) */}
-              {shareDialogPost && (
-                <View className="border border-gray-200 rounded-2xl p-3.5 bg-gray-50/70 mb-2">
-                  {/* Original Author Info */}
-                  <View className="flex-row items-center mb-2.5">
-                    <View className="w-8 h-8 rounded-full border border-green-400 items-center justify-center bg-gray-200 mr-2.5 overflow-hidden">
-                      {shareDialogPost.originalPost?.avatarUri || shareDialogPost.avatarUri ? (
-                        <Image
-                          source={{
-                            uri:
-                              shareDialogPost.originalPost?.avatarUri ||
-                              shareDialogPost.avatarUri,
-                          }}
-                          className="w-full h-full"
-                          resizeMode="cover"
-                        />
-                      ) : (
-                        <Ionicons name="person" size={16} color="#9CA3AF" />
-                      )}
-                    </View>
-                    <View className="flex-1">
-                      <Text className="font-bold text-gray-900 text-xs" numberOfLines={1}>
-                        {shareDialogPost.originalPost?.authorName ||
-                          shareDialogPost.authorName}
-                      </Text>
-                      <Text className="text-[11px] text-gray-500" numberOfLines={1}>
-                        {shareDialogPost.originalPost?.authorRole ||
-                          shareDialogPost.authorRole}{" "}
-                        •{" "}
-                        {shareDialogPost.originalPost?.timeAgo ||
-                          shareDialogPost.timeAgo}
-                      </Text>
-                    </View>
-                  </View>
-
-                  {/* Original Post Content Snippet */}
-                  {(shareDialogPost.originalPost?.content ||
-                    shareDialogPost.content) ? (
-                    <Text
-                      className="text-sm text-gray-700 mb-2 leading-relaxed"
-                      numberOfLines={4}
-                    >
-                      {shareDialogPost.originalPost?.content ||
-                        shareDialogPost.content}
-                    </Text>
-                  ) : null}
-
-                  {/* Original Post Image (if any) */}
-                  {(shareDialogPost.originalPost?.imageUrl ||
-                    shareDialogPost.imageUrl) ? (
-                    <Image
-                      source={{
-                        uri:
-                          shareDialogPost.originalPost?.imageUrl ||
-                          shareDialogPost.imageUrl,
-                      }}
-                      className="w-full h-40 rounded-xl bg-gray-200"
-                      resizeMode="cover"
-                    />
-                  ) : null}
-                </View>
-              )}
-            </ScrollView>
-
-            {/* Modal Bottom Share Button */}
-            <View className="px-5 py-3.5 border-t border-gray-100 bg-white">
-              <TouchableOpacity
-                onPress={handleConfirmShare}
-                disabled={isSharingPost}
-                className="w-full py-3.5 rounded-xl bg-[#72AF5B] items-center justify-center flex-row shadow-sm active:bg-[#5e944a]"
-                activeOpacity={0.85}
-              >
-                {isSharingPost ? (
-                  <ActivityIndicator size="small" color="#ffffff" />
-                ) : (
-                  <>
-                    <Ionicons name="arrow-redo" size={18} color="#ffffff" />
-                    <Text className="text-white font-bold text-base ml-2">
-                      Share Now
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          </View>
-        </KeyboardAvoidingView>
-      </Modal>
+      {/* Facebook-style Share Post Modal */}
+      <SharePostModal
+        visible={shareModalPost !== null}
+        post={shareModalPost}
+        onClose={() => setShareModalPost(null)}
+        onShareSuccess={handleShareSuccess}
+        onShowToast={showToast}
+      />
 
       {/* Create Post Modal */}
       <CreatePostModal
@@ -2916,58 +2755,138 @@ export default function UserProfile() {
         statusBarTranslucent={true}
         onRequestClose={handleCloseLightbox}
       >
-        <View className="flex-1 bg-black/95 justify-between relative">
-          {/* Top Bar with Close Button */}
-          <View
-            style={{ paddingTop: Math.max(insets.top, 16) + 8 }}
-            className="px-4 pb-3 flex-row items-center justify-end z-20"
-          >
-            <TouchableOpacity
-              onPress={handleCloseLightbox}
-              className="w-10 h-10 rounded-full bg-white/20 items-center justify-center active:bg-white/30"
-              accessibilityRole="button"
-              accessibilityLabel="Close image preview"
-              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
-            >
-              <Ionicons name="close" size={24} color="#FFFFFF" />
-            </TouchableOpacity>
-          </View>
+        {(() => {
+          if (!previewImage) return null;
+          const imagesList =
+            previewImage.images && previewImage.images.length > 0
+              ? previewImage.images
+              : previewImage.uri
+                ? [previewImage.uri]
+                : previewImage.source
+                  ? [previewImage.source]
+                  : [];
 
-          {/* Centered Image with Tap-to-close on background */}
-          <Pressable
-            className="flex-1 items-center justify-center px-2"
-            onPress={handleCloseLightbox}
-          >
-            {previewImage && (
-              <Image
-                source={
-                  previewImage.uri
-                    ? { uri: previewImage.uri }
-                    : previewImage.source
-                }
-                style={{ width: "100%", height: "100%" }}
-                resizeMode="contain"
-              />
-            )}
-          </Pressable>
-
-          {/* Bottom Caption (if available) */}
-          {previewImage?.caption ? (
-            <View
-              style={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
-              className="bg-black/75 border-t border-white/10 z-10 px-5 pt-3 pb-2"
-            >
-              <ScrollView
-                style={{ maxHeight: 90 }}
-                showsVerticalScrollIndicator={false}
+          return (
+            <View className="flex-1 bg-black/95 justify-between relative">
+              {/* Top Bar with Pagination Counter & Close Button */}
+              <View
+                style={{ paddingTop: Math.max(insets.top, 16) + 8 }}
+                className="px-4 pb-3 flex-row items-center justify-between z-20"
               >
-                <Text className="text-white/95 text-sm leading-5">
-                  {previewImage.caption}
-                </Text>
-              </ScrollView>
+                {imagesList.length > 1 ? (
+                  <View className="bg-white/20 px-3 py-1 rounded-full">
+                    <Text className="text-white text-xs font-semibold">
+                      {(previewImage.currentIndex ?? 0) + 1} / {imagesList.length}
+                    </Text>
+                  </View>
+                ) : (
+                  <View className="w-10" />
+                )}
+
+                <TouchableOpacity
+                  onPress={handleCloseLightbox}
+                  className="w-10 h-10 rounded-full bg-white/20 items-center justify-center active:bg-white/30"
+                  accessibilityRole="button"
+                  accessibilityLabel="Close image preview"
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                  <Ionicons name="close" size={24} color="#FFFFFF" />
+                </TouchableOpacity>
+              </View>
+
+              {/* Horizontal Swipeable Image Gallery (Slide Left / Right) */}
+              <View className="flex-1 justify-center relative">
+                <FlatList
+                  ref={lightboxListRef}
+                  data={imagesList}
+                  horizontal
+                  pagingEnabled
+                  showsHorizontalScrollIndicator={false}
+                  initialScrollIndex={
+                    previewImage.currentIndex &&
+                    previewImage.currentIndex >= 0 &&
+                    previewImage.currentIndex < imagesList.length
+                      ? previewImage.currentIndex
+                      : 0
+                  }
+                  getItemLayout={(_, index) => ({
+                    length: screenWidth,
+                    offset: screenWidth * index,
+                    index,
+                  })}
+                  onScrollToIndexFailed={(info) => {
+                    setTimeout(() => {
+                      lightboxListRef.current?.scrollToOffset({
+                        offset: info.index * screenWidth,
+                        animated: false,
+                      });
+                    }, 50);
+                  }}
+                  onMomentumScrollEnd={(e) => {
+                    const offsetX = e.nativeEvent.contentOffset.x;
+                    const newIdx = Math.round(offsetX / screenWidth);
+                    if (
+                      newIdx >= 0 &&
+                      newIdx < imagesList.length &&
+                      newIdx !== previewImage.currentIndex
+                    ) {
+                      setPreviewImage((prev) =>
+                        prev ? { ...prev, currentIndex: newIdx } : null,
+                      );
+                    }
+                  }}
+                  keyExtractor={(_, idx) => `lightbox-profile-img-${idx}`}
+                  renderItem={({ item }) => (
+                    <Pressable
+                      style={{ width: screenWidth }}
+                      className="flex-1 items-center justify-center px-2"
+                      onPress={handleCloseLightbox}
+                    >
+                      <Image
+                        source={typeof item === "string" ? { uri: item } : item}
+                        style={{ width: "100%", height: "100%" }}
+                        resizeMode="contain"
+                      />
+                    </Pressable>
+                  )}
+                />
+              </View>
+
+              {/* Dot Indicators for multi-image gallery */}
+              {imagesList.length > 1 && (
+                <View className="flex-row justify-center items-center gap-1.5 pb-2 z-20">
+                  {imagesList.map((_, dotIdx) => (
+                    <View
+                      key={dotIdx}
+                      className={`h-1.5 rounded-full ${
+                        dotIdx === (previewImage.currentIndex ?? 0)
+                          ? "w-5 bg-white"
+                          : "w-1.5 bg-white/40"
+                      }`}
+                    />
+                  ))}
+                </View>
+              )}
+
+              {/* Bottom Caption (if available) */}
+              {previewImage?.caption ? (
+                <View
+                  style={{ paddingBottom: Math.max(insets.bottom, 12) + 8 }}
+                  className="bg-black/75 border-t border-white/10 z-10 px-5 pt-3 pb-2"
+                >
+                  <ScrollView
+                    style={{ maxHeight: 90 }}
+                    showsVerticalScrollIndicator={false}
+                  >
+                    <Text className="text-white/95 text-sm leading-5">
+                      {previewImage.caption}
+                    </Text>
+                  </ScrollView>
+                </View>
+              ) : null}
             </View>
-          ) : null}
-        </View>
+          );
+        })()}
       </Modal>
 
       {/* Share Profile Modal */}

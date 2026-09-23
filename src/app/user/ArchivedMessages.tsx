@@ -1,8 +1,19 @@
-import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { useState } from "react";
 import {
+  archiveConversationApi,
+  ConversationItem,
+  deleteConversationApi,
+  getConversationsApi,
+} from "@/services/chat-service";
+import { Ionicons } from "@expo/vector-icons";
+import { useFocusEffect, useRouter } from "expo-router";
+import React, { useCallback, useState } from "react";
+import {
+  ActivityIndicator,
+  Alert,
+  Image,
   Modal,
+  Platform,
+  RefreshControl,
   ScrollView,
   Text,
   TextInput,
@@ -15,41 +26,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import ChatSidebarModal from "../../components/ChatSidebarModal";
 import BottomNavBar from "../../components/Navigation";
 
-interface ArchivedItem {
-  id: string;
-  name: string;
-  snippet: string;
-  time: string;
-  unreadCount?: number;
-}
-
-const INITIAL_ARCHIVED: ArchivedItem[] = [
-  {
-    id: "1",
-    name: "Jacklourence Broca",
-    snippet: "Hello, how are you?",
-    time: "May 1",
-  },
-  {
-    id: "2",
-    name: "Amer Macaan",
-    snippet: "Salamat sa order bai!",
-    time: "Apr 28",
-  },
-  {
-    id: "3",
-    name: "Jian Julito",
-    snippet: "Kita ta puhon sa reunion",
-    time: "Mar 15",
-  },
-];
-
 function ArchivedListItem({
   item,
   onPress,
   onLongPress,
 }: {
-  item: ArchivedItem;
+  item: ConversationItem;
   onPress?: () => void;
   onLongPress?: () => void;
 }) {
@@ -58,12 +40,20 @@ function ArchivedListItem({
       onPress={onPress}
       onLongPress={onLongPress}
       delayLongPress={300}
-      className="flex-row items-center px-4 py-3 border-b border-gray-50 active:bg-gray-50"
+      className="flex-row items-center px-4 py-3.5 border-b border-gray-100 active:bg-gray-50"
       activeOpacity={0.7}
     >
-      {/* Left Avatar: Circular gray placeholder */}
-      <View className="w-14 h-14 rounded-full bg-gray-300 mr-4 items-center justify-center overflow-hidden shadow-2xs border border-gray-200">
-        <Ionicons name="person" size={32} color="#FFFFFF" />
+      {/* Left Avatar */}
+      <View className="w-13 h-13 rounded-full bg-gray-200 mr-3.5 items-center justify-center overflow-hidden border border-gray-200">
+        {item.avatarUrl ? (
+          <Image
+            source={{ uri: item.avatarUrl }}
+            className="w-full h-full"
+            resizeMode="cover"
+          />
+        ) : (
+          <Ionicons name="person" size={26} color="#9CA3AF" />
+        )}
       </View>
 
       {/* Middle Text Content: Name & Snippet */}
@@ -75,22 +65,22 @@ function ArchivedListItem({
           {item.name}
         </Text>
         <Text
-          className="text-sm text-gray-600 font-medium truncate"
+          className={`text-sm ${
+            item.unread > 0 ? "font-bold text-gray-900" : "text-gray-500 font-normal"
+          } truncate`}
           numberOfLines={1}
         >
-          {item.snippet}
+          {item.snippet || "Archived conversation"}
         </Text>
       </View>
 
       {/* Right: Time & Badge */}
-      <View className="items-end justify-center min-w-[56px] flex-shrink-0">
-        <Text className="text-xs text-gray-800 font-medium mb-1">
-          {item.time}
-        </Text>
-        {item.unreadCount !== undefined && item.unreadCount > 0 && (
+      <View className="items-end justify-center min-w-[56px] flex-shrink-0 gap-1">
+        <Text className="text-xs text-gray-400 font-medium">{item.time}</Text>
+        {item.unread > 0 && (
           <View className="bg-red-600 h-5 min-w-[20px] rounded-full items-center justify-center px-1 shadow-2xs">
             <Text className="text-white text-[11px] font-bold text-center leading-tight">
-              {item.unreadCount}
+              {item.unread}
             </Text>
           </View>
         )}
@@ -103,42 +93,88 @@ export default function ArchivedMessages() {
   const router = useRouter();
   const [searchQuery, setSearchQuery] = useState("");
   const [isSidebarVisible, setSidebarVisible] = useState(false);
-  const [archivedList, setArchivedList] =
-    useState<ArchivedItem[]>(INITIAL_ARCHIVED);
-  const [activeMenuChatId, setActiveMenuChatId] = useState<
-    string | number | null
-  >(null);
+  const [archivedList, setArchivedList] = useState<ConversationItem[]>([]);
+  const [selectedChat, setSelectedChat] = useState<ConversationItem | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
 
-  const handleBack = () => {
+  const fetchArchived = async (isPull = false) => {
+    if (isPull) setIsRefreshing(true);
+    else if (archivedList.length === 0) setIsLoading(true);
+
     try {
-      if (router.canGoBack()) {
-        router.back();
-      } else {
-        router.push("/user/Chats" as any);
-      }
-    } catch {
-      router.push("/user/Chats" as any);
+      const data = await getConversationsApi({ category: "archived" });
+      setArchivedList(data);
+    } catch (err) {
+      console.warn("Failed to fetch archived chats:", err);
+    } finally {
+      setIsLoading(false);
+      setIsRefreshing(false);
     }
   };
 
-  const handleUnarchive = (id: string | number | null) => {
-    if (!id) return;
-    setArchivedList((prev) => prev.filter((item) => item.id !== String(id)));
-    setActiveMenuChatId(null);
+  useFocusEffect(
+    useCallback(() => {
+      fetchArchived(false);
+    }, [])
+  );
+
+  const handleOpenConversation = (item: ConversationItem) => {
+    router.push({
+      pathname: "/user/ChatConversation",
+      params: {
+        conversationId: item.id,
+        userId: item.otherUserId,
+        name: item.name,
+        avatarUrl: item.avatarUrl || "",
+        online: "true",
+      },
+    } as any);
   };
 
-  const handleRestrict = (_id: string | number | null) => {
-    setActiveMenuChatId(null);
+  const handleUnarchive = async (chat: ConversationItem) => {
+    try {
+      setArchivedList((prev) => prev.filter((c) => c.id !== chat.id));
+      setSelectedChat(null);
+      await archiveConversationApi(chat.id, false);
+      const msg = `Conversation with ${chat.name} unarchived and moved back to Messages.`;
+      if (Platform.OS === "web") {
+        window.alert(msg);
+      } else {
+        Alert.alert("Unarchived", msg);
+      }
+      fetchArchived(false);
+    } catch {
+      fetchArchived(false);
+    }
   };
 
-  const handleBlock = (_id: string | number | null) => {
-    setActiveMenuChatId(null);
-  };
+  const handleDelete = async (chat: ConversationItem) => {
+    const doDelete = async () => {
+      try {
+        setArchivedList((prev) => prev.filter((c) => c.id !== chat.id));
+        setSelectedChat(null);
+        await deleteConversationApi({
+          conversationId: chat.id,
+          userId: chat.otherUserId,
+        });
+        fetchArchived(false);
+      } catch {
+        fetchArchived(false);
+      }
+    };
 
-  const handleDelete = (id: string | number | null) => {
-    if (!id) return;
-    setArchivedList((prev) => prev.filter((item) => item.id !== String(id)));
-    setActiveMenuChatId(null);
+    const confirmMsg = `Permanently delete conversation with ${chat.name}?`;
+    if (Platform.OS === "web") {
+      if (typeof window !== "undefined" && window.confirm(confirmMsg)) {
+        doDelete();
+      }
+    } else {
+      Alert.alert("Delete Conversation", confirmMsg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: doDelete },
+      ]);
+    }
   };
 
   const filteredArchived = archivedList.filter(
@@ -152,141 +188,148 @@ export default function ArchivedMessages() {
       className="flex-1 bg-white relative h-full"
       style={{ flex: 1, position: "relative", minHeight: "100%" }}
     >
-      {/*  Header  */}
-      <View className="flex-row items-center px-4 pt-4 pb-4">
-        {/* Title */}
-        <Text className="text-3xl font-bold text-gray-900 ml-3 tracking-tight">
+      {/* 1. Header */}
+      <View className="flex-row items-center justify-between px-5 pt-4 pb-2 bg-white">
+        <Text className="text-3xl font-bold text-gray-900 tracking-tight">
           Chats
         </Text>
       </View>
 
-      {/*   Search Bar Container  */}
-      <View className="flex-row items-center px-4 mb-4 gap-3">
-        {/* Left Drawer*/}
+      {/* 2. Search Bar Container */}
+      <View className="flex-row items-center px-5 py-3 gap-3">
         <TouchableOpacity
           onPress={() => setSidebarVisible(true)}
-          className="w-11 h-11 rounded-2xl items-center justify-center "
-          activeOpacity={0.7}
+          className="p-1 active:opacity-70"
           accessibilityRole="button"
           accessibilityLabel="Open menu"
         >
-          <Ionicons name="menu-outline" size={22} color="#6B7280" />
+          <Ionicons name="menu-outline" size={28} color="#374151" />
         </TouchableOpacity>
 
         {/* Search Input Box */}
-        <View className="flex-1 bg-gray-100 rounded-full flex-row items-center px-4 py-2.5 border border-gray-100">
+        <View className="flex-1 flex-row items-center bg-gray-100 rounded-full px-4 h-11 border border-gray-100">
           <TextInput
             value={searchQuery}
             onChangeText={setSearchQuery}
             placeholder="Search..."
             placeholderTextColor="#9CA3AF"
-            className="flex-1 text-base text-gray-800 pr-2 p-0"
+            className="flex-1 text-base text-gray-800 pr-2 h-full font-medium"
+            autoCapitalize="none"
           />
           {searchQuery ? (
-            <TouchableOpacity onPress={() => setSearchQuery("")}>
+            <TouchableOpacity onPress={() => setSearchQuery("")} className="p-1 mr-1">
               <Ionicons name="close-circle" size={18} color="#9CA3AF" />
             </TouchableOpacity>
-          ) : (
-            <Ionicons name="search-outline" size={20} color="#9CA3AF" />
-          )}
+          ) : null}
+          <Ionicons name="search-outline" size={20} color="#9CA3AF" />
         </View>
       </View>
 
-      {/*   Section Title  */}
-      <View className="px-4 py-2 flex-row items-center justify-between">
+      {/* Section Title */}
+      <View className="px-5 py-2 flex-row items-center justify-between border-b border-gray-50">
         <Text className="text-lg font-bold text-gray-900">Archived</Text>
+        <Text className="text-xs text-gray-400 font-medium">
+          {archivedList.length} {archivedList.length === 1 ? "conversation" : "conversations"}
+        </Text>
       </View>
 
-      {/*   Archived Vertical Scroll List  */}
+      {/* Archived Scroll List */}
       <ScrollView
         className="flex-1 bg-white"
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: 110 }}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => fetchArchived(true)}
+            colors={["#72AF5B"]}
+            tintColor="#72AF5B"
+          />
+        }
       >
-        {filteredArchived.length > 0 ? (
+        {isLoading ? (
+          <View className="py-16 items-center justify-center">
+            <ActivityIndicator size="large" color="#72AF5B" />
+            <Text className="text-sm text-gray-500 mt-2 font-medium">
+              Loading archived chats...
+            </Text>
+          </View>
+        ) : filteredArchived.length > 0 ? (
           filteredArchived.map((item) => (
             <ArchivedListItem
               key={item.id}
               item={item}
-              onPress={() => {
-                try {
-                  router.push("/user/ChatConversation" as any);
-                } catch (e) {
-                  console.warn("Navigation error", e);
-                }
-              }}
-              onLongPress={() => setActiveMenuChatId(item.id)}
+              onPress={() => handleOpenConversation(item)}
+              onLongPress={() => setSelectedChat(item)}
             />
           ))
         ) : (
-          <View className="items-center justify-center py-16 px-4">
-            <Ionicons name="archive-outline" size={48} color="#D1D5DB" />
-            <Text className="text-gray-500 font-semibold text-base mt-3">
-              No archived messages
+          <View className="items-center justify-center py-20 px-6">
+            <View className="w-16 h-16 rounded-full bg-gray-100 items-center justify-center mb-3">
+              <Ionicons name="archive-outline" size={36} color="#9CA3AF" />
+            </View>
+            <Text className="text-gray-800 font-bold text-base mb-1">
+              No Archived Chats
             </Text>
-            <Text className="text-gray-400 text-xs mt-1 text-center">
-              Your archived conversations will appear here
+            <Text className="text-gray-500 text-xs text-center max-w-xs">
+              Long-press any conversation in your inbox and tap "Archive Chat" to hide it here.
             </Text>
           </View>
         )}
       </ScrollView>
 
-      {/*    Context Menu Modal Overlay (Long Press)   */}
+      {/* Action Sheet Modal for Selected Archived Chat */}
       <Modal
-        visible={activeMenuChatId !== null}
+        visible={Boolean(selectedChat)}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setActiveMenuChatId(null)}
+        onRequestClose={() => setSelectedChat(null)}
       >
-        <TouchableWithoutFeedback onPress={() => setActiveMenuChatId(null)}>
-          <View className="flex-1 bg-black/25 items-center justify-center">
-            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
-              <View className="bg-white rounded-2xl shadow-2xl elevation-10 py-2 w-60 border border-gray-100 z-50 overflow-hidden">
-                {/* Item 1: Unarchive */}
+        <TouchableWithoutFeedback onPress={() => setSelectedChat(null)}>
+          <View className="flex-1 bg-black/40 justify-end">
+            <TouchableWithoutFeedback>
+              <View className="bg-white rounded-t-3xl p-5 pb-8 shadow-2xl">
+                <Text className="text-base font-bold text-gray-900 mb-1">
+                  {selectedChat?.name}
+                </Text>
+                <Text className="text-xs text-gray-400 mb-4">
+                  Choose an action for this archived conversation
+                </Text>
+
+                {/* Unarchive Button */}
                 <TouchableOpacity
-                  onPress={() => handleUnarchive(activeMenuChatId)}
-                  className="flex-row items-center px-4 py-3.5 gap-4 active:bg-gray-50"
-                  activeOpacity={0.7}
+                  onPress={() => selectedChat && handleUnarchive(selectedChat)}
+                  className="flex-row items-center py-3.5 px-4 rounded-xl bg-gray-50 mb-2 active:bg-gray-100"
                 >
-                  <Ionicons name="archive" size={20} color="#4B5563" />
-                  <Text className="text-base text-gray-800 font-medium">
-                    Unarchive
+                  <Ionicons name="arrow-undo-outline" size={20} color="#72AF5B" style={{ marginRight: 12 }} />
+                  <Text className="text-sm font-semibold text-gray-800">
+                    Unarchive (Move to Messages)
                   </Text>
                 </TouchableOpacity>
 
-                {/* Item 2: Restrict */}
+                {/* Open Chat Button */}
                 <TouchableOpacity
-                  onPress={() => handleRestrict(activeMenuChatId)}
-                  className="flex-row items-center px-4 py-3.5 gap-4 active:bg-gray-50"
-                  activeOpacity={0.7}
+                  onPress={() => {
+                    const c = selectedChat;
+                    setSelectedChat(null);
+                    if (c) handleOpenConversation(c);
+                  }}
+                  className="flex-row items-center py-3.5 px-4 rounded-xl bg-gray-50 mb-2 active:bg-gray-100"
                 >
-                  <Ionicons name="eye-off" size={20} color="#4B5563" />
-                  <Text className="text-base text-gray-800 font-medium">
-                    Restrict
+                  <Ionicons name="chatbubble-outline" size={20} color="#3B82F6" style={{ marginRight: 12 }} />
+                  <Text className="text-sm font-semibold text-gray-800">
+                    Open Conversation
                   </Text>
                 </TouchableOpacity>
 
-                {/* Item 3: Block */}
+                {/* Delete Button */}
                 <TouchableOpacity
-                  onPress={() => handleBlock(activeMenuChatId)}
-                  className="flex-row items-center px-4 py-3.5 gap-4 active:bg-gray-50"
-                  activeOpacity={0.7}
+                  onPress={() => selectedChat && handleDelete(selectedChat)}
+                  className="flex-row items-center py-3.5 px-4 rounded-xl bg-red-50 active:bg-red-100"
                 >
-                  <Ionicons name="arrow-redo" size={20} color="#4B5563" />
-                  <Text className="text-base text-gray-800 font-medium">
-                    Block
-                  </Text>
-                </TouchableOpacity>
-
-                {/* Item 4: Delete all chat */}
-                <TouchableOpacity
-                  onPress={() => handleDelete(activeMenuChatId)}
-                  className="flex-row items-center px-4 py-3.5 gap-4 active:bg-red-50 border-t border-gray-100 mt-1"
-                  activeOpacity={0.7}
-                >
-                  <Ionicons name="trash" size={20} color="#DC2626" />
-                  <Text className="text-base text-red-600 font-medium">
-                    Delete all chat
+                  <Ionicons name="trash-outline" size={20} color="#DC2626" style={{ marginRight: 12 }} />
+                  <Text className="text-sm font-semibold text-red-600">
+                    Delete Conversation
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -295,10 +338,10 @@ export default function ArchivedMessages() {
         </TouchableWithoutFeedback>
       </Modal>
 
-      {/*  Bottom Navigation Bar  */}
-      <BottomNavBar showFab={false} activeTabName="chat" />
+      {/* Bottom Navigation Bar */}
+      <BottomNavBar showFab={false} activeTab="Chat" />
 
-      {/*  Sidebar Drawer  */}
+      {/* Sidebar Drawer */}
       <ChatSidebarModal
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}

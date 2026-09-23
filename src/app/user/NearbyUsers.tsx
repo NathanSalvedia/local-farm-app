@@ -42,7 +42,7 @@ export default function NearbyUsers() {
       const data = await getNearbyUsersApi();
       setNearbyUsers(data);
     } catch (err) {
-      console.warn("Failed to fetch nearby users:", err);
+      console.log("Failed to fetch nearby users:", err);
       showToast("Unable to load nearby users.", "error");
     } finally {
       setIsLoading(false);
@@ -82,15 +82,17 @@ export default function NearbyUsers() {
     setHiddenUserIds((prev) => new Set([...prev, id]));
   };
 
-  const filteredUsers = nearbyUsers.filter(
-    (user) =>
-      !hiddenUserIds.has(user.id) &&
-      (user.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (user.username &&
-          user.username.toLowerCase().includes(searchQuery.toLowerCase())) ||
-        (user.location &&
-          user.location.toLowerCase().includes(searchQuery.toLowerCase()))),
-  );
+  const filteredUsers = nearbyUsers.filter((user) => {
+    if (hiddenUserIds.has(user.id)) return false;
+    const currentRel = userStates[user.id] || user.relationship || "none";
+    if (currentRel === "accepted") return false;
+    const query = searchQuery.toLowerCase();
+    return (
+      user.name.toLowerCase().includes(query) ||
+      (user.username && user.username.toLowerCase().includes(query)) ||
+      (user.location && user.location.toLowerCase().includes(query))
+    );
+  });
 
   return (
     <SafeAreaView
@@ -137,9 +139,10 @@ export default function NearbyUsers() {
         <Text className="text-lg font-semibold text-gray-800">
           Nearby Users
         </Text>
-        {!isLoading && nearbyUsers.length > 0 && (
+        {!isLoading && filteredUsers.length > 0 && (
           <Text className="text-xs font-semibold text-gray-500">
-            {filteredUsers.length} people nearby
+            {filteredUsers.length}{" "}
+            {filteredUsers.length === 1 ? "person" : "people"} nearby
           </Text>
         )}
       </View>

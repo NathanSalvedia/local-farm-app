@@ -4,12 +4,21 @@ import {
   getFriendsApi,
   searchUsersToConnectApi,
 } from "@/services/connection-service";
+import {
+  getCurrentDeviceLocation,
+  LocationSearchResult,
+  POPULAR_FARM_LOCATIONS,
+  reverseGeocodeApi,
+  searchLocationsApi,
+} from "@/services/location-service";
 import { createPostApi, PostItem } from "@/services/post-service";
 import {
   getRSBSAApplication,
   RSBSAApplication,
+  setRSBSAStatus,
 } from "@/services/rsbsa-service";
 import { Ionicons } from "@expo/vector-icons";
+import * as ImagePicker from "expo-image-picker";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -32,6 +41,7 @@ import {
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
 import LeafletMap from "./LeafletMap";
+import LiveBroadcasterModal from "./LiveBroadcasterModal";
 
 export interface CreatePostModalProps {
   isVisible: boolean;
@@ -44,8 +54,6 @@ type ViewMode =
   | "PRIVACY"
   | "LIVE_PERMISSION"
   | "TAG_PEOPLE"
-  | "PHOTO_GALLERY"
-  | "CAMERA"
   | "ADD_LOCATION";
 
 type PrivacyType = "Public" | "Friends" | "Only me";
@@ -116,19 +124,6 @@ const PRIVACY_OPTIONS: PrivacyOption[] = [
     title: "Only me",
     icon: "lock-closed",
   },
-];
-
-const MOCK_GALLERY_IMAGES = [
-  "https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1597362925123-77861d3fbac7?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1500937386664-56d1dfef3854?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1560493676-04071c5f467b?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1574943320219-553eb213f72d?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1567306301408-9b74779a11af?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1592417817098-8f3d6910985c?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1523348837708-15d4a09cfac2?auto=format&fit=crop&w=600&q=80",
-  "https://images.unsplash.com/photo-1589923188900-85dae523342b?auto=format&fit=crop&w=600&q=80",
 ];
 
 export interface StaticFarmingLocation {
@@ -239,10 +234,14 @@ export default function CreatePostModal({
     longitude: number;
   }>({ latitude: 8.2283, longitude: 124.2452 });
   const [locationSearch, setLocationSearch] = useState("Pala-o, Iligan City");
-  const [flashMode, setFlashMode] = useState(false);
-  const [isFrontCamera, setIsFrontCamera] = useState(false);
+  const [isGeocoding, setIsGeocoding] = useState(false);
+  const [isSearchingLocation, setIsSearchingLocation] = useState(false);
+  const [searchResults, setSearchResults] = useState<LocationSearchResult[]>([]);
+  const [showSearchResults, setShowSearchResults] = useState(false);
+  const [isLocatingGps, setIsLocatingGps] = useState(false);
   const [rsbsaApp, setRsbsaApp] = useState<RSBSAApplication | null>(null);
   const [showRsbsaLockModal, setShowRsbsaLockModal] = useState(false);
+  const [showLiveBroadcaster, setShowLiveBroadcaster] = useState(false);
 
   const loadFriends = useCallback(async () => {
     setIsLoadingFriends(true);
@@ -321,6 +320,74 @@ export default function CreatePostModal({
     },
     [friendsList, searchedUsers],
   );
+
+  // Debounced live location search
+  useEffect(() => {
+    if (!locationSearch || locationSearch.trim().length < 2) {
+      setSearchResults([]);
+      setIsSearchingLocation(false);
+      return;
+    }
+    const timer = setTimeout(async () => {
+      setIsSearchingLocation(true);
+      try {
+        const results = await searchLocationsApi(locationSearch);
+        setSearchResults(results);
+      } catch (err) {
+        console.warn("Location search error:", err);
+      } finally {
+        setIsSearchingLocation(false);
+      }
+    }, 380);
+
+    return () => clearTimeout(timer);
+  }, [locationSearch]);
+
+  const handleMapLocationSelect = async (lat: number, lng: number) => {
+    setMapCoords({ latitude: lat, longitude: lng });
+    setShowSearchResults(false);
+    setIsGeocoding(true);
+    try {
+      const address = await reverseGeocodeApi(lat, lng);
+      setLocationSearch(address);
+    } catch (err) {
+      console.warn("Reverse geocode error:", err);
+      setLocationSearch(`Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`);
+    } finally {
+      setIsGeocoding(false);
+    }
+  };
+
+  const handleSelectSearchResult = (result: LocationSearchResult) => {
+    setMapCoords({ latitude: result.latitude, longitude: result.longitude });
+    setLocationSearch(result.name || result.fullName);
+    setShowSearchResults(false);
+  };
+
+  const handleUseCurrentLocation = async () => {
+    setIsLocatingGps(true);
+    try {
+      const loc = await getCurrentDeviceLocation();
+      if (loc) {
+        setMapCoords({ latitude: loc.latitude, longitude: loc.longitude });
+        setIsGeocoding(true);
+        const resolved = await reverseGeocodeApi(loc.latitude, loc.longitude);
+        setLocationSearch(resolved);
+        setShowSearchResults(false);
+        showToast("Centered on your current location!", "success");
+      } else {
+        showToast(
+          "Could not detect your current location. Please ensure GPS/location permissions are enabled.",
+          "warning",
+        );
+      }
+    } catch (err: any) {
+      showToast(err?.message || "Location request failed.", "error");
+    } finally {
+      setIsGeocoding(false);
+      setIsLocatingGps(false);
+    }
+  };
 
   // Swipe-down-to-dismiss animated gesture
   const [translateY] = useState(() => new Animated.Value(0));
@@ -414,7 +481,15 @@ export default function CreatePostModal({
         category: selectedCategory,
         privacy: privacySetting,
         location: selectedLocation ? selectedLocation.trim() : null,
+        latitude: selectedLocation
+          ? (selectedCoordinates?.latitude ?? mapCoords.latitude)
+          : null,
+        longitude: selectedLocation
+          ? (selectedCoordinates?.longitude ?? mapCoords.longitude)
+          : null,
         photos: selectedPhotos,
+        images: selectedPhotos,
+        imageUrl: selectedPhotos.length > 0 ? selectedPhotos[0] : undefined,
         taggedUserIds: taggedUserIds.length > 0 ? taggedUserIds : undefined,
         expiresAt,
         temporaryDuration: isTemp ? temporaryDuration : undefined,
@@ -426,6 +501,24 @@ export default function CreatePostModal({
         ...newPost,
         category: selectedCategory,
         privacy: privacySetting,
+        location: selectedLocation ? selectedLocation.trim() : newPost.location,
+        imageUrl:
+          newPost.imageUrl ||
+          (selectedPhotos.length > 0 ? selectedPhotos[0] : ""),
+        images:
+          newPost.images && newPost.images.length > 0
+            ? newPost.images
+            : (selectedPhotos.length > 0 ? selectedPhotos : []),
+        latitude:
+          newPost.latitude ??
+          (selectedLocation
+            ? (selectedCoordinates?.latitude ?? mapCoords.latitude)
+            : null),
+        longitude:
+          newPost.longitude ??
+          (selectedLocation
+            ? (selectedCoordinates?.longitude ?? mapCoords.longitude)
+            : null),
         expiresAt: isTemp ? expiresAt : null,
         durationLabel: isTemp ? durationOpt?.label : undefined,
         taggedUsers:
@@ -465,6 +558,62 @@ export default function CreatePostModal({
     }
   };
 
+  const handlePublishLiveReplay = async (data: {
+    content: string;
+    durationLabel: string;
+    location?: string | null;
+    latitude?: number | null;
+    longitude?: number | null;
+    viewerCount?: number;
+    durationSeconds?: number;
+  }) => {
+    try {
+      const newPost = await createPostApi({
+        content: data.content,
+        category: "Field",
+        privacy: privacySetting,
+        location: data.location || selectedLocation || null,
+        latitude:
+          data.latitude ?? (selectedCoordinates?.latitude ?? mapCoords.latitude),
+        longitude:
+          data.longitude ??
+          (selectedCoordinates?.longitude ?? mapCoords.longitude),
+        durationLabel: data.durationLabel,
+        viewerCount: data.viewerCount,
+        durationSeconds: data.durationSeconds,
+        isLiveReplay: true,
+      });
+
+      const clientPost: PostItem = {
+        ...newPost,
+        category: "Field",
+        privacy: privacySetting,
+        durationLabel: data.durationLabel,
+        location: data.location || selectedLocation || newPost.location || "",
+        latitude:
+          newPost.latitude ??
+          data.latitude ??
+          selectedCoordinates?.latitude ??
+          null,
+        longitude:
+          newPost.longitude ??
+          data.longitude ??
+          selectedCoordinates?.longitude ??
+          null,
+      };
+
+      if (onPost) {
+        onPost(clientPost);
+      }
+      showToast("Live stream replay shared to your community!", "success");
+      setShowLiveBroadcaster(false);
+      handleClose();
+    } catch (err: any) {
+      showToast(err?.message || "Failed to share live replay.", "error");
+      throw err;
+    }
+  };
+
   const toggleTagUser = (userId: string) => {
     setTaggedUserIds((prev) =>
       prev.includes(userId)
@@ -473,17 +622,79 @@ export default function CreatePostModal({
     );
   };
 
-  const toggleSelectPhoto = (uri: string) => {
-    setSelectedPhotos((prev) =>
-      prev.includes(uri) ? prev.filter((p) => p !== uri) : [...prev, uri],
-    );
+  const handlePickPhotosFromGallery = async () => {
+    try {
+      const { status } =
+        await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== "granted") {
+        showToast(
+          "Permission to access your gallery is required to choose photos.",
+          "warning",
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ["images"],
+        allowsMultipleSelection: true,
+        selectionLimit: 10,
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const pickedPhotos = result.assets.map((asset) => {
+          if (asset.base64) {
+            return `data:image/jpeg;base64,${asset.base64}`;
+          }
+          return asset.uri;
+        });
+
+        setSelectedPhotos((prev) => {
+          const combined = [...prev];
+          for (const photo of pickedPhotos) {
+            if (!combined.includes(photo)) {
+              combined.push(photo);
+            }
+          }
+          return combined;
+        });
+      }
+    } catch (err) {
+      console.warn("Error picking photos from gallery:", err);
+      showToast("Could not open gallery.", "error");
+    }
   };
 
-  const handleCapturePhoto = () => {
-    const newPhoto =
-      MOCK_GALLERY_IMAGES[selectedPhotos.length % MOCK_GALLERY_IMAGES.length];
-    setSelectedPhotos((prev) => [...prev, newPhoto]);
-    setActiveView("POST_FORM");
+  const handleTakePhotoWithCamera = async () => {
+    try {
+      const { status } = await ImagePicker.requestCameraPermissionsAsync();
+      if (status !== "granted") {
+        showToast(
+          "Permission to access your camera is required to take photos.",
+          "warning",
+        );
+        return;
+      }
+
+      const result = await ImagePicker.launchCameraAsync({
+        allowsEditing: true,
+        quality: 0.8,
+        base64: true,
+      });
+
+      if (!result.canceled && result.assets && result.assets.length > 0) {
+        const asset = result.assets[0];
+        const photo = asset.base64
+          ? `data:image/jpeg;base64,${asset.base64}`
+          : asset.uri;
+
+        setSelectedPhotos((prev) => [...prev, photo]);
+      }
+    } catch (err) {
+      console.warn("Error capturing photo with camera:", err);
+      showToast("Could not open camera.", "error");
+    }
   };
 
   const getPrivacyIcon = (
@@ -746,7 +957,7 @@ export default function CreatePostModal({
                   ))}
                   {/* Add more button */}
                   <TouchableOpacity
-                    onPress={() => setActiveView("PHOTO_GALLERY")}
+                    onPress={handlePickPhotosFromGallery}
                     className="w-20 h-20 rounded-xl border border-dashed border-gray-300 bg-gray-50 items-center justify-center active:bg-gray-100"
                   >
                     <Ionicons name="add" size={24} color="#72AF5B" />
@@ -904,7 +1115,7 @@ export default function CreatePostModal({
             <View className="border-t border-gray-200 pt-4 mt-2 flex-row justify-around items-center">
               {/* Photo Action Trigger */}
               <TouchableOpacity
-                onPress={() => setActiveView("PHOTO_GALLERY")}
+                onPress={handlePickPhotosFromGallery}
                 className="flex-row items-center py-1 px-3 rounded-lg active:bg-gray-100"
               >
                 <Ionicons name="images-outline" size={20} color="#72AF5B" />
@@ -917,7 +1128,7 @@ export default function CreatePostModal({
 
               {/* Camera Action Trigger */}
               <TouchableOpacity
-                onPress={() => setActiveView("CAMERA")}
+                onPress={handleTakePhotoWithCamera}
                 className="flex-row items-center py-1 px-3 rounded-lg active:bg-gray-100"
               >
                 <Ionicons name="camera-outline" size={20} color="#72AF5B" />
@@ -951,7 +1162,7 @@ export default function CreatePostModal({
           }
           style={{
             flex: 1,
-            backgroundColor: activeView === "CAMERA" ? "#000000" : "#FFFFFF",
+            backgroundColor: "#FFFFFF",
           }}
         >
           {activeView === "PRIVACY" ? (
@@ -1154,7 +1365,10 @@ export default function CreatePostModal({
                 <View className="mt-6 pb-2">
                   {/* Allow Button */}
                   <TouchableOpacity
-                    onPress={() => setActiveView("POST_FORM")}
+                    onPress={() => {
+                      setActiveView("POST_FORM");
+                      setShowLiveBroadcaster(true);
+                    }}
                     className="w-full bg-[#72AF5B] rounded-xl py-3.5 flex-row justify-center items-center mb-3 active:opacity-80 shadow-xs"
                     activeOpacity={0.8}
                   >
@@ -1356,360 +1570,188 @@ export default function CreatePostModal({
                 </TouchableOpacity>
               </View>
             </View>
-          ) : activeView === "PHOTO_GALLERY" ? (
-            /* 5. MULTI-PHOTO GALLERY VIEW */
-            <View className="flex-1 bg-white h-full w-full relative">
-              {/* Header Section */}
-              <View className="flex-row justify-between items-center pt-3 pb-3 px-5 bg-white border-b border-gray-100">
-                <TouchableOpacity
-                  onPress={() => setActiveView("POST_FORM")}
-                  className="p-1 -ml-2 active:opacity-70"
-                  accessibilityRole="button"
-                  accessibilityLabel="Close gallery"
-                >
-                  <Ionicons name="close" size={28} color="#374151" />
-                </TouchableOpacity>
-
-                <Text className="text-lg font-semibold text-gray-900">
-                  Gallery
-                </Text>
-
-                {/* Top Right Done / Camera Button */}
-                {selectedPhotos.length > 0 ? (
-                  <TouchableOpacity
-                    onPress={() => setActiveView("POST_FORM")}
-                    className="bg-[#72AF5B] px-3.5 py-1.5 rounded-full active:opacity-80 shadow-xs"
-                  >
-                    <Text className="text-white font-bold text-xs">
-                      Next ({selectedPhotos.length})
-                    </Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    onPress={() => setActiveView("CAMERA")}
-                    className="p-1 -mr-2 active:opacity-70"
-                    accessibilityRole="button"
-                    accessibilityLabel="Open camera"
-                  >
-                    <Ionicons name="camera-outline" size={26} color="#374151" />
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Helper Subheader */}
-              <View className="px-5 py-2.5 flex-row justify-between items-center bg-gray-50/80 border-b border-gray-100">
-                <Text className="text-xs font-medium text-gray-600">
-                  Tap images to select multiple ({selectedPhotos.length}{" "}
-                  selected)
-                </Text>
-                {selectedPhotos.length > 0 && (
-                  <TouchableOpacity
-                    onPress={() => setSelectedPhotos([])}
-                    className="active:opacity-70"
-                  >
-                    <Text className="text-xs font-semibold text-[#72AF5B]">
-                      Clear all
-                    </Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-
-              {/* Photo Grid (2-Column Layout) */}
-              <ScrollView
-                className="flex-1 px-3 pt-3"
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingBottom: 90 }}
-              >
-                <View className="flex-row flex-wrap justify-between">
-                  {MOCK_GALLERY_IMAGES.map((imgUri, index) => {
-                    const isSelected = selectedPhotos.includes(imgUri);
-                    const selectedIndex = selectedPhotos.indexOf(imgUri) + 1;
-                    const itemHeight =
-                      index % 3 === 0 ? 230 : index % 2 === 0 ? 190 : 210;
-
-                    return (
-                      <TouchableOpacity
-                        key={index}
-                        onPress={() => toggleSelectPhoto(imgUri)}
-                        className={`w-[48.5%] mb-3 rounded-xl overflow-hidden relative shadow-xs border ${
-                          isSelected
-                            ? "border-2 border-[#72AF5B]"
-                            : "border-gray-200"
-                        } active:opacity-90`}
-                        activeOpacity={0.85}
-                      >
-                        <Image
-                          source={{ uri: imgUri }}
-                          style={{ width: "100%", height: itemHeight }}
-                          resizeMode="cover"
-                        />
-
-                        {/* Dark overlay when selected */}
-                        {isSelected && (
-                          <View className="absolute inset-0 bg-black/20" />
-                        )}
-
-                        {/* Selection Badge (Top-Right) */}
-                        <View className="absolute top-2.5 right-2.5">
-                          {isSelected ? (
-                            <View className="w-6 h-6 rounded-full bg-[#72AF5B] items-center justify-center border-2 border-white shadow-sm">
-                              <Text className="text-white text-xs font-bold">
-                                {selectedIndex}
-                              </Text>
-                            </View>
-                          ) : (
-                            <View className="w-6 h-6 rounded-full bg-black/35 border-2 border-white/90 items-center justify-center shadow-xs" />
-                          )}
-                        </View>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              </ScrollView>
-
-              {/* Bottom Docked 'Add Photos' Button */}
-              {selectedPhotos.length > 0 && (
-                <View className="absolute bottom-0 left-0 right-0 p-4 bg-white/95 border-t border-gray-200/80 shadow-lg">
-                  <TouchableOpacity
-                    onPress={() => setActiveView("POST_FORM")}
-                    className="w-full bg-[#72AF5B] py-3.5 rounded-xl flex-row items-center justify-center active:opacity-80 shadow-sm"
-                    activeOpacity={0.8}
-                  >
-                    <Ionicons name="images" size={18} color="#FFFFFF" />
-                    <Text className="text-white font-bold text-base ml-2">
-                      Add {selectedPhotos.length}{" "}
-                      {selectedPhotos.length === 1 ? "Photo" : "Photos"}
-                    </Text>
-                  </TouchableOpacity>
-                </View>
-              )}
-            </View>
-          ) : activeView === "CAMERA" ? (
-            /* 6. CAMERA SCREEN VIEW */
-            <View className="flex-1 bg-black h-full w-full justify-between relative">
-              {/* Top Controls Bar */}
-              <View className="flex-row justify-between items-center pt-5 pb-3 px-5 z-20 absolute top-0 w-full bg-black/30">
-                {/* Close 'X' Button */}
-                <TouchableOpacity
-                  onPress={() => setActiveView("POST_FORM")}
-                  className="p-1 active:opacity-70"
-                  accessibilityRole="button"
-                  accessibilityLabel="Close camera"
-                >
-                  <Ionicons name="close" size={32} color="#FFFFFF" />
-                </TouchableOpacity>
-
-                {/* Flash Toggle Button */}
-                <TouchableOpacity
-                  onPress={() => setFlashMode((prev) => !prev)}
-                  className="p-1 active:opacity-70"
-                  accessibilityRole="button"
-                  accessibilityLabel="Toggle flash"
-                >
-                  <Ionicons
-                    name={flashMode ? "flash" : "flash-off-outline"}
-                    size={28}
-                    color={flashMode ? "#FACC15" : "#FFFFFF"}
-                  />
-                </TouchableOpacity>
-              </View>
-
-              {/* Viewfinder Area (Mock) */}
-              <View className="flex-1 items-center justify-center relative">
-                {/* Faint Viewfinder Frame */}
-                <View className="w-[85%] h-[65%] border border-white/20 rounded-3xl relative items-center justify-center">
-                  {/* Corner framing brackets */}
-                  <View className="w-10 h-10 border-t-2 border-l-2 border-white/70 absolute top-0 left-0 rounded-tl-2xl" />
-                  <View className="w-10 h-10 border-t-2 border-r-2 border-white/70 absolute top-0 right-0 rounded-tr-2xl" />
-                  <View className="w-10 h-10 border-b-2 border-l-2 border-white/70 absolute bottom-0 left-0 rounded-bl-2xl" />
-                  <View className="w-10 h-10 border-b-2 border-r-2 border-white/70 absolute bottom-0 right-0 rounded-br-2xl" />
-
-                  {/* Center Focus Reticle */}
-                  <View className="w-16 h-16 border border-white/30 rounded-full items-center justify-center">
-                    <View className="w-2.5 h-2.5 bg-white/60 rounded-full" />
-                  </View>
-
-                  <Text className="text-white/40 text-xs font-medium mt-6">
-                    {isFrontCamera ? "Front Camera" : "Back Camera"}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Bottom Controls Bar */}
-              <View className="absolute bottom-0 w-full pb-10 pt-5 px-8 flex-row justify-between items-center bg-black/50 z-20">
-                {/* Left (Gallery Shortcut) */}
-                <TouchableOpacity
-                  onPress={() => setActiveView("PHOTO_GALLERY")}
-                  className="w-12 h-12 bg-gray-800 rounded-md border border-white/50 overflow-hidden items-center justify-center active:opacity-75"
-                  activeOpacity={0.75}
-                >
-                  {selectedPhotos.length > 0 ? (
-                    <Image
-                      source={{
-                        uri: selectedPhotos[selectedPhotos.length - 1],
-                      }}
-                      className="w-full h-full"
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <Ionicons name="images-outline" size={22} color="#FFFFFF" />
-                  )}
-                </TouchableOpacity>
-
-                {/* Center (Capture Button) */}
-                <TouchableOpacity
-                  onPress={handleCapturePhoto}
-                  className="w-20 h-20 rounded-full border-4 border-white items-center justify-center active:scale-95"
-                  activeOpacity={0.8}
-                >
-                  <View className="w-16 h-16 bg-white rounded-full" />
-                </TouchableOpacity>
-
-                {/* Right (Flip Camera) */}
-                <TouchableOpacity
-                  onPress={() => setIsFrontCamera((prev) => !prev)}
-                  className="p-1 active:opacity-75"
-                  activeOpacity={0.75}
-                >
-                  <Ionicons
-                    name="camera-reverse-outline"
-                    size={32}
-                    color="#FFFFFF"
-                  />
-                </TouchableOpacity>
-              </View>
-            </View>
           ) : activeView === "ADD_LOCATION" ? (
-            /* 7. ADD LOCATION VIEW (Leaflet Map) */
+            /* 7. ADD LOCATION VIEW (Leaflet Map with Dynamic Search & Geocoding) */
             <View className="flex-1 bg-white h-full w-full relative overflow-hidden">
               {/* Full-Screen Map filling upper corners */}
               <LeafletMap
                 latitude={mapCoords.latitude}
                 longitude={mapCoords.longitude}
                 zoom={14}
-                popupImage="https://images.unsplash.com/photo-1542838132-92c53300491e?auto=format&fit=crop&w=300&q=80"
-                locationTitle={locationSearch || "Pala-o, Iligan City"}
+                locationTitle={locationSearch || "Selected Farm Location"}
                 interactive={true}
-                onLocationSelect={(lat, lng) => {
-                  setMapCoords({ latitude: lat, longitude: lng });
-                  const matched = STATIC_POST_LOCATIONS.find(
-                    (loc) =>
-                      Math.hypot(loc.latitude - lat, loc.longitude - lng) <
-                      0.005,
-                  );
-                  if (matched) {
-                    setLocationSearch(matched.name);
-                  } else {
-                    setLocationSearch(
-                      `Custom Location (${lat.toFixed(4)}, ${lng.toFixed(4)})`,
-                    );
-                  }
-                }}
+                onLocationSelect={handleMapLocationSelect}
               />
 
-              {/* Floating Top Controls: Chevron Back Button + Search Bar */}
+              {/* Floating Top Controls: Chevron Back Button + Search Bar + GPS Button */}
               <View
                 style={{
                   position: "absolute",
                   top: Math.max(insets.top, 16) + 6,
                   left: 16,
                   right: 16,
-                  zIndex: 30,
-                }}
-                className="flex-row items-center gap-2.5"
-              >
-                {/* Floating Chevron Back Button */}
-                <TouchableOpacity
-                  onPress={() => setActiveView("POST_FORM")}
-                  activeOpacity={0.7}
-                  className="w-11 h-11 rounded-full bg-white items-center justify-center shadow-lg elevation-5 border border-gray-100"
-                  accessibilityRole="button"
-                  accessibilityLabel="Go back"
-                >
-                  <Ionicons name="chevron-back" size={26} color="#111827" />
-                </TouchableOpacity>
-
-                {/* Floating Search Bar */}
-                <View className="flex-1 bg-white border border-[#72AF5B] rounded-full flex-row items-center px-4 h-11 shadow-lg elevation-5">
-                  <TextInput
-                    value={locationSearch}
-                    onChangeText={setLocationSearch}
-                    placeholder="Search or pick a location"
-                    placeholderTextColor="#9CA3AF"
-                    className="flex-1 text-base text-gray-700 p-0"
-                  />
-                  <Ionicons name="search-outline" size={20} color="#6B7280" />
-                </View>
-              </View>
-
-              {/* Quick Select Location Chips */}
-              <View
-                style={{
-                  position: "absolute",
-                  top: Math.max(insets.top, 16) + 62,
-                  left: 0,
-                  right: 0,
-                  zIndex: 30,
+                  zIndex: 40,
                 }}
               >
-                <ScrollView
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={{ paddingHorizontal: 16 }}
-                  className="flex-row gap-2"
-                >
-                  {STATIC_POST_LOCATIONS.map((loc) => {
-                    const isSelected = locationSearch
-                      .toLowerCase()
-                      .includes(loc.barangay.toLowerCase());
-                    return (
+                <View className="flex-row items-center gap-2">
+                  {/* Floating Chevron Back Button */}
+                  <TouchableOpacity
+                    onPress={() => {
+                      setShowSearchResults(false);
+                      setActiveView("POST_FORM");
+                    }}
+                    activeOpacity={0.7}
+                    className="w-11 h-11 rounded-full bg-white items-center justify-center shadow-lg elevation-5 border border-gray-100"
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back"
+                  >
+                    <Ionicons name="chevron-back" size={26} color="#111827" />
+                  </TouchableOpacity>
+
+                  {/* Floating Search Bar */}
+                  <View className="flex-1 bg-white border border-[#72AF5B] rounded-full flex-row items-center px-3.5 h-11 shadow-lg elevation-5">
+                    <Ionicons
+                      name="search-outline"
+                      size={18}
+                      color="#6B7280"
+                      style={{ marginRight: 6 }}
+                    />
+                    <TextInput
+                      value={locationSearch}
+                      onChangeText={(text) => {
+                        setLocationSearch(text);
+                        setShowSearchResults(true);
+                      }}
+                      onFocus={() => {
+                        if (searchResults.length > 0) setShowSearchResults(true);
+                      }}
+                      placeholder="Search farm, barangay, or city..."
+                      placeholderTextColor="#9CA3AF"
+                      className="flex-1 text-sm text-gray-800 p-0"
+                      returnKeyType="search"
+                    />
+                    {isSearchingLocation ? (
+                      <ActivityIndicator
+                        size="small"
+                        color="#72AF5B"
+                        style={{ marginLeft: 4 }}
+                      />
+                    ) : locationSearch.length > 0 ? (
                       <TouchableOpacity
-                        key={loc.id}
                         onPress={() => {
-                          setMapCoords({
-                            latitude: loc.latitude,
-                            longitude: loc.longitude,
-                          });
-                          setLocationSearch(loc.name);
+                          setLocationSearch("");
+                          setSearchResults([]);
+                          setShowSearchResults(false);
                         }}
-                        className={`px-3 py-1.5 rounded-full border shadow-sm flex-row items-center gap-1 ${
-                          isSelected
-                            ? "bg-[#72AF5B] border-[#5e944a]"
-                            : "bg-white/95 border-gray-200"
-                        }`}
-                        activeOpacity={0.8}
+                        className="p-1"
                       >
-                        <Text className="text-xs">
-                          {isSelected ? "📍" : "🌱"}
-                        </Text>
-                        <Text
-                          className={`text-xs font-semibold ${
-                            isSelected ? "text-white" : "text-gray-800"
+                        <Ionicons
+                          name="close-circle"
+                          size={16}
+                          color="#9CA3AF"
+                        />
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+
+                  {/* GPS Locator Button */}
+                  <TouchableOpacity
+                    onPress={handleUseCurrentLocation}
+                    disabled={isLocatingGps}
+                    activeOpacity={0.7}
+                    className="w-11 h-11 rounded-full bg-white items-center justify-center shadow-lg elevation-5 border border-gray-100"
+                    accessibilityRole="button"
+                    accessibilityLabel="Use current device location"
+                  >
+                    {isLocatingGps ? (
+                      <ActivityIndicator size="small" color="#72AF5B" />
+                    ) : (
+                      <Ionicons name="locate" size={22} color="#72AF5B" />
+                    )}
+                  </TouchableOpacity>
+                </View>
+
+                {/* Autocomplete Search Results Dropdown */}
+                {showSearchResults && searchResults.length > 0 && (
+                  <View className="mt-2 bg-white rounded-2xl shadow-2xl elevation-8 border border-gray-200 overflow-hidden max-h-56">
+                    <ScrollView
+                      keyboardShouldPersistTaps="handled"
+                      nestedScrollEnabled={true}
+                    >
+                      {searchResults.map((item, idx) => (
+                        <TouchableOpacity
+                          key={`${item.id || idx}-${item.latitude}`}
+                          onPress={() => handleSelectSearchResult(item)}
+                          className={`p-3 flex-row items-center border-b border-gray-100 active:bg-green-50 ${
+                            idx === searchResults.length - 1 ? "border-b-0" : ""
                           }`}
                         >
-                          {loc.barangay}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </ScrollView>
+                          <View className="w-8 h-8 rounded-full bg-green-50 items-center justify-center mr-2.5">
+                            <Ionicons
+                              name="location-sharp"
+                              size={16}
+                              color="#72AF5B"
+                            />
+                          </View>
+                          <View className="flex-1 pr-1">
+                            <Text
+                              className="text-xs font-bold text-gray-900"
+                              numberOfLines={1}
+                            >
+                              {item.name}
+                            </Text>
+                            {item.fullName ? (
+                              <Text
+                                className="text-[11px] text-gray-500 mt-0.5"
+                                numberOfLines={1}
+                              >
+                                {item.fullName}
+                              </Text>
+                            ) : null}
+                          </View>
+                          <Ionicons
+                            name="arrow-forward"
+                            size={14}
+                            color="#9CA3AF"
+                          />
+                        </TouchableOpacity>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
               </View>
+
 
               {/* Floating Bottom Info Card with Select & Cancel Location Buttons */}
               <View className="absolute bottom-6 left-5 right-5 z-20 bg-white rounded-2xl p-4 shadow-xl border border-gray-100">
                 <View className="mb-3">
                   <View className="flex-row items-center gap-1.5 mb-1">
-                    <Ionicons name="location-sharp" size={16} color="#72AF5B" />
+                    <Ionicons
+                      name="location-sharp"
+                      size={18}
+                      color="#72AF5B"
+                    />
                     <Text
                       className="text-base font-bold text-gray-900 flex-1"
                       numberOfLines={1}
                     >
-                      {locationSearch || "Pala-o, Iligan City"}
+                      {locationSearch || "Selected Location"}
                     </Text>
+                    {isGeocoding && (
+                      <View className="flex-row items-center gap-1">
+                        <ActivityIndicator size="small" color="#72AF5B" />
+                        <Text className="text-[10px] text-[#72AF5B] font-medium">
+                          Resolving...
+                        </Text>
+                      </View>
+                    )}
                   </View>
                   <Text className="text-xs text-gray-500 leading-4">
-                    Your selected location will be attached to your post and an
-                    interactive Leaflet map will be displayed to your community.
+                    Coordinates: {mapCoords.latitude.toFixed(4)},{" "}
+                    {mapCoords.longitude.toFixed(4)}
+                  </Text>
+                  <Text className="text-[11px] text-gray-400 mt-0.5">
+                    Tap anywhere on the map, use the search bar, or pick your GPS location.
                   </Text>
                 </View>
                 {/* Action Buttons Row */}
@@ -1717,6 +1759,7 @@ export default function CreatePostModal({
                   {/* Cancel Location Button */}
                   <TouchableOpacity
                     onPress={() => {
+                      setShowSearchResults(false);
                       setActiveView("POST_FORM");
                     }}
                     className="bg-gray-100 px-4 py-2.5 rounded-xl border border-gray-200 items-center justify-center active:bg-gray-200"
@@ -1730,9 +1773,11 @@ export default function CreatePostModal({
                   {/* Select Location Button */}
                   <TouchableOpacity
                     onPress={() => {
-                      const finalName = locationSearch || "Pala-o, Iligan City";
+                      const finalName =
+                        locationSearch || "Selected Farm Location";
                       setSelectedLocation(finalName);
                       setSelectedCoordinates(mapCoords);
+                      setShowSearchResults(false);
                       setActiveView("POST_FORM");
                     }}
                     className="bg-[#72AF5B] px-5 py-2.5 rounded-xl items-center justify-center active:bg-[#5e944a] shadow-sm"
@@ -1875,6 +1920,15 @@ export default function CreatePostModal({
           </View>
         </View>
       )}
+
+      {/* Dynamic Live Broadcaster Studio Modal */}
+      <LiveBroadcasterModal
+        isVisible={showLiveBroadcaster}
+        onClose={() => setShowLiveBroadcaster(false)}
+        onPublishReplay={handlePublishLiveReplay}
+        initialLocation={selectedLocation}
+        initialCoordinates={selectedCoordinates || mapCoords}
+      />
     </Modal>
   );
 }

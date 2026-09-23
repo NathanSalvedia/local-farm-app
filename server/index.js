@@ -1,9 +1,11 @@
+const path = require("path");
 const express = require("express");
 const cors = require("cors");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
-const { initDB, getPool } = require("./db");
+require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 require("dotenv").config();
+const { initDB, getPool } = require("./db");
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -13,7 +15,12 @@ const {
   requireAdmin,
   requestLogger,
 } = require("./middleware/auth");
-const { sendSignupOtpEmail } = require("./mailer");
+const {
+  sendSignupOtpEmail,
+  send2FAOtpEmail,
+  sendPasswordChangedEmail,
+} = require("./mailer");
+const { generateBase32Secret, verifyTotpToken } = require("./totp");
 
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
@@ -21,16 +28,79 @@ app.use(express.urlencoded({ extended: true, limit: "25mb" }));
 app.use(requestLogger);
 
 // Helper: Generate JWT token
-function generateToken(user) {
+function generateToken(user, sessionId = null) {
   return jwt.sign(
     {
       id: user.id,
       email: user.email,
       role: user.role,
+      sessionId: sessionId || null,
     },
     JWT_SECRET,
     { expiresIn: "30d" },
   );
+}
+
+// Helper: Record active session in user_sessions
+async function recordUserSession(userId, req, deviceInfo = null) {
+  try {
+    const pool = getPool();
+    const info = deviceInfo || req.body?.deviceInfo || {};
+    const ip =
+      req.headers["x-forwarded-for"]?.split(",")[0]?.trim() ||
+      req.socket?.remoteAddress ||
+      "127.0.0.1";
+
+    const deviceName = (info.deviceName || "").trim() || "LocalFarm Device";
+    const deviceType = (info.deviceType || "phone").toLowerCase();
+    const osName =
+      (info.osName || "").trim() ||
+      (req.headers["user-agent"]?.includes("Windows") ? "Windows" : "Mobile");
+    const osVersion = (info.osVersion || "").trim();
+    const browserOrApp = (info.browserOrApp || "").trim() || "LocalFarm App";
+    const location =
+      (info.location || "").trim() || "Iligan City, Lanao Del Norte";
+
+    const { rows } = await pool.query(
+      `INSERT INTO user_sessions (
+        user_id, device_name, device_type, os_name, os_version, browser_or_app, ip_address, location, is_active, last_active_at, created_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, NOW(), NOW())
+      RETURNING id`,
+      [
+        userId,
+        deviceName,
+        deviceType,
+        osName,
+        osVersion,
+        browserOrApp,
+        ip,
+        location,
+      ]
+    );
+
+    return rows[0]?.id || null;
+  } catch (err) {
+    console.warn("[Session Recording Warning]", err.message);
+    return null;
+  }
+}
+
+// Helper: Human-readable relative time
+function formatRelativeTime(date) {
+  if (!date) return "Active recently";
+  const now = new Date();
+  const diffMs = now - new Date(date);
+  const diffMinutes = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMinutes / 60);
+  const diffDays = Math.floor(diffHours / 24);
+
+  if (diffMinutes < 2) return "Active now";
+  if (diffMinutes < 60) return `Active ${diffMinutes}m ago`;
+  if (diffHours === 1) return "Active 1 hour ago";
+  if (diffHours < 24) return `Active ${diffHours} hours ago`;
+  if (diffDays === 1) return "Active yesterday";
+  if (diffDays < 7) return `Active ${diffDays} days ago`;
+  return `Active on ${new Date(date).toLocaleDateString()}`;
 }
 
 // Helper: Format User object for client
@@ -55,10 +125,17 @@ function formatUser(row) {
     firstName: row.first_name || "",
     lastName: row.last_name || "",
     avatarUrl: row.avatar_url || "",
+    coverPhotoUrl: row.cover_photo_url || "",
     bio: row.bio || "",
     about: row.bio || "",
     location: row.location || "Iligan City, Philippines",
+    farmName: row.farm_name || "",
+    farmLocation: row.farm_location || row.location || "",
+    primaryCrops: row.primary_crops || "",
     roleId: row.role_id || (row.role === "admin" ? 1 : 2),
+    twoFactorEnabled: Boolean(row.two_factor_enabled),
+    twoFactorMethod: row.two_factor_method || "none",
+    createdAt: row.created_at || null,
   };
 }
 
@@ -185,7 +262,8 @@ app.post("/api/auth/register", async (req, res) => {
       newUserId,
     ]);
     const user = formatUser(rows[0]);
-    const token = generateToken(user);
+    const sessionId = await recordUserSession(user.id, req, req.body.deviceInfo);
+    const token = generateToken(user, sessionId);
 
     res.status(201).json({
       message: "User registered successfully",
@@ -246,8 +324,52 @@ app.post("/api/auth/login", async (req, res) => {
       });
     }
 
+    // Two-Factor Authentication Check
+    if (userRow.two_factor_enabled) {
+      if (userRow.two_factor_method === "authenticator") {
+        return res.json({
+          requires2FA: true,
+          method: "authenticator",
+          email: userRow.email,
+          message: "Enter the 6-digit code displayed in Google Authenticator.",
+        });
+      }
+
+      // Default: Email 2FA
+      const otp = Math.floor(100000 + Math.random() * 900000).toString();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+      // Clear any prior login OTPs for this user
+      await pool.query(
+        "DELETE FROM otps WHERE email = $1 AND type = '2fa_login'",
+        [userRow.email.trim().toLowerCase()]
+      );
+
+      await pool.query(
+        "INSERT INTO otps (email, otp, type, expires_at) VALUES ($1, $2, '2fa_login', $3)",
+        [userRow.email.trim().toLowerCase(), otp, expiresAt]
+      );
+
+      console.log(`[2FA Login OTP Generated] Email: ${userRow.email}, OTP: ${otp}`);
+
+      try {
+        await send2FAOtpEmail(userRow.email.trim().toLowerCase(), otp, "login");
+      } catch (mailErr) {
+        console.error("[Mailer Error] Could not deliver 2FA login OTP:", mailErr.message);
+      }
+
+      return res.json({
+        requires2FA: true,
+        method: "email",
+        email: userRow.email,
+        message: "Two-factor authentication code sent to your email.",
+        devOtp: otp,
+      });
+    }
+
     const user = formatUser(userRow);
-    const token = generateToken(user);
+    const sessionId = await recordUserSession(user.id, req, req.body.deviceInfo);
+    const token = generateToken(user, sessionId);
 
     res.json({
       message: "Login successful",
@@ -257,6 +379,455 @@ app.post("/api/auth/login", async (req, res) => {
   } catch (err) {
     console.error("[Login Error]", err);
     res.status(500).json({ message: err.message || "Failed to sign in." });
+  }
+});
+
+// 3.1 Verify 2FA Login (Supports Email OTP & Google Authenticator TOTP)
+app.post("/api/auth/2fa/verify-login", async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) {
+      return res.status(400).json({ message: "Email and verification code are required." });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    const cleanOtp = String(otp).trim();
+    const pool = getPool();
+
+    const { rows: userRows } = await pool.query(
+      "SELECT * FROM users WHERE email = $1 LIMIT 1",
+      [cleanEmail]
+    );
+
+    if (userRows.length === 0) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const userRow = userRows[0];
+
+    if (userRow.two_factor_method === "authenticator") {
+      const isValid = verifyTotpToken(cleanOtp, userRow.two_factor_secret);
+      if (!isValid) {
+        return res.status(400).json({
+          message: "Invalid code. Please check the 6-digit code in Google Authenticator and try again.",
+        });
+      }
+    } else {
+      // Email OTP verification
+      const { rows: otpRows } = await pool.query(
+        `SELECT * FROM otps 
+         WHERE email = $1 AND otp = $2 AND type = '2fa_login' AND expires_at > NOW() 
+         ORDER BY created_at DESC LIMIT 1`,
+        [cleanEmail, cleanOtp]
+      );
+
+      if (otpRows.length === 0) {
+        return res.status(400).json({
+          message: "Invalid or expired verification code. Please check your email.",
+        });
+      }
+
+      // Clean up used OTP
+      await pool.query("DELETE FROM otps WHERE email = $1 AND type = '2fa_login'", [cleanEmail]);
+    }
+
+    const user = formatUser(userRow);
+    const sessionId = await recordUserSession(user.id, req, req.body.deviceInfo);
+    const token = generateToken(user, sessionId);
+
+    res.json({
+      message: "Two-factor authentication verified. Login successful.",
+      user,
+      token,
+    });
+  } catch (err) {
+    console.error("[2FA Verify Login Error]", err);
+    res.status(500).json({ message: err.message || "Failed to verify 2FA code." });
+  }
+});
+
+// 3.2 Active Sessions Management (Manage Devices)
+app.get("/api/auth/sessions", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const currentSessionId = req.user.sessionId;
+
+    const { rows } = await pool.query(
+      `SELECT * FROM user_sessions 
+       WHERE user_id = $1 AND is_active = TRUE 
+       ORDER BY last_active_at DESC`,
+      [userId]
+    );
+
+    let currentDevice = null;
+    const otherDevices = [];
+
+    rows.forEach((row) => {
+      const isCur = Boolean(currentSessionId && row.id === currentSessionId);
+      const sessionItem = {
+        id: row.id,
+        name: row.device_name,
+        deviceName: row.device_name,
+        deviceType: row.device_type || "phone",
+        osName: row.os_name || "",
+        osVersion: row.os_version || "",
+        browserOrApp: row.browser_or_app || "LocalFarm App",
+        ipAddress: row.ip_address || "127.0.0.1",
+        location: row.location || "Iligan City, Lanao Del Norte",
+        lastActive: isCur ? "Active now" : formatRelativeTime(row.last_active_at),
+        lastActiveAt: row.last_active_at,
+        createdAt: row.created_at,
+        isCurrent: isCur,
+      };
+
+      if (isCur) {
+        currentDevice = sessionItem;
+      } else {
+        otherDevices.push(sessionItem);
+      }
+    });
+
+    // Fallback: If token had no sessionId (e.g. legacy session before migration), treat first as current
+    if (!currentDevice && rows.length > 0) {
+      currentDevice = {
+        id: rows[0].id,
+        name: rows[0].device_name,
+        deviceName: rows[0].device_name,
+        deviceType: rows[0].device_type || "phone",
+        osName: rows[0].os_name || "",
+        osVersion: rows[0].os_version || "",
+        browserOrApp: rows[0].browser_or_app || "LocalFarm App",
+        ipAddress: rows[0].ip_address || "127.0.0.1",
+        location: rows[0].location || "Iligan City, Lanao Del Norte",
+        lastActive: "Active now",
+        lastActiveAt: rows[0].last_active_at,
+        createdAt: rows[0].created_at,
+        isCurrent: true,
+      };
+      otherDevices.shift();
+    } else if (!currentDevice) {
+      currentDevice = {
+        id: "current",
+        name: "This Device",
+        deviceName: "This Device",
+        deviceType: "phone",
+        osName: "Mobile",
+        osVersion: "",
+        browserOrApp: "LocalFarm App",
+        ipAddress: "127.0.0.1",
+        location: "Iligan City, Lanao Del Norte",
+        lastActive: "Active now",
+        lastActiveAt: new Date().toISOString(),
+        createdAt: new Date().toISOString(),
+        isCurrent: true,
+      };
+    }
+
+    res.json({
+      currentDevice,
+      otherDevices,
+    });
+  } catch (err) {
+    console.error("[Get Sessions Error]", err);
+    res.status(500).json({ message: err.message || "Failed to fetch active sessions." });
+  }
+});
+
+// Revoke a single device session
+app.delete("/api/auth/sessions/:sessionId", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const { sessionId } = req.params;
+
+    await pool.query(
+      "UPDATE user_sessions SET is_active = FALSE WHERE id = $1 AND user_id = $2",
+      [sessionId, userId]
+    );
+
+    res.json({ message: "Device session logged out successfully." });
+  } catch (err) {
+    console.error("[Revoke Session Error]", err);
+    res.status(500).json({ message: err.message || "Failed to log out session." });
+  }
+});
+
+// Revoke all other device sessions
+app.post("/api/auth/sessions/revoke-others", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const currentSessionId = req.user.sessionId;
+
+    if (currentSessionId) {
+      await pool.query(
+        "UPDATE user_sessions SET is_active = FALSE WHERE user_id = $1 AND id != $2",
+        [userId, currentSessionId]
+      );
+    } else {
+      await pool.query(
+        `UPDATE user_sessions SET is_active = FALSE 
+         WHERE user_id = $1 AND id NOT IN (
+           SELECT id FROM user_sessions WHERE user_id = $1 ORDER BY last_active_at DESC LIMIT 1
+         )`,
+        [userId]
+      );
+    }
+
+    res.json({ message: "All other device sessions have been logged out." });
+  } catch (err) {
+    console.error("[Revoke Other Sessions Error]", err);
+    res.status(500).json({ message: err.message || "Failed to log out other sessions." });
+  }
+});
+
+// Client Logout
+app.post("/api/auth/logout", authenticateToken, async (req, res) => {
+  try {
+    if (req.user?.sessionId) {
+      const pool = getPool();
+      await pool.query("UPDATE user_sessions SET is_active = FALSE WHERE id = $1", [
+        req.user.sessionId,
+      ]);
+    }
+    res.json({ message: "Logged out successfully." });
+  } catch {
+    res.json({ message: "Logged out." });
+  }
+});
+
+// 3.1b Google Authenticator Setup (Generate Secret Key)
+app.get("/api/auth/2fa/authenticator/setup", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const { rows: userRows } = await pool.query("SELECT email FROM users WHERE id = $1 LIMIT 1", [userId]);
+    if (userRows.length === 0) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const userEmail = userRows[0].email;
+    const secret = generateBase32Secret(20);
+    const otpauthUrl = `otpauth://totp/LocalFarm:${encodeURIComponent(userEmail)}?secret=${secret}&issuer=LocalFarm&algorithm=SHA1&digits=6&period=30`;
+
+    res.json({
+      secret,
+      otpauthUrl,
+      accountName: `Local Farm (${userEmail})`,
+    });
+  } catch (err) {
+    console.error("[Google Auth Setup Error]", err);
+    res.status(500).json({ message: err.message || "Failed to generate Authenticator setup." });
+  }
+});
+
+// 3.1c Google Authenticator Confirm (Verify Code and Enable)
+app.post("/api/auth/2fa/authenticator/confirm", authenticateToken, async (req, res) => {
+  try {
+    const { token, secret } = req.body;
+    if (!token || !secret) {
+      return res.status(400).json({ message: "Verification code and secret key are required." });
+    }
+
+    const cleanToken = String(token).trim();
+    const isValid = verifyTotpToken(cleanToken, secret);
+
+    if (!isValid) {
+      return res.status(400).json({
+        message: "Invalid verification code. Please check the 6-digit code currently shown in Google Authenticator.",
+      });
+    }
+
+    const pool = getPool();
+    const userId = req.user.id;
+
+    await pool.query(
+      "UPDATE users SET two_factor_enabled = TRUE, two_factor_method = 'authenticator', two_factor_secret = $1, updated_at = NOW() WHERE id = $2",
+      [secret, userId]
+    );
+
+    const { rows: updatedRows } = await pool.query("SELECT * FROM users WHERE id = $1 LIMIT 1", [userId]);
+    const updatedUser = formatUser(updatedRows[0]);
+
+    res.json({
+      message: "Google Authenticator enabled successfully!",
+      twoFactorEnabled: true,
+      twoFactorMethod: "authenticator",
+      user: updatedUser,
+    });
+  } catch (err) {
+    console.error("[Google Auth Confirm Error]", err);
+    res.status(500).json({ message: err.message || "Failed to confirm Google Authenticator." });
+  }
+});
+
+// 3.2 Send 2FA Setup OTP
+app.post("/api/auth/2fa/send-setup-otp", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const { rows: userRows } = await pool.query("SELECT email FROM users WHERE id = $1 LIMIT 1", [userId]);
+    if (userRows.length === 0) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const userEmail = userRows[0].email.trim().toLowerCase();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+
+    await pool.query("DELETE FROM otps WHERE email = $1 AND type = '2fa_setup'", [userEmail]);
+    await pool.query(
+      "INSERT INTO otps (email, otp, type, expires_at) VALUES ($1, $2, '2fa_setup', $3)",
+      [userEmail, otp, expiresAt]
+    );
+
+    console.log(`[2FA Setup OTP Generated] Email: ${userEmail}, OTP: ${otp}`);
+
+    try {
+      await send2FAOtpEmail(userEmail, otp, "setup");
+    } catch (mailErr) {
+      console.error("[Mailer Error] Could not deliver 2FA setup OTP:", mailErr.message);
+    }
+
+    res.json({
+      message: `Verification code sent to ${userEmail}.`,
+      email: userEmail,
+      devOtp: otp,
+    });
+  } catch (err) {
+    console.error("[2FA Send Setup OTP Error]", err);
+    res.status(500).json({ message: err.message || "Failed to send 2FA setup code." });
+  }
+});
+
+// 3.3 Confirm 2FA Setup
+app.post("/api/auth/2fa/confirm-setup", authenticateToken, async (req, res) => {
+  try {
+    const { otp, method = "email" } = req.body;
+    if (!otp) {
+      return res.status(400).json({ message: "Verification code is required." });
+    }
+
+    const pool = getPool();
+    const userId = req.user.id;
+    const { rows: userRows } = await pool.query("SELECT * FROM users WHERE id = $1 LIMIT 1", [userId]);
+    if (userRows.length === 0) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    const userEmail = userRows[0].email.trim().toLowerCase();
+    const cleanOtp = otp.trim();
+
+    const { rows: otpRows } = await pool.query(
+      `SELECT * FROM otps 
+       WHERE email = $1 AND otp = $2 AND type = '2fa_setup' AND expires_at > NOW() 
+       ORDER BY created_at DESC LIMIT 1`,
+      [userEmail, cleanOtp]
+    );
+
+    if (otpRows.length === 0) {
+      return res.status(400).json({ message: "Invalid or expired verification code. Please check your email." });
+    }
+
+    await pool.query("DELETE FROM otps WHERE email = $1 AND type = '2fa_setup'", [userEmail]);
+
+    await pool.query(
+      "UPDATE users SET two_factor_enabled = TRUE, two_factor_method = $1, updated_at = NOW() WHERE id = $2",
+      [method, userId]
+    );
+
+    const { rows: updatedRows } = await pool.query("SELECT * FROM users WHERE id = $1 LIMIT 1", [userId]);
+    const updatedUser = formatUser(updatedRows[0]);
+
+    res.json({
+      message: "Two-factor authentication enabled successfully!",
+      twoFactorEnabled: true,
+      twoFactorMethod: method,
+      user: updatedUser,
+    });
+  } catch (err) {
+    console.error("[2FA Confirm Setup Error]", err);
+    res.status(500).json({ message: err.message || "Failed to confirm 2FA setup." });
+  }
+});
+
+// 3.4 Disable 2FA
+app.post("/api/auth/2fa/disable", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+
+    await pool.query(
+      "UPDATE users SET two_factor_enabled = FALSE, two_factor_method = 'none', updated_at = NOW() WHERE id = $1",
+      [userId]
+    );
+
+    const { rows: updatedRows } = await pool.query("SELECT * FROM users WHERE id = $1 LIMIT 1", [userId]);
+    const updatedUser = formatUser(updatedRows[0]);
+
+    res.json({
+      message: "Two-factor authentication disabled.",
+      twoFactorEnabled: false,
+      twoFactorMethod: "none",
+      user: updatedUser,
+    });
+  } catch (err) {
+    console.error("[2FA Disable Error]", err);
+    res.status(500).json({ message: err.message || "Failed to disable 2FA." });
+  }
+});
+
+// 3.5 Resend 2FA Code (Supports both login flow with email & authenticated setup flow)
+app.post("/api/auth/2fa/resend", async (req, res) => {
+  try {
+    let targetEmail = req.body?.email;
+    const type = req.body?.type === "2fa_setup" ? "2fa_setup" : "2fa_login";
+
+    const pool = getPool();
+
+    if (!targetEmail) {
+      // Check if bearer token is present
+      const authHeader = req.headers["authorization"];
+      const token = authHeader && authHeader.split(" ")[1];
+      if (token) {
+        try {
+          const decoded = jwt.verify(token, JWT_SECRET);
+          const { rows } = await pool.query("SELECT email FROM users WHERE id = $1 LIMIT 1", [decoded.id]);
+          if (rows.length > 0) targetEmail = rows[0].email;
+        } catch {}
+      }
+    }
+
+    if (!targetEmail) {
+      return res.status(400).json({ message: "Email is required to resend 2FA code." });
+    }
+
+    const cleanEmail = targetEmail.trim().toLowerCase();
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
+    await pool.query("DELETE FROM otps WHERE email = $1 AND type = $2", [cleanEmail, type]);
+    await pool.query(
+      "INSERT INTO otps (email, otp, type, expires_at) VALUES ($1, $2, $3, $4)",
+      [cleanEmail, otp, type, expiresAt]
+    );
+
+    console.log(`[2FA Resend OTP] Email: ${cleanEmail}, Type: ${type}, OTP: ${otp}`);
+
+    try {
+      await send2FAOtpEmail(cleanEmail, otp, type === "2fa_setup" ? "setup" : "login");
+    } catch (mailErr) {
+      console.error("[Mailer Error] Could not resend 2FA OTP:", mailErr.message);
+    }
+
+    res.json({
+      message: `A new verification code has been sent to ${cleanEmail}.`,
+      devOtp: otp,
+    });
+  } catch (err) {
+    console.error("[2FA Resend OTP Error]", err);
+    res.status(500).json({ message: err.message || "Failed to resend 2FA code." });
   }
 });
 
@@ -282,6 +853,87 @@ app.get("/api/auth/me", authenticateToken, async (req, res) => {
   }
 });
 
+// 4.1 Get User Profile by ID (Public or Authenticated)
+app.get(
+  ["/api/users/:id", "/api/users/profile/:id", "/api/user/:id"],
+  optionalAuthenticateToken,
+  async (req, res) => {
+    try {
+      const targetUserId = req.params.id;
+      const currentUserId = req.user?.id || null;
+      const pool = getPool();
+
+      const { rows } = await pool.query(
+        "SELECT * FROM users WHERE id = $1 LIMIT 1",
+        [targetUserId],
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      const user = formatUser(rows[0]);
+
+      // Check relationship with requester
+      let relationship = "none";
+      let connectionId = null;
+      if (currentUserId && String(currentUserId) !== String(targetUserId)) {
+        const { rows: connRows } = await pool.query(
+          `SELECT id, sender_id, receiver_id, status
+           FROM connections
+           WHERE (sender_id = $1 AND receiver_id = $2)
+              OR (sender_id = $2 AND receiver_id = $1)
+           LIMIT 1`,
+          [currentUserId, targetUserId],
+        );
+        if (connRows.length > 0) {
+          const c = connRows[0];
+          connectionId = String(c.id);
+          if (c.status === "accepted") {
+            relationship = "accepted";
+          } else if (c.status === "pending") {
+            relationship =
+              String(c.sender_id) === String(currentUserId)
+                ? "pending_sent"
+                : "pending_received";
+          } else if (c.status === "blocked") {
+            relationship = "blocked";
+          }
+        }
+      }
+
+      // Post count
+      const { rows: postCountRows } = await pool.query(
+        "SELECT COUNT(*) AS count FROM posts WHERE user_id = $1",
+        [targetUserId],
+      );
+      const postsCount = Number(postCountRows[0]?.count || 0);
+
+      // Friends count
+      const { rows: friendsCountRows } = await pool.query(
+        `SELECT COUNT(*) AS count
+         FROM connections
+         WHERE (sender_id = $1 OR receiver_id = $1) AND status = 'accepted'`,
+        [targetUserId],
+      );
+      const friendsCount = Number(friendsCountRows[0]?.count || 0);
+
+      res.json({
+        user,
+        relationship,
+        connectionId,
+        postsCount,
+        friendsCount,
+      });
+    } catch (err) {
+      console.error("[Get User Profile Error]", err);
+      res.status(500).json({
+        message: err.message || "Failed to fetch user profile.",
+      });
+    }
+  },
+);
+
 // 4.5 Update User Profile (Logged in user - supports PUT and POST)
 const profileUpdateHandler = async (req, res) => {
   try {
@@ -294,8 +946,17 @@ const profileUpdateHandler = async (req, res) => {
       phoneNumber,
       gender,
       avatarUrl,
+      coverPhotoUrl,
+      cover_photo_url,
+      location,
       bio,
       about,
+      farmName,
+      farm_name,
+      farmLocation,
+      farm_location,
+      primaryCrops,
+      primary_crops,
     } = req.body;
 
     const pool = getPool();
@@ -323,10 +984,18 @@ const profileUpdateHandler = async (req, res) => {
     }
 
     const current = currentRows[0];
-    const newFirstName =
+    let newFirstName =
       firstName !== undefined ? firstName.trim() : current.first_name;
-    const newLastName =
+    let newLastName =
       lastName !== undefined ? lastName.trim() : current.last_name;
+
+    const passedFullName = fullName || name;
+    if (passedFullName && firstName === undefined && lastName === undefined) {
+      const parts = passedFullName.trim().split(/\s+/);
+      newFirstName = parts[0] || "";
+      newLastName = parts.slice(1).join(" ") || "";
+    }
+
     const newUsername =
       username !== undefined ? username.trim() : current.username;
     const newPhoneNumber =
@@ -334,14 +1003,43 @@ const profileUpdateHandler = async (req, res) => {
     const newGender = gender !== undefined ? gender : current.gender;
     const newAvatarUrl =
       avatarUrl !== undefined ? avatarUrl : current.avatar_url;
+    const newCoverPhotoUrl =
+      coverPhotoUrl !== undefined
+        ? coverPhotoUrl
+        : cover_photo_url !== undefined
+          ? cover_photo_url
+          : current.cover_photo_url;
+    const newLocation =
+      location !== undefined ? location : current.location;
     const newBio =
       bio !== undefined ? bio : about !== undefined ? about : current.bio;
+    const newFarmName =
+      farmName !== undefined
+        ? farmName
+        : farm_name !== undefined
+          ? farm_name
+          : current.farm_name;
+    const newFarmLocation =
+      farmLocation !== undefined
+        ? farmLocation
+        : farm_location !== undefined
+          ? farm_location
+          : current.farm_location;
+    const newPrimaryCrops =
+      primaryCrops !== undefined
+        ? primaryCrops
+        : primary_crops !== undefined
+          ? primary_crops
+          : current.primary_crops;
 
     try {
       await pool.query(
         `UPDATE users
-         SET first_name = $1, last_name = $2, username = $3, phone_number = $4, gender = $5, avatar_url = $6, bio = $7
-         WHERE id = $8`,
+         SET first_name = $1, last_name = $2, username = $3, phone_number = $4,
+             gender = $5, avatar_url = $6, bio = $7, cover_photo_url = $8, location = $9,
+             farm_name = $10, farm_location = $11, primary_crops = $12,
+             updated_at = NOW()
+         WHERE id = $13`,
         [
           newFirstName,
           newLastName,
@@ -350,14 +1048,19 @@ const profileUpdateHandler = async (req, res) => {
           newGender,
           newAvatarUrl,
           newBio,
+          newCoverPhotoUrl,
+          newLocation,
+          newFarmName,
+          newFarmLocation,
+          newPrimaryCrops,
           userId,
         ],
       );
-    } catch {
-      // Fallback if bio column does not exist yet
+    } catch (updateErr) {
+      console.warn("[Profile Update Fallback]", updateErr.message);
       await pool.query(
         `UPDATE users
-         SET first_name = $1, last_name = $2, username = $3, phone_number = $4, gender = $5, avatar_url = $6
+         SET first_name = $1, last_name = $2, username = $3, phone_number = $4, gender = $5, avatar_url = $6, updated_at = NOW()
          WHERE id = $7`,
         [
           newFirstName,
@@ -653,6 +1356,30 @@ const changePasswordHandler = async (req, res) => {
         .json({ message: "New password must be at least 8 characters long." });
     }
 
+    if (!/[A-Z]/.test(targetPassword)) {
+      return res
+        .status(400)
+        .json({ message: "New password must contain at least one uppercase letter (A–Z)." });
+    }
+
+    if (!/\d/.test(targetPassword)) {
+      return res
+        .status(400)
+        .json({ message: "New password must contain at least one number (0–9)." });
+    }
+
+    if (!/[!@#$%^&*(),.?":{}|<>]/.test(targetPassword)) {
+      return res
+        .status(400)
+        .json({ message: "New password must contain at least one special character (!@#$)." });
+    }
+
+    if (currentPass === targetPassword) {
+      return res
+        .status(400)
+        .json({ message: "New password cannot be the same as your current password." });
+    }
+
     const pool = getPool();
     const userId = req.user.id;
 
@@ -689,12 +1416,50 @@ const changePasswordHandler = async (req, res) => {
     const salt = await bcrypt.genSalt(10);
     const hashedPassword = await bcrypt.hash(targetPassword, salt);
 
-    await pool.query("UPDATE users SET password_hash = $1 WHERE id = $2", [
-      hashedPassword,
-      userId,
-    ]);
+    await pool.query(
+      "UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2",
+      [hashedPassword, userId],
+    );
 
-    res.json({ message: "Password changed successfully." });
+    // Invalidate all OTHER device sessions for security
+    const currentSessionId = req.user.sessionId;
+    if (currentSessionId) {
+      await pool.query(
+        "UPDATE user_sessions SET is_active = FALSE WHERE user_id = $1 AND id != $2",
+        [userId, currentSessionId],
+      );
+    } else {
+      await pool.query(
+        `UPDATE user_sessions SET is_active = FALSE 
+         WHERE user_id = $1 AND id NOT IN (
+           SELECT id FROM user_sessions WHERE user_id = $1 ORDER BY last_active_at DESC LIMIT 1
+         )`,
+        [userId],
+      );
+    }
+
+    // Create in-app security notification
+    try {
+      await pool.query(
+        `INSERT INTO notifications (user_id, actor_id, actor_type, type, title, content, entity_name, is_read)
+         VALUES ($1, $1, 'system', 'security_alert', 'Password Changed', 
+                 'Your account password was updated successfully. Other device sessions have been logged out.', 'user', FALSE)`,
+        [userId],
+      );
+    } catch (notifErr) {
+      console.warn("[Change Password Notification Warning]", notifErr.message);
+    }
+
+    // Send email alert to user
+    const userName =
+      `${userRow.first_name || ""} ${userRow.last_name || ""}`.trim() ||
+      userRow.username ||
+      "User";
+    sendPasswordChangedEmail(userRow.email, userName).catch(() => {});
+
+    res.json({
+      message: "Password changed successfully. Other active sessions have been logged out.",
+    });
   } catch (err) {
     console.error("[Change Password Error]", err);
     res
@@ -985,7 +1750,7 @@ app.get(
            (c.receiver_id = $2 AND c.sender_id = u.id)
          )
          WHERE u.id != $3
-           AND (c.status IS NULL OR c.status != 'blocked')
+           AND (c.status IS NULL OR (c.status != 'blocked' AND c.status != 'accepted'))
          ORDER BY u.id DESC`,
         [userId, userId, userId],
       );
@@ -1491,6 +2256,57 @@ app.put(
 // 12. CHATS / MESSAGING API
 // -----------------------------------------------------------------------------
 
+// Real-time typing registry (Map with 4-second TTL)
+const activeTypingMap = new Map();
+
+function setUserTyping(userId, convId, receiverId, isTyping) {
+  const now = Date.now();
+  const keys = [];
+  if (convId) keys.push(`${userId}_conv_${convId}`);
+  if (receiverId) keys.push(`${userId}_user_${receiverId}`);
+  if (!convId && !receiverId) keys.push(`${userId}`);
+
+  keys.forEach((k) => {
+    if (isTyping) {
+      activeTypingMap.set(k, now);
+    } else {
+      activeTypingMap.delete(k);
+    }
+  });
+}
+
+function checkUserTyping(senderUserId, convId, receiverUserId) {
+  const now = Date.now();
+  const keys = [
+    `${senderUserId}_conv_${convId}`,
+    `${senderUserId}_user_${receiverUserId}`,
+    `${senderUserId}`,
+  ];
+  for (const k of keys) {
+    const t = activeTypingMap.get(k);
+    if (t) {
+      if (now - t < 4000) {
+        return true;
+      } else {
+        activeTypingMap.delete(k);
+      }
+    }
+  }
+  return false;
+}
+
+// 12.0 Broadcast Typing Status
+app.post("/api/chats/typing", authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { conversationId, receiverId, isTyping } = req.body;
+    setUserTyping(userId, conversationId, receiverId, Boolean(isTyping));
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ message: "Failed to update typing status." });
+  }
+});
+
 // 12.1 Get Active Users for top story carousel (Only accepted friends)
 app.get(
   ["/api/chats/active-users", "/api/users/active"],
@@ -1539,36 +2355,119 @@ app.get(
     try {
       const pool = getPool();
       const userId = req.user.id;
+      const category = (req.query.category || "messages").toLowerCase();
 
-      const { rows } = await pool.query(
-        `SELECT c.id AS conversation_id, c.last_message, c.last_message_time,
-                u.id AS other_user_id, u.first_name, u.last_name, u.username, u.avatar_url,
-                (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.receiver_id = $1 AND m.is_read = FALSE) AS unread_count,
-                (SELECT m.sender_id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_sender_id
-         FROM conversations c
-         JOIN users u ON (CASE WHEN c.user1_id = $2 THEN c.user2_id = u.id ELSE c.user1_id = u.id END)
-         WHERE c.user1_id = $3 OR c.user2_id = $4
-         ORDER BY c.last_message_time DESC`,
-        [userId, userId, userId, userId],
-      );
+      // Mark incoming messages as delivered to this user
+      await pool.query(
+        "UPDATE messages SET is_delivered = TRUE WHERE receiver_id = $1 AND is_delivered = FALSE",
+        [userId],
+      ).catch(() => {});
+
+      let categoryClause = "";
+      if (category === "archived") {
+        categoryClause = "AND COALESCE(ucs.is_archived, FALSE) = TRUE";
+      } else if (category === "spam") {
+        categoryClause = "AND COALESCE(ucs.is_spam, FALSE) = TRUE";
+      } else if (category === "requests") {
+        categoryClause = `
+          AND COALESCE(ucs.is_archived, FALSE) = FALSE
+          AND COALESCE(ucs.is_spam, FALSE) = FALSE
+          AND ru.restricted_user_id IS NULL
+          AND COALESCE(ucs.is_accepted, FALSE) = FALSE
+          AND NOT EXISTS (
+            SELECT 1 FROM connections conn
+            WHERE ((conn.sender_id = $1 AND conn.receiver_id = u.id) OR (conn.sender_id = u.id AND conn.receiver_id = $1))
+              AND conn.status = 'accepted'
+          )
+          AND (SELECT m.sender_id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) != $1
+        `;
+      } else {
+        // "messages" (default active inbox)
+        categoryClause = `
+          AND COALESCE(ucs.is_archived, FALSE) = FALSE
+          AND COALESCE(ucs.is_spam, FALSE) = FALSE
+          AND ru.restricted_user_id IS NULL
+          AND (
+            COALESCE(ucs.is_accepted, FALSE) = TRUE
+            OR EXISTS (
+              SELECT 1 FROM connections conn
+              WHERE ((conn.sender_id = $1 AND conn.receiver_id = u.id) OR (conn.sender_id = u.id AND conn.receiver_id = $1))
+                AND conn.status = 'accepted'
+            )
+            OR (SELECT m.sender_id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id ASC LIMIT 1) = $1
+          )
+        `;
+      }
+
+      const querySql = `
+        SELECT c.id AS conversation_id, c.last_message, c.last_message_time,
+               u.id AS other_user_id, u.first_name, u.last_name, u.username, u.avatar_url,
+               COALESCE(ucs.is_archived, FALSE) AS is_archived,
+               COALESCE(ucs.is_spam, FALSE) AS is_spam,
+               COALESCE(ucs.is_accepted, FALSE) AS is_accepted,
+               COALESCE(ucs.is_muted, FALSE) AS is_muted,
+               (ru.restricted_user_id IS NOT NULL) AS is_restricted,
+               (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.receiver_id = $1 AND m.is_read = FALSE) AS unread_count,
+               (SELECT m.sender_id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_sender_id,
+               (SELECT m.message_text FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_text,
+               (SELECT m.message_type FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_type,
+               (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_created_at,
+               (SELECT m.is_read FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_is_read,
+               (SELECT m.is_delivered FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_is_delivered,
+               EXISTS (
+                 SELECT 1 FROM connections conn
+                 WHERE ((conn.sender_id = $1 AND conn.receiver_id = u.id) OR (conn.sender_id = u.id AND conn.receiver_id = $1))
+                   AND conn.status = 'accepted'
+               ) AS is_friend
+        FROM conversations c
+        JOIN users u ON (CASE WHEN c.user1_id = $1 THEN c.user2_id = u.id ELSE c.user1_id = u.id END)
+        LEFT JOIN user_conversation_settings ucs ON (ucs.conversation_id = c.id AND ucs.user_id = $1)
+        LEFT JOIN restricted_users ru ON (ru.user_id = $1 AND ru.restricted_user_id = u.id)
+        WHERE (c.user1_id = $1 OR c.user2_id = $1)
+        ${categoryClause}
+        ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), c.last_message_time) DESC
+      `;
+
+      const { rows } = await pool.query(querySql, [userId]);
 
       const conversations = rows.map((row) => {
-        const isMeSender = row.last_sender_id === userId;
-        let snippet = row.last_message || "";
+        const isMeSender = Number(row.last_sender_id) === Number(userId);
+        let rawSnippet = row.latest_text || row.last_message || "";
+        const msgType = row.latest_type;
+
+        if (msgType === "sticker" || rawSnippet === "🌸") {
+          rawSnippet = "🌸 Sent a sticker";
+        } else if (msgType === "image") {
+          rawSnippet = "📷 Sent a photo";
+        } else if (msgType === "audio") {
+          rawSnippet = "🎤 Voice message";
+        } else if (msgType === "location") {
+          try {
+            const parsed = JSON.parse(rawSnippet);
+            rawSnippet = `📍 ${parsed.title || "Shared location"}`;
+          } catch {
+            rawSnippet = "📍 Shared location";
+          }
+        }
+
+        let snippet = rawSnippet;
         if (isMeSender && snippet) {
           snippet = `You: ${snippet}`;
         }
 
         // Format time
         let timeStr = "Now";
-        if (row.last_message_time) {
-          const d = new Date(row.last_message_time);
+        const msgDate = row.latest_created_at || row.last_message_time;
+        if (msgDate) {
+          const d = new Date(msgDate);
           const hours = d.getHours();
           const minutes = d.getMinutes().toString().padStart(2, "0");
           const ampm = hours >= 12 ? "PM" : "AM";
           const formattedHours = hours % 12 || 12;
           timeStr = `${formattedHours}:${minutes} ${ampm}`;
         }
+
+        const isOtherTyping = checkUserTyping(row.other_user_id, row.conversation_id, userId);
 
         return {
           id: String(row.conversation_id),
@@ -1582,7 +2481,17 @@ app.get(
           snippet,
           time: timeStr,
           unread: Number(row.unread_count) || 0,
+          isLastSenderMe: isMeSender,
+          isDelivered: Boolean(row.latest_is_delivered || row.latest_is_read),
+          isSeen: Boolean(row.latest_is_read),
+          isTyping: isOtherTyping,
           online: true,
+          isArchived: Boolean(row.is_archived),
+          isSpam: Boolean(row.is_spam),
+          isAccepted: Boolean(row.is_accepted),
+          isMuted: Boolean(row.is_muted),
+          isRestricted: Boolean(row.is_restricted),
+          isFriend: Boolean(row.is_friend),
         };
       });
 
@@ -1592,6 +2501,278 @@ app.get(
       res
         .status(500)
         .json({ message: err.message || "Failed to fetch conversations." });
+    }
+  },
+);
+
+// Toggle Archive Conversation
+app.post(
+  "/api/chats/conversations/:id/archive",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const conversationId = req.params.id;
+      const { isArchived = true } = req.body;
+
+      await pool.query(
+        `INSERT INTO user_conversation_settings (user_id, conversation_id, is_archived, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, conversation_id)
+         DO UPDATE SET is_archived = $3, updated_at = NOW()`,
+        [userId, conversationId, Boolean(isArchived)],
+      );
+
+      res.json({ success: true, isArchived: Boolean(isArchived) });
+    } catch (err) {
+      console.error("[Archive Conversation Error]", err);
+      res.status(500).json({ message: "Failed to update archive status." });
+    }
+  },
+);
+
+// Toggle Spam Conversation
+app.post(
+  "/api/chats/conversations/:id/spam",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const conversationId = req.params.id;
+      const { isSpam = true } = req.body;
+
+      await pool.query(
+        `INSERT INTO user_conversation_settings (user_id, conversation_id, is_spam, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, conversation_id)
+         DO UPDATE SET is_spam = $3, updated_at = NOW()`,
+        [userId, conversationId, Boolean(isSpam)],
+      );
+
+      res.json({ success: true, isSpam: Boolean(isSpam) });
+    } catch (err) {
+      console.error("[Spam Conversation Error]", err);
+      res.status(500).json({ message: "Failed to update spam status." });
+    }
+  },
+);
+
+// Toggle Mute Conversation
+app.post(
+  "/api/chats/conversations/:id/mute",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const conversationId = req.params.id;
+      const { isMuted = true } = req.body;
+
+      await pool.query(
+        `INSERT INTO user_conversation_settings (user_id, conversation_id, is_muted, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, conversation_id)
+         DO UPDATE SET is_muted = $3, updated_at = NOW()`,
+        [userId, conversationId, Boolean(isMuted)],
+      );
+
+      res.json({ success: true, isMuted: Boolean(isMuted) });
+    } catch (err) {
+      console.error("[Mute Conversation Error]", err);
+      res.status(500).json({ message: "Failed to update mute status." });
+    }
+  },
+);
+
+// Accept Message Request
+app.post(
+  "/api/chats/conversations/:id/accept-request",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const conversationId = req.params.id;
+
+      await pool.query(
+        `INSERT INTO user_conversation_settings (user_id, conversation_id, is_accepted, is_spam, is_archived, updated_at)
+         VALUES ($1, $2, TRUE, FALSE, FALSE, NOW())
+         ON CONFLICT (user_id, conversation_id)
+         DO UPDATE SET is_accepted = TRUE, is_spam = FALSE, is_archived = FALSE, updated_at = NOW()`,
+        [userId, conversationId],
+      );
+
+      res.json({ success: true, message: "Message request accepted." });
+    } catch (err) {
+      console.error("[Accept Request Error]", err);
+      res.status(500).json({ message: "Failed to accept request." });
+    }
+  },
+);
+
+// Get Restricted Users List
+app.get(
+  "/api/chats/restricted-users",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+
+      const { rows } = await pool.query(
+        `SELECT u.id, u.first_name, u.last_name, u.username, u.avatar_url,
+                (SELECT c.id FROM conversations c WHERE (c.user1_id = $1 AND c.user2_id = u.id) OR (c.user1_id = u.id AND c.user2_id = $1) LIMIT 1) AS conversation_id
+         FROM restricted_users ru
+         JOIN users u ON ru.restricted_user_id = u.id
+         WHERE ru.user_id = $1
+         ORDER BY ru.created_at DESC`,
+        [userId],
+      );
+
+      const users = rows.map((r) => ({
+        id: String(r.id),
+        name: `${r.first_name || ""} ${r.last_name || ""}`.trim() || r.username || "User",
+        username: r.username || "",
+        avatarUrl: r.avatar_url || "",
+        conversationId: r.conversation_id ? String(r.conversation_id) : undefined,
+      }));
+
+      res.json({ users, count: users.length });
+    } catch (err) {
+      console.error("[Get Restricted Users Error]", err);
+      res.status(500).json({ message: "Failed to fetch restricted users." });
+    }
+  },
+);
+
+// Toggle Restrict User
+app.post(
+  "/api/chats/users/:userId/restrict",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const currentUserId = req.user.id;
+      const targetUserId = req.params.userId;
+      const { restrict = true } = req.body;
+
+      if (Number(currentUserId) === Number(targetUserId)) {
+        return res.status(400).json({ message: "You cannot restrict yourself." });
+      }
+
+      if (Boolean(restrict)) {
+        await pool.query(
+          `INSERT INTO restricted_users (user_id, restricted_user_id, created_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (user_id, restricted_user_id) DO NOTHING`,
+          [currentUserId, targetUserId],
+        );
+      } else {
+        await pool.query(
+          `DELETE FROM restricted_users WHERE user_id = $1 AND restricted_user_id = $2`,
+          [currentUserId, targetUserId],
+        );
+      }
+
+      res.json({ success: true, isRestricted: Boolean(restrict) });
+    } catch (err) {
+      console.error("[Restrict User Error]", err);
+      res.status(500).json({ message: "Failed to update user restriction." });
+    }
+  },
+);
+
+// Toggle Block User
+app.post(
+  "/api/chats/users/:userId/block",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const currentUserId = req.user.id;
+      const targetUserId = req.params.userId;
+      const { block = true } = req.body;
+
+      if (Number(currentUserId) === Number(targetUserId)) {
+        return res.status(400).json({ message: "You cannot block yourself." });
+      }
+
+      if (Boolean(block)) {
+        await pool.query(
+          `INSERT INTO connections (sender_id, receiver_id, status, created_at, updated_at)
+           VALUES ($1, $2, 'blocked', NOW(), NOW())
+           ON CONFLICT DO NOTHING`,
+          [currentUserId, targetUserId],
+        );
+        await pool.query(
+          `UPDATE connections SET status = 'blocked', updated_at = NOW()
+           WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)`,
+          [currentUserId, targetUserId],
+        );
+      } else {
+        await pool.query(
+          `DELETE FROM connections
+           WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)) AND status = 'blocked'`,
+          [currentUserId, targetUserId],
+        );
+      }
+
+      res.json({ success: true, isBlocked: Boolean(block) });
+    } catch (err) {
+      console.error("[Block User Error]", err);
+      res.status(500).json({ message: "Failed to update block status." });
+    }
+  },
+);
+
+// Submit User Report
+app.post(
+  "/api/reports",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const reporterId = req.user.id;
+      const {
+        reportedUserId,
+        conversationId,
+        reason,
+        statement,
+        attachmentUrl,
+      } = req.body;
+
+      if (!reason || !reason.trim()) {
+        return res.status(400).json({ message: "Reason for reporting is required." });
+      }
+
+      if (!statement || !statement.trim()) {
+        return res.status(400).json({ message: "Statement is required." });
+      }
+
+      const { rows } = await pool.query(
+        `INSERT INTO reports (reporter_id, reported_user_id, conversation_id, reason, statement, attachment_url, status, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'pending', NOW())
+         RETURNING id`,
+        [
+          reporterId,
+          reportedUserId ? Number(reportedUserId) : null,
+          conversationId ? Number(conversationId) : null,
+          reason.trim(),
+          statement.trim(),
+          attachmentUrl || null,
+        ],
+      );
+
+      res.status(201).json({
+        success: true,
+        reportId: rows[0].id,
+        message: "Report submitted successfully.",
+      });
+    } catch (err) {
+      console.error("[Submit Report Error]", err);
+      res.status(500).json({ message: "Failed to submit report." });
     }
   },
 );
@@ -1621,24 +2802,24 @@ app.get(
         }
       }
 
-      // Mark incoming messages as read for this conversation or sender
+      // Mark incoming messages as delivered and read for this conversation or sender
       if (convId) {
         await pool.query(
-          "UPDATE messages SET is_read = TRUE WHERE conversation_id = $1 AND receiver_id = $2 AND is_read = FALSE",
+          "UPDATE messages SET is_delivered = TRUE, is_read = TRUE WHERE conversation_id = $1 AND receiver_id = $2 AND (is_read = FALSE OR is_delivered = FALSE)",
           [convId, userId],
-        );
+        ).catch(() => {});
       } else if (otherUserId) {
         await pool.query(
-          "UPDATE messages SET is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2 AND is_read = FALSE",
+          "UPDATE messages SET is_delivered = TRUE, is_read = TRUE WHERE sender_id = $1 AND receiver_id = $2 AND (is_read = FALSE OR is_delivered = FALSE)",
           [otherUserId, userId],
-        );
+        ).catch(() => {});
       }
 
       let rows = [];
       if (convId) {
         const { rows: convRows } = await pool.query(
           `SELECT m.id, m.conversation_id, m.sender_id, m.receiver_id, m.message_text,
-                  m.message_type, m.image_url, m.is_read, m.created_at,
+                  m.message_type, m.image_url, m.is_read, m.is_delivered, m.created_at,
                   u.avatar_url, u.first_name, u.last_name
            FROM messages m
            JOIN users u ON m.sender_id = u.id
@@ -1650,7 +2831,7 @@ app.get(
       } else if (otherUserId) {
         const { rows: otherRows } = await pool.query(
           `SELECT m.id, m.conversation_id, m.sender_id, m.receiver_id, m.message_text,
-                  m.message_type, m.image_url, m.is_read, m.created_at,
+                  m.message_type, m.image_url, m.is_read, m.is_delivered, m.created_at,
                   u.avatar_url, u.first_name, u.last_name
            FROM messages m
            JOIN users u ON m.sender_id = u.id
@@ -1681,11 +2862,28 @@ app.get(
           imageUrl: m.image_url,
           avatarUrl: m.avatar_url,
           time: timeStr,
+          isDelivered: Boolean(m.is_delivered || m.is_read),
           isSeen: Boolean(m.is_read),
         };
       });
 
-      res.json({ messages, conversationId: convId ? String(convId) : null });
+      let otherId = otherUserId;
+      if (!otherId && convId) {
+        const { rows: cInfo } = await pool.query(
+          "SELECT user1_id, user2_id FROM conversations WHERE id = $1",
+          [convId],
+        ).catch(() => ({ rows: [] }));
+        if (cInfo && cInfo.length > 0) {
+          otherId = cInfo[0].user1_id === userId ? cInfo[0].user2_id : cInfo[0].user1_id;
+        }
+      }
+      const isOtherTyping = Boolean(otherId && checkUserTyping(otherId, convId, userId));
+
+      res.json({
+        messages,
+        conversationId: convId ? String(convId) : null,
+        isTyping: isOtherTyping,
+      });
     } catch (err) {
       console.error("[Get Messages Error]", err);
       res
@@ -1741,6 +2939,9 @@ app.post(
         return res.status(400).json({ message: "Receiver ID is required." });
       }
 
+      // Clear typing status on message send
+      setUserTyping(senderId, convId, targetReceiverId, false);
+
       // Find or create conversation
       const u1 = Math.min(senderId, Number(targetReceiverId));
       const u2 = Math.max(senderId, Number(targetReceiverId));
@@ -1792,9 +2993,16 @@ app.post(
         convId = cInsert[0].id;
       }
 
+      // Check if recipient is active recently
+      const { rows: activeRecv } = await pool.query(
+        "SELECT id FROM user_sessions WHERE user_id = $1 AND is_active = TRUE AND last_active_at > NOW() - INTERVAL '5 minutes' LIMIT 1",
+        [targetReceiverId],
+      ).catch(() => ({ rows: [] }));
+      const isInitiallyDelivered = Boolean(activeRecv && activeRecv.length > 0);
+
       // Insert message
       const { rows: mInsert } = await pool.query(
-        "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, image_url, is_read) VALUES ($1, $2, $3, $4, $5, $6, FALSE) RETURNING id",
+        "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, image_url, is_read, is_delivered) VALUES ($1, $2, $3, $4, $5, $6, FALSE, $7) RETURNING id",
         [
           convId,
           senderId,
@@ -1802,6 +3010,7 @@ app.post(
           text,
           messageType || "text",
           imageUrl || null,
+          isInitiallyDelivered,
         ],
       );
 
@@ -1822,6 +3031,7 @@ app.post(
         text,
         imageUrl: imageUrl || null,
         time: timeStr,
+        isDelivered: isInitiallyDelivered,
         isSeen: false,
       };
 
@@ -1830,7 +3040,7 @@ app.post(
         const arText = String(autoReplyText).trim();
         const arType = autoReplyType || "auto_reply";
         const { rows: arInsert } = await pool.query(
-          "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, image_url, is_read) VALUES ($1, $2, $3, $4, $5, NULL, FALSE) RETURNING id",
+          "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, image_url, is_read, is_delivered) VALUES ($1, $2, $3, $4, $5, NULL, FALSE, TRUE) RETURNING id",
           [convId, targetReceiverId, senderId, arText, arType],
         );
         createdAutoReply = {
@@ -1842,6 +3052,7 @@ app.post(
           type: arType,
           text: arText,
           time: timeStr,
+          isDelivered: true,
           isSeen: false,
         };
       }
@@ -1860,7 +3071,465 @@ app.post(
   },
 );
 
-// -----------------------------------------------------------------------------
+// 12.4 Get Farmer Chat Info & Details
+app.get(
+  "/api/chats/user/:id/info",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const targetUserId = req.params.id;
+
+      const { rows } = await pool.query(
+        `SELECT id, first_name, last_name, username, avatar_url, phone_number,
+                farm_name, farm_location, primary_crops, is_verified, bio, created_at
+         FROM users
+         WHERE id = $1`,
+        [targetUserId]
+      );
+
+      if (rows.length === 0) {
+        return res.status(404).json({ message: "Farmer not found." });
+      }
+
+      const r = rows[0];
+      const fullName = `${r.first_name || ""} ${r.last_name || ""}`.trim() || r.username || "Local Farmer";
+
+      res.json({
+        user: {
+          id: String(r.id),
+          fullName,
+          firstName: r.first_name || "",
+          lastName: r.last_name || "",
+          username: r.username || "",
+          avatarUrl: r.avatar_url || "",
+          phoneNumber: r.phone_number || "",
+          farmName: r.farm_name || "Local Harvest Farm",
+          farmLocation: r.farm_location || "Iligan City, Northern Mindanao",
+          primaryCrops: r.primary_crops || "Fresh Vegetables & High-Value Crops",
+          isVerified: Boolean(r.is_verified),
+          bio: r.bio || "Local sustainable farmer growing quality produce for the community.",
+          memberSince: r.created_at ? new Date(r.created_at).toLocaleDateString("en-US", { month: "short", year: "numeric" }) : "Recent",
+        },
+      });
+    } catch (err) {
+      console.error("[Get Chat Farmer Info Error]", err);
+      res.status(500).json({ message: err.message || "Failed to fetch farmer info." });
+    }
+  }
+);
+
+// 12.5 Get Shared Media & Links in Conversation
+app.get(
+  ["/api/chats/conversations/:id/media", "/api/chats/conversations/media"],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const currentUserId = req.user.id;
+      const conversationId = req.params.id || req.query.conversationId;
+      const otherUserId = req.query.userId || req.query.otherUserId;
+
+      let convId =
+        conversationId && !isNaN(Number(conversationId))
+          ? Number(conversationId)
+          : null;
+      let targetOtherId =
+        otherUserId && !isNaN(Number(otherUserId))
+          ? Number(otherUserId)
+          : null;
+
+      if (!convId && targetOtherId) {
+        const u1 = Math.min(currentUserId, targetOtherId);
+        const u2 = Math.max(currentUserId, targetOtherId);
+        const { rows } = await pool.query(
+          "SELECT id FROM conversations WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $3 AND user2_id = $4)",
+          [u1, u2, u2, u1],
+        );
+        if (rows.length > 0) {
+          convId = rows[0].id;
+        }
+      }
+
+      let mediaRows = [];
+      let linkMsgRows = [];
+
+      if (convId) {
+        const { rows: mRows } = await pool.query(
+          `SELECT id, message_type, image_url, created_at
+           FROM messages
+           WHERE conversation_id = $1
+             AND message_type = 'image'
+             AND image_url IS NOT NULL
+             AND image_url != ''
+           ORDER BY id DESC
+           LIMIT 50`,
+          [convId],
+        );
+        mediaRows = mRows;
+
+        const { rows: lRows } = await pool.query(
+          `SELECT id, message_text, message_type, created_at
+           FROM messages
+           WHERE conversation_id = $1
+             AND (
+               message_text ILIKE '%http://%'
+               OR message_text ILIKE '%https://%'
+               OR message_text ILIKE '%www.%'
+               OR message_type = 'location'
+             )
+           ORDER BY id DESC
+           LIMIT 50`,
+          [convId],
+        );
+        linkMsgRows = lRows;
+      } else if (targetOtherId) {
+        const { rows: mRows } = await pool.query(
+          `SELECT id, message_type, image_url, created_at
+           FROM messages
+           WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+             AND message_type = 'image'
+             AND image_url IS NOT NULL
+             AND image_url != ''
+           ORDER BY id DESC
+           LIMIT 50`,
+          [currentUserId, targetOtherId],
+        );
+        mediaRows = mRows;
+
+        const { rows: lRows } = await pool.query(
+          `SELECT id, message_text, message_type, created_at
+           FROM messages
+           WHERE ((sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1))
+             AND (
+               message_text ILIKE '%http://%'
+               OR message_text ILIKE '%https://%'
+               OR message_text ILIKE '%www.%'
+               OR message_type = 'location'
+             )
+           ORDER BY id DESC
+           LIMIT 50`,
+          [currentUserId, targetOtherId],
+        );
+        linkMsgRows = lRows;
+      }
+
+      const media = mediaRows.map((r) => ({
+        id: String(r.id),
+        imageUrl: r.image_url,
+        createdAt: r.created_at,
+      }));
+
+      const links = [];
+      linkMsgRows.forEach((r) => {
+        if (r.message_type === "location") {
+          try {
+            const loc = JSON.parse(r.message_text);
+            const lat = loc.latitude || loc.lat || 8.228;
+            const lng = loc.longitude || loc.lng || 124.245;
+            links.push({
+              id: String(r.id),
+              url: `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`,
+              title: `📍 ${loc.title || "Location Pin"}${loc.address ? ` - ${loc.address}` : ""}`,
+              createdAt: r.created_at,
+            });
+          } catch {
+            links.push({
+              id: String(r.id),
+              url: "https://maps.google.com",
+              title: "📍 Location Pin",
+              createdAt: r.created_at,
+            });
+          }
+        } else {
+          const urlMatch = r.message_text.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi);
+          if (urlMatch) {
+            urlMatch.forEach((rawUrl, idx) => {
+              const formattedUrl = rawUrl.startsWith("http") ? rawUrl : `https://${rawUrl}`;
+              links.push({
+                id: `${r.id}-${idx}`,
+                url: formattedUrl,
+                title: rawUrl.replace(/^https?:\/\//i, "").replace(/\/$/, ""),
+                createdAt: r.created_at,
+              });
+            });
+          }
+        }
+      });
+
+      res.json({ media, links });
+    } catch (err) {
+      console.error("[Get Shared Media Error]", err);
+      res.status(500).json({ message: err.message || "Failed to fetch shared media." });
+    }
+  }
+);
+
+// Ensure farmer_quick_inquiries table exists
+async function ensureFarmerInquiriesTable(pool) {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS farmer_quick_inquiries (
+        id SERIAL PRIMARY KEY,
+        farmer_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        tag VARCHAR(50) NOT NULL,
+        icon VARCHAR(10) NOT NULL DEFAULT '🌾',
+        question VARCHAR(255) NOT NULL,
+        description TEXT,
+        button_text VARCHAR(100) NOT NULL,
+        reply_text TEXT NOT NULL,
+        reply_type VARCHAR(20) DEFAULT 'auto_reply',
+        location_title VARCHAR(255),
+        location_address TEXT,
+        location_latitude DOUBLE PRECISION,
+        location_longitude DOUBLE PRECISION,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+  } catch (e) {
+    console.warn("ensureFarmerInquiriesTable error:", e.message);
+  }
+}
+
+// 12.6 Get Dynamic Farmer Quick Inquiries & Auto-Reply Cards
+app.get(
+  "/api/chats/farmer/:id/inquiries",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const farmerId = req.params.id;
+
+      await ensureFarmerInquiriesTable(pool);
+
+      // Check if farmer has custom inquiries defined
+      const { rows: customInquiries } = await pool.query(
+        `SELECT id, tag, icon, question, description, button_text, reply_text,
+                reply_type, location_title, location_address, location_latitude, location_longitude
+         FROM farmer_quick_inquiries
+         WHERE farmer_id = $1
+         ORDER BY id ASC`,
+        [farmerId]
+      );
+
+      if (customInquiries.length > 0) {
+        const inquiries = customInquiries.map((q) => {
+          let locationData = null;
+          if (q.reply_type === "location" || q.location_latitude) {
+            locationData = {
+              title: q.location_title || "Farm Pickup Point",
+              address: q.location_address || "",
+              latitude: Number(q.location_latitude) || 8.228,
+              longitude: Number(q.location_longitude) || 124.2452,
+            };
+          }
+          return {
+            id: String(q.id),
+            icon: q.icon || "🌾",
+            tag: q.tag,
+            tagBg:
+              q.tag === "WHOLESALE"
+                ? "bg-amber-100"
+                : q.tag === "DELIVERY"
+                ? "bg-purple-100"
+                : "bg-[#72AF5B]/15",
+            tagText:
+              q.tag === "WHOLESALE"
+                ? "text-amber-800"
+                : q.tag === "DELIVERY"
+                ? "text-purple-800"
+                : "text-[#2E5E20]",
+            title: q.question,
+            desc: q.description || "",
+            btnText: q.button_text,
+            replyText: q.reply_text,
+            replyType: q.reply_type || "auto_reply",
+            locationData,
+          };
+        });
+        return res.json({ inquiries });
+      }
+
+      // If no custom entries yet, dynamically generate cards using the farmer's live database record
+      const { rows: userRows } = await pool.query(
+        `SELECT id, first_name, last_name, username, farm_name, farm_location, primary_crops, phone_number
+         FROM users
+         WHERE id = $1`,
+        [farmerId]
+      );
+
+      const farmer = userRows[0] || {};
+      const farmerName =
+        `${farmer.first_name || ""} ${farmer.last_name || ""}`.trim() ||
+        farmer.username ||
+        "Local Farmer";
+      const farmName = farmer.farm_name || `${farmerName}'s Farm`;
+      const farmLocation =
+        farmer.farm_location || "National Highway, Brgy. Pala-o, Iligan City";
+      const primaryCrops = farmer.primary_crops || "fresh produce & crops";
+
+      const dynamicInquiries = [
+        {
+          id: `avail-${farmerId}`,
+          icon: "🌾",
+          tag: "AVAILABILITY",
+          tagBg: "bg-[#72AF5B]/15",
+          tagText: "text-[#2E5E20]",
+          title: "Available pa po ba ito?",
+          desc: `Check if today's harvest of ${primaryCrops} is in stock right now at ${farmName}.`,
+          btnText: "Ask Availability",
+          replyText: `Opo, available pa po ang ani dito sa ${farmName}! Katatapos lang i-harvest kaninang umaga. Ilang kilo po ang kailangan ninyo? 🥭`,
+          replyType: "auto_reply",
+        },
+        {
+          id: `bulk-${farmerId}`,
+          icon: "📦",
+          tag: "WHOLESALE",
+          tagBg: "bg-amber-100",
+          tagText: "text-amber-800",
+          title: "How much for bulk / wholesale?",
+          desc: `Inquire about volume discounts for bulk orders of ${primaryCrops}.`,
+          btnText: "Ask Bulk Rates",
+          replyText: `May wholesale discount po tayo sa ${farmName} for 50kg above (up to 15% discount)! Sabihin niyo lang po kung ilang kilo ang kailangan ninyo. 📦`,
+          replyType: "auto_reply",
+        },
+        {
+          id: `pickup-${farmerId}`,
+          icon: "📍",
+          tag: "PICKUP POINT",
+          tagBg: "bg-[#72AF5B]/15",
+          tagText: "text-[#2E5E20]",
+          title: "Where is your pickup point?",
+          desc: `Get gate pickup coordinates & directions to ${farmLocation}.`,
+          btnText: "Ask Pickup Point",
+          replyText: `Sa aming pickup gate po sa ${farmLocation}, 6 AM - 5 PM daily! Eto po ang exact farm gate pin: 📍`,
+          replyType: "location",
+          locationData: {
+            title: `${farmName} - Main Gate`,
+            address: `${farmLocation}`,
+            latitude: 8.228,
+            longitude: 124.2452,
+          },
+        },
+        {
+          id: `deliver-${farmerId}`,
+          icon: "🚚",
+          tag: "DELIVERY",
+          tagBg: "bg-purple-100",
+          tagText: "text-purple-800",
+          title: "Do you provide delivery services?",
+          desc: `Check morning delivery drop-offs from ${farmName}.`,
+          btnText: "Ask Delivery",
+          replyText: `Puwede po kami mag-deliver sa central market at pickup hubs tuwing 7:00 AM mula sa ${farmName}! Paki-message lang po ang exact drop-off location ninyo. 🚚`,
+          replyType: "auto_reply",
+        },
+      ];
+
+      res.json({ inquiries: dynamicInquiries });
+    } catch (err) {
+      console.error("[Get Farmer Inquiries Error]", err);
+      res
+        .status(500)
+        .json({ message: err.message || "Failed to fetch farmer inquiries." });
+    }
+  }
+);
+
+// 12.7 Delete Conversation & Messages
+const deleteConversationHandler = async (req, res) => {
+  try {
+    const pool = getPool();
+    const currentUserId = req.user.id;
+    const conversationId =
+      req.params.id || req.query.conversationId || req.body?.conversationId;
+    const otherUserId =
+      req.params.userId || req.query.userId || req.body?.userId;
+
+    let convId =
+      conversationId && !isNaN(Number(conversationId))
+        ? Number(conversationId)
+        : null;
+    let targetOtherId =
+      otherUserId && !isNaN(Number(otherUserId))
+        ? Number(otherUserId)
+        : null;
+
+    if (!convId && targetOtherId) {
+      const u1 = Math.min(currentUserId, targetOtherId);
+      const u2 = Math.max(currentUserId, targetOtherId);
+      const { rows } = await pool.query(
+        "SELECT id FROM conversations WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $3 AND user2_id = $4)",
+        [u1, u2, u2, u1],
+      );
+      if (rows.length > 0) {
+        convId = rows[0].id;
+      }
+    }
+
+    if (convId && !targetOtherId) {
+      const { rows: cRows } = await pool.query(
+        "SELECT user1_id, user2_id FROM conversations WHERE id = $1",
+        [convId],
+      );
+      if (cRows.length > 0) {
+        targetOtherId =
+          cRows[0].user1_id === currentUserId
+            ? cRows[0].user2_id
+            : cRows[0].user1_id;
+      }
+    }
+
+    if (convId) {
+      // 1. Delete all messages with this conversation_id
+      await pool.query("DELETE FROM messages WHERE conversation_id = $1", [convId]);
+      // 2. Delete the conversation itself
+      await pool.query(
+        "DELETE FROM conversations WHERE id = $1 AND (user1_id = $2 OR user2_id = $3)",
+        [convId, currentUserId, currentUserId],
+      );
+    }
+
+    if (targetOtherId) {
+      // Also delete any messages directly between these two users
+      await pool.query(
+        "DELETE FROM messages WHERE (sender_id = $1 AND receiver_id = $2) OR (sender_id = $2 AND receiver_id = $1)",
+        [currentUserId, targetOtherId],
+      );
+      // Also ensure any conversations between these two users are deleted
+      const u1 = Math.min(currentUserId, targetOtherId);
+      const u2 = Math.max(currentUserId, targetOtherId);
+      await pool.query(
+        "DELETE FROM conversations WHERE (user1_id = $1 AND user2_id = $2) OR (user1_id = $2 AND user2_id = $1)",
+        [u1, u2],
+      );
+    }
+
+    res.json({ message: "Conversation deleted successfully." });
+  } catch (err) {
+    console.error("[Delete Conversation Error]", err);
+    res
+      .status(500)
+      .json({ message: err.message || "Failed to delete conversation." });
+  }
+};
+
+app.delete(
+  "/api/chats/conversations/with-user/:userId",
+  authenticateToken,
+  deleteConversationHandler,
+);
+app.delete(
+  "/api/chats/conversations/:id",
+  authenticateToken,
+  deleteConversationHandler,
+);
+app.delete(
+  "/api/chats/conversations",
+  authenticateToken,
+  deleteConversationHandler,
+);
+
+
 // 13. NOTIFICATIONS & BADGE COUNTS API
 // -----------------------------------------------------------------------------
 app.get(
@@ -1884,7 +3553,7 @@ app.get(
       const msgRes = msgRows[0];
 
       const { rows: notifRows } = await pool.query(
-        "SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE",
+        "SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND is_read = FALSE AND (actor_id IS NULL OR actor_id != user_id)",
         [userId],
       );
       const notifRes = notifRows[0];
@@ -1909,13 +3578,18 @@ app.get("/api/notifications", authenticateToken, async (req, res) => {
     const pool = getPool();
     const userId = req.user.id;
 
+    // Purge any accidental self-notifications (e.g. user commented/reacted to their own post)
+    await pool
+      .query("DELETE FROM notifications WHERE user_id = actor_id")
+      .catch(() => {});
+
     const { rows } = await pool.query(
       `SELECT n.id, n.user_id, n.actor_id, n.actor_type, n.type, n.title, n.content,
               n.entity_name, n.target_id, n.is_read, n.created_at,
               u.first_name, u.last_name, u.username, u.avatar_url
        FROM notifications n
        LEFT JOIN users u ON n.actor_id = u.id
-       WHERE n.user_id = $1
+       WHERE n.user_id = $1 AND (n.actor_id IS NULL OR n.actor_id != n.user_id)
        ORDER BY n.created_at DESC
        LIMIT 50`,
       [userId],
@@ -2082,25 +3756,66 @@ function sanitizePostLocation(loc) {
 
 async function ensureSamplePosts(pool) {
   try {
+    // Ensure image_url column is TEXT for full-length image URIs and base64 strings
+    await pool.query(
+      "ALTER TABLE posts ALTER COLUMN image_url TYPE TEXT;",
+    ).catch(() => {});
+
+    // Ensure images column exists for multi-image posts
+    await pool.query(
+      "ALTER TABLE posts ADD COLUMN IF NOT EXISTS images JSONB DEFAULT '[]'::jsonb;",
+    ).catch(() => {});
+
+    // Ensure duration_label column exists for temporary duration and live broadcast duration
+    await pool.query(
+      "ALTER TABLE posts ADD COLUMN IF NOT EXISTS duration_label VARCHAR(100);",
+    ).catch(() => {});
+
+    // Ensure live_streams table exists matching pgAdmin4 schema
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS live_streams (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        post_id INT REFERENCES posts(id) ON DELETE SET NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'live',
+        viewer_count INT NOT NULL DEFAULT 0,
+        started_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        ended_at TIMESTAMP
+      );
+    `).catch(() => {});
+
+    // Ensure reaction_type column exists on post_likes
+    await pool
+      .query(
+        "ALTER TABLE post_likes ADD COLUMN IF NOT EXISTS reaction_type VARCHAR(20) DEFAULT 'like';",
+      )
+      .catch(() => {});
+
+    // Ensure post_shares table exists matching schema
+    await pool
+      .query(`
+        CREATE TABLE IF NOT EXISTS post_shares (
+          id SERIAL PRIMARY KEY,
+          post_id INT NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+          user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          share_type VARCHAR(50) NOT NULL DEFAULT 'public',
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `)
+      .catch(() => {});
+
     // Migration: clear out any legacy hardcoded "Iligan City, Philippines" placeholder
     await pool.query(
       "UPDATE posts SET location = NULL WHERE location = 'Iligan City, Philippines'",
     );
 
-    const { rows } = await pool.query("SELECT id FROM posts LIMIT 1");
-    if (rows.length === 0) {
-      const { rows: users } = await pool.query("SELECT id FROM users LIMIT 3");
-      const u1 = users[0]?.id || 1;
-      const u2 = users[1]?.id || u1;
-
-      await pool.query(
-        `INSERT INTO posts (user_id, content, image_url, category, privacy, location, likes_count, comments_count, shares_count)
-         VALUES
-         ($1, 'Mga suki! Naa tay presko ug tam-is nga apple karon.🍎 Puno sa vitamins ug perfect para sa tibuok pamilya!', 'https://images.unsplash.com/photo-1560806887-1e4cd0b6cbd6?auto=format&fit=crop&w=800&q=80', 'Wholesaler', 'Public', NULL, 142, 22, 55),
-         ($2, 'Mga suki! Naa tay presko nga durian karon. Puno sa vitamins ug perfect para sa tibuok pamilya!', 'https://images.unsplash.com/photo-1595974482597-4b8da8879bc5?auto=format&fit=crop&w=800&q=80', 'Temporary', 'Public', NULL, 289, 41, 18)`,
-        [u1, u2],
-      );
-    }
+    // Keep post counters strictly synchronized with actual interactions
+    await pool.query(`
+      UPDATE posts SET
+        likes_count = (SELECT COUNT(*) FROM post_likes pl WHERE pl.post_id = posts.id),
+        comments_count = (SELECT COUNT(*) FROM post_comments pc WHERE pc.post_id = posts.id),
+        shares_count = (SELECT COUNT(*) FROM post_shares ps WHERE ps.post_id = posts.id);
+    `).catch(() => {});
   } catch (e) {
     console.warn("ensureSamplePosts error:", e.message);
   }
@@ -2114,12 +3829,21 @@ app.get("/api/posts/saved", authenticateToken, async (req, res) => {
 
     const { rows } = await pool.query(
       `SELECT sp.id AS saved_id, sp.collection_name, sp.created_at AS saved_at,
-                p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.category, p.privacy, p.location,
-                p.likes_count, p.comments_count, p.shares_count, p.created_at,
+                p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.images, p.category, p.privacy, p.location,
+                p.latitude, p.longitude,
+                (SELECT COUNT(*)::int FROM post_likes pl WHERE pl.post_id = p.id) AS likes_count,
+                (SELECT COUNT(*)::int FROM post_comments pc WHERE pc.post_id = p.id) AS comments_count,
+                (SELECT COUNT(*)::int FROM post_shares ps WHERE ps.post_id = p.id) AS shares_count,
+                p.created_at,
                 u.first_name, u.last_name, u.username, u.avatar_url, u.role,
                 EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $1) AS is_liked,
+                (SELECT pl.reaction_type FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $1 LIMIT 1) AS user_reaction,
+                EXISTS(SELECT 1 FROM saved_posts sp WHERE sp.post_id = p.id AND sp.user_id = $2) AS is_saved,
                 orig.id AS orig_id, orig.user_id AS orig_user_id, orig.content AS orig_content, orig.image_url AS orig_image_url,
-                orig.category AS orig_category, orig.location AS orig_location, orig.created_at AS orig_created_at,
+                orig.images AS orig_images,
+                orig.category AS orig_category, orig.location AS orig_location,
+                orig.latitude AS orig_latitude, orig.longitude AS orig_longitude,
+                orig.created_at AS orig_created_at,
                 orig_u.first_name AS orig_first_name, orig_u.last_name AS orig_last_name,
                 orig_u.username AS orig_username, orig_u.avatar_url AS orig_avatar_url, orig_u.role AS orig_role
          FROM saved_posts sp
@@ -2134,6 +3858,24 @@ app.get("/api/posts/saved", authenticateToken, async (req, res) => {
 
     const savedPosts = rows.map((r) => {
       const isShared = Boolean(r.original_post_id && r.orig_id);
+      const parsedImages = Array.isArray(r.images)
+        ? r.images
+        : (typeof r.images === "string"
+            ? (() => { try { return JSON.parse(r.images); } catch { return []; } })()
+            : []);
+      const finalImages = parsedImages.length > 0
+        ? parsedImages
+        : (r.image_url ? [r.image_url] : []);
+
+      const parsedOrigImages = Array.isArray(r.orig_images)
+        ? r.orig_images
+        : (typeof r.orig_images === "string"
+            ? (() => { try { return JSON.parse(r.orig_images); } catch { return []; } })()
+            : []);
+      const finalOrigImages = parsedOrigImages.length > 0
+        ? parsedOrigImages
+        : (r.orig_image_url ? [r.orig_image_url] : []);
+
       return {
         savedId: String(r.saved_id),
         collectionName: r.collection_name,
@@ -2147,9 +3889,12 @@ app.get("/api/posts/saved", authenticateToken, async (req, res) => {
         authorRole: r.category || (r.role === "admin" ? "Wholesaler" : "Field"),
         avatarUri: r.avatar_url || "",
         location: sanitizePostLocation(r.location),
+        latitude: r.latitude != null ? Number(r.latitude) : null,
+        longitude: r.longitude != null ? Number(r.longitude) : null,
         timeAgo: formatTimeAgo(r.created_at),
         content: r.content,
-        imageUrl: r.image_url || "",
+        imageUrl: r.image_url || (finalImages.length > 0 ? finalImages[0] : ""),
+        images: finalImages,
         category: r.category,
         privacy: r.privacy,
         likes: Number(r.likes_count) || 0,
@@ -2171,9 +3916,12 @@ app.get("/api/posts/saved", authenticateToken, async (req, res) => {
                 (r.orig_role === "admin" ? "Wholesaler" : "Field"),
               avatarUri: r.orig_avatar_url || "",
               location: sanitizePostLocation(r.orig_location),
+              latitude: r.orig_latitude != null ? Number(r.orig_latitude) : null,
+              longitude: r.orig_longitude != null ? Number(r.orig_longitude) : null,
               timeAgo: formatTimeAgo(r.orig_created_at),
               content: r.orig_content,
-              imageUrl: r.orig_image_url || "",
+              imageUrl: r.orig_image_url || (finalOrigImages.length > 0 ? finalOrigImages[0] : ""),
+              images: finalOrigImages,
               category: r.orig_category,
             }
           : null,
@@ -2217,6 +3965,214 @@ app.get("/api/posts/saved/collections", authenticateToken, async (req, res) => {
   }
 });
 
+async function ensureSavedCollectionsTable(pool) {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS saved_collections (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        name VARCHAR(100) NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT unique_user_saved_collection UNIQUE (user_id, name)
+      );
+    `).catch(() => {});
+  } catch {}
+}
+
+// 14.1.1 Get Saved Collections with Details (Cover Image, Item Count, hasCurrentPost)
+app.get("/api/posts/saved/collections/details", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const currentPostId = req.query.postId ? String(req.query.postId) : null;
+
+    await ensureSavedCollectionsTable(pool);
+
+    const { rows: colRows } = await pool.query(
+      `SELECT name FROM (
+         SELECT 'All Saved' AS name
+         UNION
+         SELECT name FROM saved_collections WHERE user_id = $1
+         UNION
+         SELECT collection_name AS name FROM saved_posts WHERE user_id = $1
+       ) c
+       WHERE name IS NOT NULL AND TRIM(name) != ''
+       ORDER BY CASE WHEN name = 'All Saved' THEN 0 ELSE 1 END, name ASC`,
+      [userId]
+    );
+
+    const collections = await Promise.all(
+      colRows.map(async (row) => {
+        const colName = row.name;
+        const isAll = colName === "All Saved";
+        const countQuery = isAll
+          ? `SELECT COUNT(*)::int AS count FROM saved_posts WHERE user_id = $1`
+          : `SELECT COUNT(*)::int AS count FROM saved_posts WHERE user_id = $1 AND collection_name = $2`;
+        const countParams = isAll ? [userId] : [userId, colName];
+        const { rows: countRes } = await pool.query(countQuery, countParams);
+        const itemCount = Number(countRes[0]?.count) || 0;
+
+        const coverQuery = isAll
+          ? `SELECT p.image_url, p.images FROM saved_posts sp JOIN posts p ON sp.post_id = p.id WHERE sp.user_id = $1 ORDER BY sp.created_at DESC LIMIT 1`
+          : `SELECT p.image_url, p.images FROM saved_posts sp JOIN posts p ON sp.post_id = p.id WHERE sp.user_id = $1 AND sp.collection_name = $2 ORDER BY sp.created_at DESC LIMIT 1`;
+        const { rows: coverRes } = await pool.query(coverQuery, countParams);
+        let coverImageUrl = "";
+        if (coverRes.length > 0) {
+          const imgs = coverRes[0].images;
+          const parsed = Array.isArray(imgs)
+            ? imgs
+            : (typeof imgs === "string" ? (() => { try { return JSON.parse(imgs); } catch { return []; } })() : []);
+          coverImageUrl = parsed.length > 0 ? parsed[0] : (coverRes[0].image_url || "");
+        }
+
+        let hasCurrentPost = false;
+        if (currentPostId) {
+          const hasQuery = isAll
+            ? `SELECT 1 FROM saved_posts WHERE user_id = $1 AND post_id = $2 LIMIT 1`
+            : `SELECT 1 FROM saved_posts WHERE user_id = $1 AND post_id = $2 AND collection_name = $3 LIMIT 1`;
+          const hasParams = isAll ? [userId, currentPostId] : [userId, currentPostId, colName];
+          const { rows: hasRes } = await pool.query(hasQuery, hasParams);
+          hasCurrentPost = hasRes.length > 0;
+        }
+
+        return {
+          name: colName,
+          itemCount,
+          coverImageUrl,
+          hasCurrentPost,
+          isDefault: isAll,
+        };
+      })
+    );
+
+    res.json({ collections });
+  } catch (err) {
+    console.error("[Get Saved Collections Details Error]", err);
+    res.status(500).json({ message: err.message || "Failed to fetch collection details." });
+  }
+});
+
+// 14.1.2 Create New Saved Collection
+app.post("/api/posts/saved/collections", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const { name, postId } = req.body;
+    const trimmed = (name || "").trim();
+
+    if (!trimmed) {
+      return res.status(400).json({ message: "Collection name is required." });
+    }
+
+    await ensureSavedCollectionsTable(pool);
+
+    await pool.query(
+      `INSERT INTO saved_collections (user_id, name) VALUES ($1, $2)
+       ON CONFLICT (user_id, name) DO NOTHING`,
+      [userId, trimmed]
+    );
+
+    if (postId) {
+      const { rows: existing } = await pool.query(
+        "SELECT id FROM saved_posts WHERE user_id = $1 AND post_id = $2",
+        [userId, postId]
+      );
+      if (existing.length > 0) {
+        await pool.query(
+          "UPDATE saved_posts SET collection_name = $1, created_at = NOW() WHERE id = $2",
+          [trimmed, existing[0].id]
+        );
+      } else {
+        await pool.query(
+          "INSERT INTO saved_posts (user_id, post_id, collection_name) VALUES ($1, $2, $3)",
+          [userId, postId, trimmed]
+        );
+      }
+    }
+
+    res.status(201).json({
+      message: `Collection "${trimmed}" created!`,
+      collectionName: trimmed,
+    });
+  } catch (err) {
+    console.error("[Create Collection Error]", err);
+    res.status(500).json({ message: err.message || "Failed to create collection." });
+  }
+});
+
+// 14.1.3 Rename Saved Collection
+app.patch("/api/posts/saved/collections/rename", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const { oldName, newName } = req.body;
+    const trimmedOld = (oldName || "").trim();
+    const trimmedNew = (newName || "").trim();
+
+    if (!trimmedOld || !trimmedNew) {
+      return res.status(400).json({ message: "Both old and new collection names are required." });
+    }
+
+    if (trimmedOld.toLowerCase() === "all saved") {
+      return res.status(400).json({ message: "Default collection cannot be renamed." });
+    }
+
+    await ensureSavedCollectionsTable(pool);
+
+    await pool.query(
+      "UPDATE saved_collections SET name = $1 WHERE user_id = $2 AND name = $3",
+      [trimmedNew, userId, trimmedOld]
+    );
+
+    await pool.query(
+      "UPDATE saved_posts SET collection_name = $1 WHERE user_id = $2 AND collection_name = $3",
+      [trimmedNew, userId, trimmedOld]
+    );
+
+    res.json({
+      message: `Collection renamed to "${trimmedNew}"!`,
+      oldName: trimmedOld,
+      newName: trimmedNew,
+    });
+  } catch (err) {
+    console.error("[Rename Collection Error]", err);
+    res.status(500).json({ message: err.message || "Failed to rename collection." });
+  }
+});
+
+// 14.1.4 Delete Saved Collection
+app.delete("/api/posts/saved/collections/:name", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const collectionName = decodeURIComponent(req.params.name || "").trim();
+
+    if (!collectionName || collectionName.toLowerCase() === "all saved") {
+      return res.status(400).json({ message: "Cannot delete the default collection." });
+    }
+
+    await ensureSavedCollectionsTable(pool);
+
+    await pool.query(
+      "DELETE FROM saved_collections WHERE user_id = $1 AND name = $2",
+      [userId, collectionName]
+    );
+
+    await pool.query(
+      "UPDATE saved_posts SET collection_name = 'All Saved' WHERE user_id = $1 AND collection_name = $2",
+      [userId, collectionName]
+    );
+
+    res.json({
+      message: `Collection "${collectionName}" deleted. Posts moved to All Saved.`,
+      deletedName: collectionName,
+    });
+  } catch (err) {
+    console.error("[Delete Collection Error]", err);
+    res.status(500).json({ message: err.message || "Failed to delete collection." });
+  }
+});
+
 // 14.2 Get News Feed Posts (with category and privacy filtering)
 app.get(
   ["/api/posts", "/api/posts/feed"],
@@ -2230,10 +4186,16 @@ app.get(
       await ensureSamplePosts(pool);
 
       let query = `
-        SELECT p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.category, p.privacy, p.location,
-               p.expires_at, p.likes_count, p.comments_count, p.shares_count, p.created_at,
+        SELECT p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.images, p.category, p.privacy, p.location,
+               p.latitude, p.longitude, p.duration_label,
+               p.expires_at,
+               (SELECT COUNT(*)::int FROM post_likes pl WHERE pl.post_id = p.id) AS likes_count,
+               (SELECT COUNT(*)::int FROM post_comments pc WHERE pc.post_id = p.id) AS comments_count,
+               (SELECT COUNT(*)::int FROM post_shares ps WHERE ps.post_id = p.id) AS shares_count,
+               p.created_at,
                u.first_name, u.last_name, u.username, u.avatar_url, u.role,
                EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $1) AS is_liked,
+               (SELECT pl.reaction_type FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $1 LIMIT 1) AS user_reaction,
                EXISTS(SELECT 1 FROM saved_posts sp WHERE sp.post_id = p.id AND sp.user_id = $2) AS is_saved,
                COALESCE(
                  (
@@ -2250,7 +4212,10 @@ app.get(
                  '[]'::json
                ) AS tagged_users,
                orig.id AS orig_id, orig.user_id AS orig_user_id, orig.content AS orig_content, orig.image_url AS orig_image_url,
-               orig.category AS orig_category, orig.location AS orig_location, orig.created_at AS orig_created_at,
+               orig.images AS orig_images,
+               orig.category AS orig_category, orig.location AS orig_location,
+               orig.latitude AS orig_latitude, orig.longitude AS orig_longitude,
+               orig.created_at AS orig_created_at,
                orig_u.first_name AS orig_first_name, orig_u.last_name AS orig_last_name,
                orig_u.username AS orig_username, orig_u.avatar_url AS orig_avatar_url, orig_u.role AS orig_role
         FROM posts p
@@ -2312,6 +4277,25 @@ app.get(
       const posts = rows.map((r) => {
         const isShared = Boolean(r.original_post_id && r.orig_id);
         const taggedList = Array.isArray(r.tagged_users) ? r.tagged_users : [];
+
+        const parsedImages = Array.isArray(r.images)
+          ? r.images
+          : (typeof r.images === "string"
+              ? (() => { try { return JSON.parse(r.images); } catch { return []; } })()
+              : []);
+        const finalImages = parsedImages.length > 0
+          ? parsedImages
+          : (r.image_url ? [r.image_url] : []);
+
+        const parsedOrigImages = Array.isArray(r.orig_images)
+          ? r.orig_images
+          : (typeof r.orig_images === "string"
+              ? (() => { try { return JSON.parse(r.orig_images); } catch { return []; } })()
+              : []);
+        const finalOrigImages = parsedOrigImages.length > 0
+          ? parsedOrigImages
+          : (r.orig_image_url ? [r.orig_image_url] : []);
+
         return {
           id: String(r.id),
           userId: String(r.user_id),
@@ -2323,17 +4307,22 @@ app.get(
             r.category || (r.role === "admin" ? "Wholesaler" : "Field"),
           avatarUri: r.avatar_url || "",
           location: sanitizePostLocation(r.location),
+          latitude: r.latitude != null ? Number(r.latitude) : null,
+          longitude: r.longitude != null ? Number(r.longitude) : null,
           timeAgo: formatTimeAgo(r.created_at),
           content: r.content,
-          imageUrl: r.image_url || "",
+          imageUrl: r.image_url || (finalImages.length > 0 ? finalImages[0] : ""),
+          images: finalImages,
           category: r.category,
           privacy: r.privacy,
+          durationLabel: r.duration_label || undefined,
           expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null,
           taggedUsers: taggedList,
           likes: Number(r.likes_count) || 0,
           comments: Number(r.comments_count) || 0,
           shares: Number(r.shares_count) || 0,
           isLiked: Boolean(r.is_liked),
+          userReaction: r.user_reaction || null,
           isSaved: Boolean(r.is_saved),
           isShared,
           originalPost: isShared
@@ -2349,9 +4338,12 @@ app.get(
                   (r.orig_role === "admin" ? "Wholesaler" : "Field"),
                 avatarUri: r.orig_avatar_url || "",
                 location: sanitizePostLocation(r.orig_location),
+                latitude: r.orig_latitude != null ? Number(r.orig_latitude) : null,
+                longitude: r.orig_longitude != null ? Number(r.orig_longitude) : null,
                 timeAgo: formatTimeAgo(r.orig_created_at),
                 content: r.orig_content,
-                imageUrl: r.orig_image_url || "",
+                imageUrl: r.orig_image_url || (finalOrigImages.length > 0 ? finalOrigImages[0] : ""),
+                images: finalOrigImages,
                 category: r.orig_category,
               }
             : null,
@@ -2385,14 +4377,22 @@ app.post(
         expiresAt,
         temporaryDuration,
         durationLabel,
+        latitude,
+        longitude,
+        isLiveReplay,
+        viewerCount,
+        durationSeconds,
       } = req.body;
       const text = (content || "").trim();
 
-      const chosenImage =
-        imageUrl ||
-        (Array.isArray(photos) && photos.length > 0 ? photos[0] : null);
+      const photosArray = Array.isArray(photos)
+        ? photos.filter(Boolean)
+        : (imageUrl ? [imageUrl] : []);
 
-      if (!text && !chosenImage) {
+      const chosenImage =
+        photosArray.length > 0 ? photosArray[0] : (imageUrl || null);
+
+      if (!text && !chosenImage && photosArray.length === 0) {
         return res
           .status(400)
           .json({ message: "Post content or photo is required." });
@@ -2415,6 +4415,14 @@ app.post(
         : "Public";
 
       const postLocation = sanitizePostLocation(location);
+      const postLat =
+        latitude !== undefined && latitude !== null && !isNaN(Number(latitude))
+          ? Number(latitude)
+          : null;
+      const postLng =
+        longitude !== undefined && longitude !== null && !isNaN(Number(longitude))
+          ? Number(longitude)
+          : null;
 
       // Determine expiration timestamp for Temporary category
       let postExpiresAt = null;
@@ -2433,20 +4441,42 @@ app.post(
       }
 
       const { rows: insertRes } = await pool.query(
-        `INSERT INTO posts (user_id, content, image_url, category, privacy, location, expires_at, likes_count, comments_count, shares_count)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 0, 0, 0) RETURNING id`,
+        `INSERT INTO posts (user_id, content, image_url, images, category, privacy, location, expires_at, latitude, longitude, duration_label, likes_count, comments_count, shares_count)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 0, 0, 0) RETURNING id`,
         [
           userId,
           text,
           chosenImage,
+          JSON.stringify(photosArray),
           validCategory,
           validPrivacy,
           postLocation || null,
           postExpiresAt,
+          postLat,
+          postLng,
+          durationLabel || null,
         ],
       );
 
       const postId = insertRes[0].id;
+
+      // Record in live_streams table if this is a live broadcast replay
+      if (isLiveReplay || (text && text.includes("[Live Replay]"))) {
+        try {
+          const pViewers = Number(viewerCount) || 18;
+          const durSec = Number(durationSeconds) || 120;
+          const startedAt = new Date(Date.now() - durSec * 1000);
+          const endedAt = new Date();
+
+          await pool.query(
+            `INSERT INTO live_streams (user_id, post_id, status, viewer_count, started_at, ended_at)
+             VALUES ($1, $2, 'ended', $3, $4, $5)`,
+            [userId, postId, pViewers, startedAt, endedAt],
+          );
+        } catch (lsErr) {
+          console.warn("[live_streams insert notice]:", lsErr.message);
+        }
+      }
 
       // Fetch user details to return complete post object
       const { rows: userRows } = await pool.query(
@@ -2496,17 +4526,19 @@ app.post(
             });
           }
 
-          // Send notification to tagged user
-          await pool.query(
-            `INSERT INTO notifications (user_id, actor_id, actor_type, type, title, content, entity_name, target_id, is_read)
-             VALUES ($1, $2, 'user', 'tag', 'Tagged in a Post', $3, 'post', $4, FALSE)`,
-            [
-              taggedId,
-              userId,
-              `${authorDisplayName} tagged you in a post.`,
-              postId,
-            ],
-          );
+          // Send notification to tagged user (if not author themselves)
+          if (String(taggedId) !== String(userId)) {
+            await pool.query(
+              `INSERT INTO notifications (user_id, actor_id, actor_type, type, title, content, entity_name, target_id, is_read)
+               VALUES ($1, $2, 'user', 'tag', 'Tagged in a Post', $3, 'post', $4, FALSE)`,
+              [
+                taggedId,
+                userId,
+                `${authorDisplayName} tagged you in a post.`,
+                postId,
+              ],
+            );
+          }
         } catch (tagErr) {
           console.warn(
             `[Tagging User Error] Could not tag user ${taggedId}:`,
@@ -2523,9 +4555,12 @@ app.post(
           validCategory || (userRow?.role === "admin" ? "Wholesaler" : "Field"),
         avatarUri: userRow?.avatar_url || "",
         location: postLocation || "",
+        latitude: postLat,
+        longitude: postLng,
         timeAgo: "Just now",
         content: text,
         imageUrl: chosenImage || "",
+        images: photosArray,
         category: validCategory,
         privacy: validPrivacy,
         expiresAt: postExpiresAt ? postExpiresAt.toISOString() : null,
@@ -2549,9 +4584,84 @@ app.post(
   },
 );
 
-// 14.3 Like / Unlike Post
+// 14.2b Record Live Stream Session (For discarded or standalone live broadcasts)
 app.post(
-  ["/api/posts/:id/like", "/api/posts/like"],
+  ["/api/live-streams", "/api/live-streams/record"],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const {
+        viewerCount,
+        durationSeconds,
+        status = "ended",
+        postId = null,
+      } = req.body;
+
+      const pViewers = Number(viewerCount) || 0;
+      const durSec = Number(durationSeconds) || 10;
+      const startedAt = new Date(Date.now() - durSec * 1000);
+      const endedAt = new Date();
+
+      const { rows } = await pool.query(
+        `INSERT INTO live_streams (user_id, post_id, status, viewer_count, started_at, ended_at)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+        [
+          userId,
+          postId ? Number(postId) : null,
+          status,
+          pViewers,
+          startedAt,
+          endedAt,
+        ],
+      );
+
+      console.log(
+        `[Live Stream Recorded] user_id=${userId} post_id=${postId || "NULL (discarded)"} viewers=${pViewers}`,
+      );
+
+      res.status(201).json({
+        message: "Live stream recorded successfully.",
+        liveStream: rows[0],
+      });
+    } catch (err) {
+      console.error("[Record Live Stream Error]", err);
+      res
+        .status(500)
+        .json({ message: err.message || "Failed to record live stream." });
+    }
+  },
+);
+
+// 14.2c Get Live Streams History
+app.get("/api/live-streams", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `SELECT ls.*, u.first_name, u.last_name, u.username, u.avatar_url, p.content as post_content
+       FROM live_streams ls
+       JOIN users u ON ls.user_id = u.id
+       LEFT JOIN posts p ON ls.post_id = p.id
+       ORDER BY ls.started_at DESC LIMIT 50`,
+    );
+    res.json({ liveStreams: rows });
+  } catch (err) {
+    console.error("[Get Live Streams Error]", err);
+    res
+      .status(500)
+      .json({ message: err.message || "Failed to fetch live streams." });
+  }
+});
+
+// 14.3 Like / React to Post
+app.post(
+  [
+    "/api/posts/:id/like",
+    "/api/posts/like",
+    "/api/posts/:id/react",
+    "/api/posts/react",
+  ],
   authenticateToken,
   async (req, res) => {
     try {
@@ -2562,35 +4672,55 @@ app.post(
 
       const pool = getPool();
       const userId = req.user.id;
+      const requestedReaction = (
+        req.body.reactionType ||
+        req.body.reaction ||
+        "like"
+      ).toLowerCase();
 
       const { rows: existing } = await pool.query(
-        "SELECT id FROM post_likes WHERE post_id = $1 AND user_id = $2",
+        "SELECT id, reaction_type FROM post_likes WHERE post_id = $1 AND user_id = $2",
         [postId, userId],
       );
 
       let isLiked = false;
+      let finalReaction = null;
+
       if (existing.length > 0) {
-        // Unlike
-        await pool.query(
-          "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2",
-          [postId, userId],
-        );
-        await pool.query(
-          "UPDATE posts SET likes_count = GREATEST(0, likes_count - 1) WHERE id = $1",
-          [postId],
-        );
-        isLiked = false;
+        const currentReaction = existing[0].reaction_type || "like";
+        if (currentReaction === requestedReaction) {
+          // Same reaction tapped again -> Unlike / remove reaction
+          await pool.query(
+            "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2",
+            [postId, userId],
+          );
+          await pool.query(
+            "UPDATE posts SET likes_count = GREATEST(0, likes_count - 1) WHERE id = $1",
+            [postId],
+          );
+          isLiked = false;
+          finalReaction = null;
+        } else {
+          // Different reaction chosen -> Switch reaction without changing count
+          await pool.query(
+            "UPDATE post_likes SET reaction_type = $3 WHERE post_id = $1 AND user_id = $2",
+            [postId, userId, requestedReaction],
+          );
+          isLiked = true;
+          finalReaction = requestedReaction;
+        }
       } else {
-        // Like
+        // New reaction
         await pool.query(
-          "INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2)",
-          [postId, userId],
+          "INSERT INTO post_likes (post_id, user_id, reaction_type) VALUES ($1, $2, $3)",
+          [postId, userId, requestedReaction],
         );
         await pool.query(
           "UPDATE posts SET likes_count = likes_count + 1 WHERE id = $1",
           [postId],
         );
         isLiked = true;
+        finalReaction = requestedReaction;
 
         // Notify post author if different user
         try {
@@ -2598,7 +4728,7 @@ app.post(
             "SELECT user_id FROM posts WHERE id = $1",
             [postId],
           );
-          if (pRows.length > 0 && pRows[0].user_id !== userId) {
+          if (pRows.length > 0 && String(pRows[0].user_id) !== String(userId)) {
             const postAuthorId = pRows[0].user_id;
             const { rows: uRows } = await pool.query(
               "SELECT first_name, last_name, username FROM users WHERE id = $1",
@@ -2609,10 +4739,20 @@ app.post(
               uRows[0]?.username ||
               "Someone";
 
+            const reactionLabel =
+              requestedReaction === "like"
+                ? "liked"
+                : `reacted (${requestedReaction}) to`;
+
             await pool.query(
               `INSERT INTO notifications (user_id, actor_id, actor_type, type, title, content, entity_name, target_id, is_read)
                VALUES ($1, $2, 'user', 'like', 'Post Reaction', $3, 'post', $4, FALSE)`,
-              [postAuthorId, userId, `${likerName} liked your post.`, postId],
+              [
+                postAuthorId,
+                userId,
+                `${likerName} ${reactionLabel} your post.`,
+                postId,
+              ],
             );
           }
         } catch (likeNotifErr) {
@@ -2627,13 +4767,184 @@ app.post(
       const postRow = postRows[0];
 
       res.json({
-        message: isLiked ? "Post liked!" : "Post unliked.",
+        message: isLiked
+          ? `Reaction (${finalReaction}) saved!`
+          : "Reaction removed.",
         isLiked,
+        userReaction: finalReaction,
         likesCount: Number(postRow?.likes_count) || 0,
       });
     } catch (err) {
       console.error("[Like Post Error]", err);
       res.status(500).json({ message: err.message || "Failed to like post." });
+    }
+  },
+);
+
+// 14.3.0 Share Post
+app.post(
+  ["/api/posts/:id/share", "/api/posts/share"],
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const postId = req.params.id || req.body.postId || req.body.id;
+      if (!postId) {
+        return res.status(400).json({ message: "Post ID is required." });
+      }
+
+      const pool = getPool();
+      const userId = req.user.id;
+      const { shareType = "public", caption = "", groupName, category, privacy = "Public" } = req.body;
+
+      // Fetch target post to be shared
+      const { rows: origRows } = await pool.query(
+        `SELECT p.*, u.first_name, u.last_name, u.username, u.avatar_url, u.role
+         FROM posts p
+         JOIN users u ON p.user_id = u.id
+         WHERE p.id = $1`,
+        [postId],
+      );
+      const targetPost = origRows[0];
+      if (!targetPost) {
+        return res.status(404).json({ message: "Original post not found." });
+      }
+
+      // If user shares a post that is already a shared post, link to the root original post
+      const actualOriginalPostId = targetPost.original_post_id
+        ? targetPost.original_post_id
+        : targetPost.id;
+
+      // 1. Record in post_shares table
+      await pool.query(
+        "INSERT INTO post_shares (post_id, user_id, share_type) VALUES ($1, $2, $3)",
+        [postId, userId, shareType],
+      );
+
+      // 2. Increment shares count on the target post
+      await pool.query(
+        "UPDATE posts SET shares_count = shares_count + 1 WHERE id = $1",
+        [postId],
+      );
+
+      // Also if targetPost had an original_post_id, increment root post's shares count too
+      if (targetPost.original_post_id) {
+        await pool.query(
+          "UPDATE posts SET shares_count = shares_count + 1 WHERE id = $1",
+          [targetPost.original_post_id],
+        ).catch(() => {});
+      }
+
+      const { rows: postRows } = await pool.query(
+        "SELECT shares_count FROM posts WHERE id = $1",
+        [postId],
+      );
+      const sharesCount = Number(postRows[0]?.shares_count) || 1;
+      const origAuthorId = targetPost.user_id;
+
+      let sharedPost = null;
+
+      // 3. If public, feed, or group share, create a new shared post entry in posts table
+      if (shareType === "public" || shareType === "feed" || shareType === "group") {
+        const postCategory = groupName || category || targetPost.category || "General";
+        const { rows: newPostRows } = await pool.query(
+          `INSERT INTO posts (user_id, content, original_post_id, category, privacy, likes_count, comments_count, shares_count)
+           VALUES ($1, $2, $3, $4, $5, 0, 0, 0) RETURNING id, created_at`,
+          [userId, (caption || "").trim(), actualOriginalPostId, postCategory, privacy || "Public"],
+        );
+
+        const newPostId = newPostRows[0]?.id;
+
+        // Fetch author user info
+        const { rows: uRows } = await pool.query(
+          "SELECT first_name, last_name, username, avatar_url, role FROM users WHERE id = $1",
+          [userId],
+        );
+        const userRow = uRows[0];
+
+        // Fetch actual root post details
+        const { rows: rootOrigRows } = await pool.query(
+          `SELECT p.*, u.first_name, u.last_name, u.username, u.avatar_url, u.role
+           FROM posts p
+           JOIN users u ON p.user_id = u.id
+           WHERE p.id = $1`,
+          [actualOriginalPostId],
+        );
+        const orig = rootOrigRows[0] || targetPost;
+
+        sharedPost = {
+          id: String(newPostId),
+          userId: String(userId),
+          authorName:
+            `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() ||
+            userRow?.username ||
+            "You",
+          authorRole: postCategory || (userRow?.role === "admin" ? "Wholesaler" : "Field"),
+          avatarUri: userRow?.avatar_url || "",
+          location: "",
+          timeAgo: "Just now",
+          content: (caption || "").trim(),
+          imageUrl: "",
+          category: postCategory,
+          privacy: privacy || "Public",
+          likes: 0,
+          comments: 0,
+          shares: 0,
+          isLiked: false,
+          userReaction: null,
+          isSaved: false,
+          isShared: true,
+          originalPost: orig
+            ? {
+                id: String(orig.id),
+                userId: String(orig.user_id),
+                authorName:
+                  `${orig.first_name || ""} ${orig.last_name || ""}`.trim() ||
+                  orig.username ||
+                  "Local Farmer",
+                authorRole: orig.category || "Field",
+                avatarUri: orig.avatar_url || "",
+                location: sanitizePostLocation(orig.location),
+                latitude:
+                  orig.latitude != null ? Number(orig.latitude) : null,
+                longitude:
+                  orig.longitude != null ? Number(orig.longitude) : null,
+                timeAgo: formatTimeAgo(orig.created_at),
+                content: orig.content,
+                imageUrl: orig.image_url || "",
+                category: orig.category,
+              }
+            : null,
+        };
+
+        // Notify original author if different user
+        if (origAuthorId && String(origAuthorId) !== String(userId)) {
+          const sharerName =
+            `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() ||
+            userRow?.username ||
+            "Someone";
+          await pool
+            .query(
+              `INSERT INTO notifications (user_id, actor_id, actor_type, type, title, content, entity_name, target_id, is_read)
+               VALUES ($1, $2, 'user', 'share', 'Post Shared', $3, 'post', $4, FALSE)`,
+              [origAuthorId, userId, `${sharerName} shared your post.`, postId],
+            )
+            .catch(() => {});
+        }
+      }
+
+      res.status(201).json({
+        message:
+          shareType === "group"
+            ? "Post shared to group!"
+            : shareType === "message"
+            ? "Post shared in message!"
+            : "Post shared successfully to your feed!",
+        sharesCount,
+        sharedPost,
+      });
+    } catch (err) {
+      console.error("[Share Post Error]", err);
+      res.status(500).json({ message: err.message || "Failed to share post." });
     }
   },
 );
@@ -2646,10 +4957,16 @@ app.get("/api/posts/:id", optionalAuthenticateToken, async (req, res) => {
     const currentUserId = req.user?.id || 0;
 
     const query = `
-        SELECT p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.category, p.privacy, p.location,
-               p.expires_at, p.likes_count, p.comments_count, p.shares_count, p.created_at,
+        SELECT p.id, p.user_id, p.original_post_id, p.content, p.image_url, p.images, p.category, p.privacy, p.location,
+               p.latitude, p.longitude,
+               p.expires_at,
+               (SELECT COUNT(*)::int FROM post_likes pl WHERE pl.post_id = p.id) AS likes_count,
+               (SELECT COUNT(*)::int FROM post_comments pc WHERE pc.post_id = p.id) AS comments_count,
+               (SELECT COUNT(*)::int FROM post_shares ps WHERE ps.post_id = p.id) AS shares_count,
+               p.created_at,
                u.first_name, u.last_name, u.username, u.avatar_url, u.role,
                EXISTS(SELECT 1 FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $1) AS is_liked,
+               (SELECT pl.reaction_type FROM post_likes pl WHERE pl.post_id = p.id AND pl.user_id = $1 LIMIT 1) AS user_reaction,
                EXISTS(SELECT 1 FROM saved_posts sp WHERE sp.post_id = p.id AND sp.user_id = $2) AS is_saved,
                COALESCE(
                  (
@@ -2682,6 +4999,15 @@ app.get("/api/posts/:id", optionalAuthenticateToken, async (req, res) => {
 
     const r = rows[0];
     const taggedList = Array.isArray(r.tagged_users) ? r.tagged_users : [];
+    const parsedImages = Array.isArray(r.images)
+      ? r.images
+      : (typeof r.images === "string"
+          ? (() => { try { return JSON.parse(r.images); } catch { return []; } })()
+          : []);
+    const finalImages = parsedImages.length > 0
+      ? parsedImages
+      : (r.image_url ? [r.image_url] : []);
+
     const post = {
       id: String(r.id),
       userId: String(r.user_id),
@@ -2692,9 +5018,12 @@ app.get("/api/posts/:id", optionalAuthenticateToken, async (req, res) => {
       authorRole: r.category || (r.role === "admin" ? "Wholesaler" : "Field"),
       avatarUri: r.avatar_url || "",
       location: sanitizePostLocation(r.location),
+      latitude: r.latitude != null ? Number(r.latitude) : null,
+      longitude: r.longitude != null ? Number(r.longitude) : null,
       timeAgo: formatTimeAgo(r.created_at),
       content: r.content,
-      imageUrl: r.image_url || "",
+      imageUrl: r.image_url || (finalImages.length > 0 ? finalImages[0] : ""),
+      images: finalImages,
       category: r.category,
       privacy: r.privacy,
       expiresAt: r.expires_at ? new Date(r.expires_at).toISOString() : null,
@@ -2703,6 +5032,7 @@ app.get("/api/posts/:id", optionalAuthenticateToken, async (req, res) => {
       comments: Number(r.comments_count) || 0,
       shares: Number(r.shares_count) || 0,
       isLiked: Boolean(r.is_liked),
+      userReaction: r.user_reaction || null,
       isSaved: Boolean(r.is_saved),
     };
 
@@ -2720,7 +5050,7 @@ app.put(
   async (req, res) => {
     try {
       const postId = req.params.id || req.body.id || req.body.postId;
-      const { content, category, privacy, location, imageUrl, photos } =
+      const { content, category, privacy, location, imageUrl, photos, latitude, longitude } =
         req.body;
       const pool = getPool();
       const userId = req.user.id;
@@ -2756,6 +5086,15 @@ app.put(
       const updatedLocation =
         location !== undefined ? sanitizePostLocation(location) : post.location;
 
+      const updatedLat =
+        latitude !== undefined
+          ? (latitude !== null && !isNaN(Number(latitude)) ? Number(latitude) : null)
+          : (post.latitude != null ? Number(post.latitude) : null);
+      const updatedLng =
+        longitude !== undefined
+          ? (longitude !== null && !isNaN(Number(longitude)) ? Number(longitude) : null)
+          : (post.longitude != null ? Number(post.longitude) : null);
+
       let updatedImage = post.image_url;
       if (imageUrl !== undefined) {
         updatedImage = imageUrl;
@@ -2764,13 +5103,15 @@ app.put(
       }
 
       await pool.query(
-        "UPDATE posts SET content = $1, category = $2, privacy = $3, location = $4, image_url = $5, updated_at = NOW() WHERE id = $6",
+        "UPDATE posts SET content = $1, category = $2, privacy = $3, location = $4, image_url = $5, latitude = $6, longitude = $7, updated_at = NOW() WHERE id = $8",
         [
           updatedContent,
           validCategory,
           validPrivacy,
           updatedLocation || null,
           updatedImage || null,
+          updatedLat,
+          updatedLng,
           postId,
         ],
       );
@@ -2783,6 +5124,8 @@ app.put(
           category: validCategory,
           privacy: validPrivacy,
           location: updatedLocation || "",
+          latitude: updatedLat,
+          longitude: updatedLng,
           imageUrl: updatedImage || "",
         },
       });
@@ -2862,7 +5205,7 @@ app.post(
         // Moving/updating to a specific collection
         if (existing.length > 0) {
           await pool.query(
-            "UPDATE saved_posts SET collection_name = $1 WHERE id = $2",
+            "UPDATE saved_posts SET collection_name = $1, created_at = NOW() WHERE id = $2",
             [collectionName, existing[0].id],
           );
         } else {
@@ -2890,9 +5233,10 @@ app.post(
 
       res.json({
         message: isSaved
-          ? "Post saved to your collection!"
+          ? `Post saved to ${collectionName || "All Saved"}!`
           : "Post removed from saved.",
         isSaved,
+        collectionName: isSaved ? (collectionName || "All Saved") : null,
       });
     } catch (err) {
       console.error("[Save Post Error]", err);
@@ -3015,7 +5359,7 @@ app.post(
             );
             if (
               postAuthorRows.length > 0 &&
-              postAuthorRows[0].user_id !== userId
+              String(postAuthorRows[0].user_id) !== String(userId)
             ) {
               const postAuthorId = postAuthorRows[0].user_id;
               const { rows: commenterRows } = await pool.query(
@@ -3150,139 +5494,7 @@ app.post(
   },
 );
 
-// 14.7 Share Post
-app.post(
-  ["/api/posts/:id/share", "/api/posts/share"],
-  authenticateToken,
-  async (req, res) => {
-    try {
-      const postId = req.params.id || req.body.postId || req.body.id;
-      const { shareType, caption } = req.body;
-      if (!postId) {
-        return res.status(400).json({ message: "Post ID is required." });
-      }
 
-      const pool = getPool();
-      const userId = req.user.id;
-
-      // Check original post
-      const { rows: targetRows } = await pool.query(
-        "SELECT p.*, u.first_name, u.last_name, u.username, u.avatar_url, u.role FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = $1",
-        [postId],
-      );
-      const targetPost = targetRows[0];
-
-      if (!targetPost) {
-        return res.status(404).json({ message: "Original post not found." });
-      }
-
-      const actualOriginalPostId = targetPost.original_post_id
-        ? targetPost.original_post_id
-        : targetPost.id;
-
-      // 1. Record share in post_shares table
-      await pool.query(
-        "INSERT INTO post_shares (post_id, user_id, share_type) VALUES ($1, $2, $3)",
-        [postId, userId, shareType || "public"],
-      );
-
-      // 2. Increment shares_count on original post
-      await pool.query(
-        "UPDATE posts SET shares_count = shares_count + 1 WHERE id = $1",
-        [postId],
-      );
-
-      // 3. Create shared post in feed if public/feed share
-      let createdSharedPost = null;
-      if (!shareType || shareType === "public" || shareType === "feed") {
-        const { rows: insertRes } = await pool.query(
-          `INSERT INTO posts (user_id, original_post_id, content, image_url, category, privacy, location, likes_count, comments_count, shares_count)
-           VALUES ($1, $2, $3, $4, $5, 'Public', $6, 0, 0, 0) RETURNING id`,
-          [
-            userId,
-            actualOriginalPostId,
-            (caption || "").trim(),
-            null,
-            targetPost.category || "General",
-            sanitizePostLocation(targetPost.location) || null,
-          ],
-        );
-
-        const newPostId = insertRes[0].id;
-
-        const { rows: userRows } = await pool.query(
-          "SELECT first_name, last_name, username, avatar_url, role FROM users WHERE id = $1",
-          [userId],
-        );
-        const userRow = userRows[0];
-
-        const { rows: origRows } = await pool.query(
-          "SELECT p.*, u.first_name, u.last_name, u.username, u.avatar_url, u.role FROM posts p JOIN users u ON p.user_id = u.id WHERE p.id = $1",
-          [actualOriginalPostId],
-        );
-        const origRow = origRows[0];
-
-        createdSharedPost = {
-          id: String(newPostId),
-          userId: String(userId),
-          authorName:
-            `${userRow?.first_name || ""} ${userRow?.last_name || ""}`.trim() ||
-            userRow?.username ||
-            "Local Farmer",
-          authorRole:
-            targetPost.category ||
-            (userRow?.role === "admin" ? "Wholesaler" : "Field"),
-          avatarUri: userRow?.avatar_url || "",
-          location: sanitizePostLocation(targetPost.location),
-          timeAgo: "Just now",
-          content: (caption || "").trim(),
-          imageUrl: "",
-          category: targetPost.category || "General",
-          privacy: "Public",
-          likes: 0,
-          comments: 0,
-          shares: 0,
-          isLiked: false,
-          isShared: true,
-          originalPost: origRow
-            ? {
-                id: String(origRow.id),
-                userId: String(origRow.user_id),
-                authorName:
-                  `${origRow.first_name || ""} ${origRow.last_name || ""}`.trim() ||
-                  origRow.username ||
-                  "Local Farmer",
-                authorRole:
-                  origRow.category ||
-                  (origRow.role === "admin" ? "Wholesaler" : "Field"),
-                avatarUri: origRow.avatar_url || "",
-                location: sanitizePostLocation(origRow.location),
-                timeAgo: formatTimeAgo(origRow.created_at),
-                content: origRow.content,
-                imageUrl: origRow.image_url || "",
-                category: origRow.category,
-              }
-            : null,
-        };
-      }
-
-      const { rows: postRows } = await pool.query(
-        "SELECT shares_count FROM posts WHERE id = $1",
-        [postId],
-      );
-      const postRow = postRows[0];
-
-      res.json({
-        message: "Post shared successfully to your feed!",
-        sharesCount: Number(postRow?.shares_count) || 0,
-        sharedPost: createdSharedPost,
-      });
-    } catch (err) {
-      console.error("[Share Post Error]", err);
-      res.status(500).json({ message: err.message || "Failed to share post." });
-    }
-  },
-);
 
 // ============================================================================
 // SECTION 15: STORIES API
@@ -3290,22 +5502,28 @@ app.post(
 
 async function ensureSampleStories(pool) {
   try {
-    const { rows } = await pool.query(
-      "SELECT id FROM stories WHERE expired_at > NOW() LIMIT 1"
-    );
-    if (rows.length === 0) {
-      const { rows: users } = await pool.query("SELECT id FROM users LIMIT 3");
-      const u1 = users[0]?.id || 1;
-      const u2 = users[1]?.id || u1;
-
-      await pool.query(
-        `INSERT INTO stories (user_id, media_type, media_url, text_content, background_color, privacy, created_at, expired_at)
-         VALUES
-         ($1, 'image', 'https://images.unsplash.com/photo-1542838132-92c53300491e?w=800&q=80', 'Fresh harvest from our organic farm today! 🌿🍅', '#72AF5B', 'Public', NOW(), NOW() + INTERVAL '24 hours'),
-         ($2, 'image', 'https://images.unsplash.com/photo-1464226184884-fa280b87c399?w=800&q=80', 'Organizing new seed packs for wholesale orders 🥕', '#4F46E5', 'Public', NOW(), NOW() + INTERVAL '24 hours')`,
-        [u1, u2]
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS stories (
+        id SERIAL PRIMARY KEY,
+        user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        media_type VARCHAR(20) NOT NULL DEFAULT 'image',
+        media_url TEXT NOT NULL,
+        text_content TEXT,
+        background_color VARCHAR(20) DEFAULT '#72AF5B',
+        music_title VARCHAR(255),
+        privacy VARCHAR(50) NOT NULL DEFAULT 'Public',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        expired_at TIMESTAMP NOT NULL
       );
-    }
+
+      CREATE TABLE IF NOT EXISTS story_views (
+        id SERIAL PRIMARY KEY,
+        story_id INT NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
+        viewer_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        view_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        CONSTRAINT unique_story_viewer UNIQUE (story_id, viewer_id)
+      );
+    `).catch(() => {});
   } catch (e) {
     console.warn("ensureSampleStories error:", e.message);
   }
@@ -3323,10 +5541,27 @@ app.get("/api/stories", optionalAuthenticateToken, async (req, res) => {
       SELECT s.id, s.user_id, s.media_type, s.media_url, s.text_content, s.background_color,
              s.music_title, s.privacy, s.created_at, s.expired_at,
              u.first_name, u.last_name, u.username, u.avatar_url,
-             EXISTS(SELECT 1 FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id = $1) AS is_seen
+             EXISTS(SELECT 1 FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id = $1) AS is_seen,
+             COALESCE((SELECT COUNT(*) FROM story_views sv WHERE sv.story_id = s.id AND sv.viewer_id != s.user_id), 0) AS views_count
       FROM stories s
       JOIN users u ON s.user_id = u.id
       WHERE s.expired_at > NOW()
+        AND (
+          s.privacy = 'Public'
+          OR s.user_id = $1
+          OR (
+            s.privacy = 'Friends'
+            AND EXISTS (
+              SELECT 1 FROM connections c
+              WHERE c.status = 'accepted'
+                AND (
+                  (c.sender_id = $1 AND c.receiver_id = s.user_id)
+                  OR
+                  (c.sender_id = s.user_id AND c.receiver_id = $1)
+                )
+            )
+          )
+        )
       ORDER BY s.user_id ASC, s.created_at ASC
     `;
 
@@ -3358,6 +5593,8 @@ app.get("/api/stories", optionalAuthenticateToken, async (req, res) => {
         timeAgo: formatTimeAgo(r.created_at),
         backgroundColor: r.background_color,
         mediaType: r.media_type,
+        privacy: r.privacy || "Public",
+        viewsCount: parseInt(r.views_count, 10) || 0,
       });
     }
 
@@ -3424,6 +5661,15 @@ app.post("/api/stories/:id/view", authenticateToken, async (req, res) => {
     const viewerId = req.user.id;
     const pool = getPool();
 
+    // Do not record the author viewing their own story
+    const { rows: storyRows } = await pool.query(
+      `SELECT user_id FROM stories WHERE id = $1`,
+      [storyId]
+    );
+    if (storyRows.length > 0 && String(storyRows[0].user_id) === String(viewerId)) {
+      return res.json({ message: "Author view not counted." });
+    }
+
     await pool.query(
       `INSERT INTO story_views (story_id, viewer_id, view_at)
        VALUES ($1, $2, NOW())
@@ -3438,8 +5684,105 @@ app.post("/api/stories/:id/view", authenticateToken, async (req, res) => {
   }
 });
 
+// 15.4 Update Story Privacy
+app.patch("/api/stories/:id/privacy", authenticateToken, async (req, res) => {
+  try {
+    const storyId = req.params.id;
+    const userId = req.user.id;
+    const { privacy } = req.body;
+    const validPrivacy = ["Public", "Friends", "Only me"].includes(privacy) ? privacy : "Public";
+    const pool = getPool();
+
+    const { rowCount } = await pool.query(
+      `UPDATE stories SET privacy = $1 WHERE id = $2 AND user_id = $3`,
+      [validPrivacy, storyId, userId]
+    );
+
+    if (rowCount === 0) {
+      return res.status(404).json({ message: "Story not found or unauthorized." });
+    }
+
+    res.json({ message: "Story privacy updated successfully.", privacy: validPrivacy });
+  } catch (err) {
+    console.error("[Update Story Privacy Error]", err);
+    res.status(500).json({ message: err.message || "Failed to update story privacy." });
+  }
+});
+
+// 15.5 Get Story Viewers
+app.get("/api/stories/:id/viewers", authenticateToken, async (req, res) => {
+  try {
+    const storyId = req.params.id;
+    const currentUserId = req.user.id;
+    const pool = getPool();
+
+    // Verify user owns the story
+    const { rows: storyRows } = await pool.query(
+      `SELECT user_id FROM stories WHERE id = $1`,
+      [storyId]
+    );
+
+    if (storyRows.length === 0) {
+      return res.status(404).json({ message: "Story not found." });
+    }
+
+    if (String(storyRows[0].user_id) !== String(currentUserId)) {
+      return res.json({
+        viewers: [],
+        count: 0,
+        message: "Only the story author can view viewers.",
+      });
+    }
+
+    const { rows: viewers } = await pool.query(
+      `SELECT sv.viewer_id, sv.view_at,
+              u.first_name, u.last_name, u.username, u.avatar_url, u.role
+       FROM story_views sv
+       JOIN users u ON sv.viewer_id = u.id
+       WHERE sv.story_id = $1 AND sv.viewer_id != $2
+       ORDER BY sv.view_at DESC`,
+      [storyId, currentUserId]
+    );
+
+    const formattedViewers = viewers.map((v) => ({
+      userId: String(v.viewer_id),
+      name: `${v.first_name || ""} ${v.last_name || ""}`.trim() || v.username || "User",
+      username: v.username || "",
+      avatarUrl: v.avatar_url || "",
+      role: v.role || "Farmer",
+      viewedAt: formatTimeAgo(v.view_at),
+    }));
+
+    res.json({
+      viewers: formattedViewers,
+      count: formattedViewers.length,
+    });
+  } catch (err) {
+    console.error("[Get Story Viewers Error]", err);
+    res.status(500).json({ message: err.message || "Failed to fetch story viewers." });
+  }
+});
+
 // Start server
-initDB().then(() => {
+initDB().then(async () => {
+  const pool = getPool();
+  try {
+    await pool.query(`
+      ALTER TABLE users 
+      ADD COLUMN IF NOT EXISTS bio TEXT,
+      ADD COLUMN IF NOT EXISTS cover_photo_url TEXT,
+      ADD COLUMN IF NOT EXISTS farm_name VARCHAR(255),
+      ADD COLUMN IF NOT EXISTS farm_location VARCHAR(255),
+      ADD COLUMN IF NOT EXISTS primary_crops TEXT,
+      ADD COLUMN IF NOT EXISTS two_factor_enabled BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS two_factor_method VARCHAR(50) DEFAULT 'none',
+      ADD COLUMN IF NOT EXISTS two_factor_secret TEXT;
+    `);
+    console.log("[PostgreSQL] Users table verified with bio, farm, and 2FA columns.");
+  } catch (migErr) {
+    console.warn("[PostgreSQL Migration Warning]", migErr.message);
+  }
+
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`=======================================================`);
     console.log(`Local Farm API Server running on port ${PORT}`);
@@ -3448,3 +5791,4 @@ initDB().then(() => {
     console.log(`=======================================================`);
   });
 });
+

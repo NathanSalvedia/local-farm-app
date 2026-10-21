@@ -29,6 +29,8 @@ export interface ConversationItem {
   isMuted?: boolean;
   isRestricted?: boolean;
   isFriend?: boolean;
+  isGroup?: boolean;
+  memberCount?: number;
 }
 
 export interface RestrictedUserItem {
@@ -63,8 +65,10 @@ export interface ChatMessage {
   conversationId?: string;
   sender: "user" | "other";
   senderId?: string;
+  senderName?: string;
+  senderAvatar?: string;
   receiverId?: string;
-  type?: "text" | "image" | "location" | "offer" | "auto_reply" | "sticker" | "audio";
+  type?: "text" | "image" | "location" | "offer" | "auto_reply" | "sticker" | "audio" | "system";
   text?: string;
   imageUrl?: string;
   avatarUrl?: string;
@@ -359,6 +363,65 @@ export async function submitUserReportApi(
       body: JSON.stringify(payload),
     }
   );
+}
+
+export interface GroupParticipant {
+  id: string;
+  name: string;
+  username?: string;
+  avatarUrl?: string;
+  role: "admin" | "member";
+  isOnline?: boolean;
+}
+
+export interface CreateGroupPayload {
+  title: string;
+  participantIds: string[];
+  avatarUrl?: string;
+}
+
+export async function createGroupChatApi(payload: CreateGroupPayload): Promise<{
+  success: boolean;
+  conversation: {
+    id: string;
+    title: string;
+    avatarUrl?: string;
+    isGroup: boolean;
+    createdBy: string;
+    participants: GroupParticipant[];
+  };
+}> {
+  return await apiFetch("/chats/groups", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getGroupParticipantsApi(
+  conversationId: string
+): Promise<GroupParticipant[]> {
+  const res = await apiFetch<{ participants: GroupParticipant[]; count: number }>(
+    `/chats/conversations/${conversationId}/participants`
+  );
+  return res.participants || [];
+}
+
+export async function addGroupMembersApi(
+  conversationId: string,
+  userIds: string[]
+): Promise<{ success: boolean; message: string }> {
+  return await apiFetch(`/chats/conversations/${conversationId}/participants`, {
+    method: "POST",
+    body: JSON.stringify({ userIds }),
+  });
+}
+
+export async function leaveGroupChatApi(
+  conversationId: string
+): Promise<{ success: boolean; message: string }> {
+  return await apiFetch(`/chats/conversations/${conversationId}/leave`, {
+    method: "DELETE",
+  });
 }
 
 

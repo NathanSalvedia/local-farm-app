@@ -6,8 +6,11 @@ import {
   ChatMessage,
   deleteConversationApi,
   getChatUserInfoApi,
+  getGroupParticipantsApi,
   getMessagesApi,
   getSharedMediaApi,
+  GroupParticipant,
+  leaveGroupChatApi,
   LocationPinData,
   restrictUserApi,
   sendMessageApi,
@@ -17,6 +20,7 @@ import {
   spamConversationApi,
   submitUserReportApi,
 } from "@/services/chat-service";
+import CreateGroupChatModal from "../../components/CreateGroupChatModal";
 import { Ionicons, MaterialCommunityIcons } from "@expo/vector-icons";
 import { CameraType, CameraView, useCameraPermissions } from "expo-camera";
 import * as ImagePicker from "expo-image-picker";
@@ -164,9 +168,11 @@ export default function ChatConversation() {
     name?: string;
     avatarUrl?: string;
     online?: string;
+    isGroup?: string;
   }>();
 
-  const otherUserName = params.name || (params as any).userName || "Farmer";
+  const isGroup = params.isGroup === "true";
+  const otherUserName = params.name || (params as any).userName || (isGroup ? "Group Chat" : "Farmer");
   const otherUserAvatar = params.avatarUrl || (params as any).userAvatar || "";
   const isOnline = params.online === "true";
 
@@ -275,6 +281,18 @@ export default function ChatConversation() {
   const [hasAgreedToGuidelines, setHasAgreedToGuidelines] = useState(false);
   const [isSubmittingReport, setIsSubmittingReport] = useState(false);
   const [isReportSuccess, setIsReportSuccess] = useState(false);
+
+  // Group Chat States
+  const [groupParticipants, setGroupParticipants] = useState<GroupParticipant[]>([]);
+  const [isCreateGroupModalVisible, setIsCreateGroupModalVisible] = useState(false);
+
+  useEffect(() => {
+    if (isGroup && conversationId) {
+      getGroupParticipantsApi(conversationId)
+        .then((pts) => setGroupParticipants(pts))
+        .catch(() => {});
+    }
+  }, [isGroup, conversationId]);
 
   // Voice Call States
   const [isVoiceCallModalVisible, setIsVoiceCallModalVisible] = useState(false);
@@ -692,7 +710,48 @@ export default function ChatConversation() {
 
   const handleCreateGroup = () => {
     handleCloseInfoModal();
-    router.push("/user/People" as any);
+    setIsCreateGroupModalVisible(true);
+  };
+
+  const handleGroupCreated = (conversation: {
+    id: string;
+    title: string;
+    avatarUrl?: string;
+    isGroup: boolean;
+  }) => {
+    router.replace({
+      pathname: "/user/ChatConversation",
+      params: {
+        conversationId: conversation.id,
+        name: conversation.title,
+        avatarUrl: conversation.avatarUrl || "",
+        online: "true",
+        isGroup: "true",
+      },
+    } as any);
+  };
+
+  const handleLeaveGroup = () => {
+    if (!conversationId) return;
+    const confirmMsg = "Are you sure you want to leave this group chat?";
+    const performLeave = async () => {
+      try {
+        await leaveGroupChatApi(conversationId);
+        handleCloseInfoModal();
+        router.replace("/user/Chats" as any);
+      } catch (err: any) {
+        Alert.alert("Error", err?.message || "Failed to leave group.");
+      }
+    };
+
+    if (Platform.OS === "web") {
+      if (window.confirm(confirmMsg)) performLeave();
+    } else {
+      Alert.alert("Leave Group", confirmMsg, [
+        { text: "Cancel", style: "cancel" },
+        { text: "Leave", style: "destructive", onPress: performLeave },
+      ]);
+    }
   };
 
   const handleSearchMessages = () => {
@@ -1233,6 +1292,10 @@ export default function ChatConversation() {
                   className="w-full h-full"
                   resizeMode="cover"
                 />
+              ) : isGroup ? (
+                <View className="w-full h-full bg-[#72AF5B]/15 items-center justify-center">
+                  <Ionicons name="people" size={22} color="#72AF5B" />
+                </View>
               ) : (
                 <Ionicons name="person" size={24} color="#6B7280" />
               )}
@@ -1247,12 +1310,22 @@ export default function ChatConversation() {
                 {customNickname || otherUserName}
               </Text>
               <View className="flex-row items-center mt-0.5">
-                {isOnline && (
-                  <View className="w-2 h-2 rounded-full bg-green-500 mr-1.5" />
+                {isGroup ? (
+                  <Text className="text-xs text-gray-500">
+                    {groupParticipants.length > 0
+                      ? `${groupParticipants.length} members`
+                      : "Group Chat"}
+                  </Text>
+                ) : (
+                  <>
+                    {isOnline && (
+                      <View className="w-2 h-2 rounded-full bg-green-500 mr-1.5" />
+                    )}
+                    <Text className="text-xs text-gray-500">
+                      {isOnline ? "Active Now" : "Local Farmer"}
+                    </Text>
+                  </>
                 )}
-                <Text className="text-xs text-gray-500">
-                  {isOnline ? "Active Now" : "Local Farmer"}
-                </Text>
               </View>
             </View>
           </View>
@@ -1376,6 +1449,18 @@ export default function ChatConversation() {
                 )
               : messages
             ).map((item, index) => {
+              if (item.type === "system") {
+                return (
+                  <View key={item.id || index} className="my-2.5 items-center justify-center px-6">
+                    <View className="bg-gray-100 rounded-full px-3.5 py-1 border border-gray-200/60">
+                      <Text className="text-[12px] text-gray-500 font-medium text-center">
+                        {item.text}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }
+
               // Exact match: if sender is user or senderId equals logged in user's ID
               const isUser =
                 item.sender === "user" ||
@@ -1410,9 +1495,9 @@ export default function ChatConversation() {
                     {!isUser && (
                       <View className="mr-2 mb-0.5">
                         <View className="w-8 h-8 rounded-full bg-gray-200 items-center justify-center overflow-hidden border border-gray-200">
-                          {otherUserAvatar ? (
+                          {item.senderAvatar || otherUserAvatar ? (
                             <Image
-                              source={{ uri: otherUserAvatar }}
+                              source={{ uri: item.senderAvatar || otherUserAvatar }}
                               className="w-full h-full"
                               resizeMode="cover"
                             />
@@ -1676,20 +1761,27 @@ export default function ChatConversation() {
                         </View>
                       </View>
                     ) : (
-                      <View
-                        className={`px-4 py-2.5 max-w-[76%] ${
-                          isUser
-                            ? "bg-[#72AF5B] rounded-2xl rounded-br-xs"
-                            : "bg-[#F0F0F0] rounded-2xl rounded-bl-xs"
-                        }`}
-                      >
-                        <Text
-                          className={`text-sm leading-snug ${
-                            isUser ? "text-white font-medium" : "text-gray-900"
+                      <View className="max-w-[76%]">
+                        {isGroup && !isUser && (
+                          <Text className="text-[11px] font-semibold text-gray-500 ml-1 mb-1">
+                            {item.senderName || otherUserName}
+                          </Text>
+                        )}
+                        <View
+                          className={`px-4 py-2.5 ${
+                            isUser
+                              ? "bg-[#72AF5B] rounded-2xl rounded-br-xs"
+                              : "bg-[#F0F0F0] rounded-2xl rounded-bl-xs"
                           }`}
                         >
-                          {item.text}
-                        </Text>
+                          <Text
+                            className={`text-sm leading-snug ${
+                              isUser ? "text-white font-medium" : "text-gray-900"
+                            }`}
+                          >
+                            {item.text}
+                          </Text>
+                        </View>
                       </View>
                     )}
                   </View>
@@ -1774,7 +1866,7 @@ export default function ChatConversation() {
         </ScrollView>
 
         {/* Attachment Menu */}
-        {showAttachmentMenu && (
+        {!isMessageRequest && showAttachmentMenu && (
           <View
             className="absolute bottom-16 left-4 z-50 bg-white rounded-2xl p-2 shadow-2xl elevation-10 w-52 border border-gray-100"
             style={{
@@ -1835,9 +1927,9 @@ export default function ChatConversation() {
           </View>
         )}
 
-        {/* Message Request Action Banner */}
-        {isMessageRequest && (
-          <View className="bg-amber-50/95 border-t border-b border-amber-200/90 px-4 py-3">
+        {/* Bottom Bar: If Message Request, show ONLY the Request Action Banner (No Input, No Plus, No Reaction). Once accepted, show normal input */}
+        {isMessageRequest ? (
+          <View className="bg-amber-50/95 border-t border-amber-200/90 px-4 pt-3.5 pb-6">
             <Text className="text-xs font-semibold text-amber-900 text-center mb-2.5">
               {otherUserName} wants to send you a message. They won't know you've seen it until you accept.
             </Text>
@@ -1862,10 +1954,7 @@ export default function ChatConversation() {
               </TouchableOpacity>
             </View>
           </View>
-        )}
-
-        {/* Bottom Input Bar or Voice Recording Bar */}
-        {isRecordingVoice ? (
+        ) : isRecordingVoice ? (
           <View className="flex-row items-center px-4 py-3 bg-red-50/90 border-t border-red-100">
             <TouchableOpacity
               onPress={handleCancelVoiceRecording}
@@ -2456,6 +2545,10 @@ export default function ChatConversation() {
                       className="w-full h-full"
                       resizeMode="cover"
                     />
+                  ) : isGroup ? (
+                    <View className="w-full h-full bg-[#72AF5B]/20 items-center justify-center">
+                      <Ionicons name="people" size={48} color="#72AF5B" />
+                    </View>
                   ) : (
                     <Ionicons name="person" size={56} color="#FFFFFF" />
                   )}
@@ -2464,33 +2557,97 @@ export default function ChatConversation() {
                 <Text className="text-xl font-bold text-gray-900 text-center">
                   {customNickname || otherUserName}
                 </Text>
+                {isGroup && (
+                  <Text className="text-xs text-gray-500 mt-1">
+                    {groupParticipants.length} members
+                  </Text>
+                )}
               </View>
 
-              {/* 1. User info */}
-              <Text className="text-[13px] font-semibold text-gray-500 mb-1.5 ml-1">
-                User info
-              </Text>
-              <View className="bg-white rounded-2xl border border-gray-100 shadow-2xs mb-5 overflow-hidden">
-                <TouchableOpacity
-                  onPress={handleVisitProfile}
-                  className="flex-row items-center px-4 py-3.5 active:bg-gray-50"
-                  accessibilityRole="button"
-                  accessibilityLabel={`Visit profile of ${otherUserName}`}
-                >
-                  <View className="w-7 items-center mr-3">
-                    <Ionicons name="person" size={20} color="#1F2937" />
+              {/* 1. User info / Group members */}
+              {isGroup ? (
+                <>
+                  <Text className="text-[13px] font-semibold text-gray-500 mb-1.5 ml-1">
+                    Group members ({groupParticipants.length})
+                  </Text>
+                  <View className="bg-white rounded-2xl border border-gray-100 shadow-2xs mb-5 overflow-hidden">
+                    {groupParticipants.map((member, idx) => (
+                      <View key={member.id}>
+                        {idx > 0 && <View className="h-px bg-gray-100 ml-14" />}
+                        <TouchableOpacity
+                          onPress={() => {
+                            handleCloseInfoModal();
+                            router.push({
+                              pathname: "/user/UserProfile",
+                              params: {
+                                userId: String(member.id),
+                                userName: member.name,
+                                userAvatar: member.avatarUrl || "",
+                              },
+                            } as any);
+                          }}
+                          className="flex-row items-center px-4 py-3 active:bg-gray-50"
+                        >
+                          <View className="w-9 h-9 rounded-full bg-gray-200 items-center justify-center overflow-hidden mr-3">
+                            {member.avatarUrl ? (
+                              <Image
+                                source={{ uri: member.avatarUrl }}
+                                className="w-full h-full"
+                                resizeMode="cover"
+                              />
+                            ) : (
+                              <Ionicons name="person" size={18} color="#9CA3AF" />
+                            )}
+                          </View>
+                          <View className="flex-1">
+                            <Text className="text-[15px] font-semibold text-gray-900" numberOfLines={1}>
+                              {member.name}
+                            </Text>
+                            {member.username && (
+                              <Text className="text-xs text-gray-400">@{member.username}</Text>
+                            )}
+                          </View>
+                          {member.role === "admin" ? (
+                            <View className="bg-[#72AF5B]/15 px-2 py-0.5 rounded-full">
+                              <Text className="text-[11px] font-bold text-[#72AF5B]">Admin</Text>
+                            </View>
+                          ) : (
+                            <Text className="text-[12px] text-gray-400">Member</Text>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    ))}
                   </View>
-                  <View className="flex-1">
-                    <Text className="text-[15px] font-medium text-gray-900">
-                      Visit profile
-                    </Text>
-                    <Text className="text-xs text-gray-500 mt-0.5" numberOfLines={1}>
-                      {customNickname || otherUserName}
-                    </Text>
+                </>
+              ) : (
+                <>
+                  {/* 1. User info */}
+                  <Text className="text-[13px] font-semibold text-gray-500 mb-1.5 ml-1">
+                    User info
+                  </Text>
+                  <View className="bg-white rounded-2xl border border-gray-100 shadow-2xs mb-5 overflow-hidden">
+                    <TouchableOpacity
+                      onPress={handleVisitProfile}
+                      className="flex-row items-center px-4 py-3.5 active:bg-gray-50"
+                      accessibilityRole="button"
+                      accessibilityLabel={`Visit profile of ${otherUserName}`}
+                    >
+                      <View className="w-7 items-center mr-3">
+                        <Ionicons name="person" size={20} color="#1F2937" />
+                      </View>
+                      <View className="flex-1">
+                        <Text className="text-[15px] font-medium text-gray-900">
+                          Visit profile
+                        </Text>
+                        <Text className="text-xs text-gray-500 mt-0.5" numberOfLines={1}>
+                          {customNickname || otherUserName}
+                        </Text>
+                      </View>
+                      <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
+                    </TouchableOpacity>
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color="#9CA3AF" />
-                </TouchableOpacity>
-              </View>
+                </>
+              )}
 
               {/* 2. Actions */}
               <Text className="text-[13px] font-semibold text-gray-500 mb-1.5 ml-1">
@@ -2515,21 +2672,24 @@ export default function ChatConversation() {
                   </Text>
                 </TouchableOpacity>
 
-                <View className="h-px bg-gray-100 ml-14" />
-
-                <TouchableOpacity
-                  onPress={handleCreateGroup}
-                  className="flex-row items-center px-4 py-3.5 active:bg-gray-50"
-                  accessibilityRole="button"
-                  accessibilityLabel="Create group"
-                >
-                  <View className="w-7 items-center mr-3">
-                    <Ionicons name="people" size={20} color="#1F2937" />
-                  </View>
-                  <Text className="text-[15px] font-medium text-gray-900">
-                    Create group with {firstName}
-                  </Text>
-                </TouchableOpacity>
+                {!isGroup && (
+                  <>
+                    <View className="h-px bg-gray-100 ml-14" />
+                    <TouchableOpacity
+                      onPress={handleCreateGroup}
+                      className="flex-row items-center px-4 py-3.5 active:bg-gray-50"
+                      accessibilityRole="button"
+                      accessibilityLabel="Create group"
+                    >
+                      <View className="w-7 items-center mr-3">
+                        <Ionicons name="people" size={20} color="#1F2937" />
+                      </View>
+                      <Text className="text-[15px] font-medium text-gray-900">
+                        Create group with {firstName}
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
               </View>
 
               {/* 3. Message info */}
@@ -2655,6 +2815,25 @@ export default function ChatConversation() {
                     Block
                   </Text>
                 </TouchableOpacity>
+
+                {isGroup && (
+                  <>
+                    <View className="h-px bg-gray-100 ml-14" />
+                    <TouchableOpacity
+                      onPress={handleLeaveGroup}
+                      className="flex-row items-center px-4 py-3.5 active:bg-red-50"
+                      accessibilityRole="button"
+                      accessibilityLabel="Leave group"
+                    >
+                      <View className="w-7 items-center mr-3">
+                        <Ionicons name="log-out-outline" size={20} color="#DC2626" />
+                      </View>
+                      <Text className="text-[15px] font-medium text-red-600">
+                        Leave group
+                      </Text>
+                    </TouchableOpacity>
+                  </>
+                )}
 
                 <View className="h-px bg-gray-100 ml-14" />
 
@@ -3119,6 +3298,22 @@ export default function ChatConversation() {
           </KeyboardAvoidingView>
         </SafeAreaView>
       </Modal>
+
+      {/* Create Group Chat Modal */}
+      <CreateGroupChatModal
+        visible={isCreateGroupModalVisible}
+        onClose={() => setIsCreateGroupModalVisible(false)}
+        onGroupCreated={handleGroupCreated}
+        initialSelectedUser={
+          effectiveUserId
+            ? {
+                id: String(effectiveUserId),
+                name: otherUserName,
+                avatarUrl: otherUserAvatar || undefined,
+              }
+            : null
+        }
+      />
     </SafeAreaView>
   );
 }

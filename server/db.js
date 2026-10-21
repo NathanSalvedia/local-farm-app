@@ -60,6 +60,25 @@ async function initDB() {
           created_at TIMESTAMP DEFAULT NOW()
         );
       `);
+      await client.query(`
+        ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_group BOOLEAN NOT NULL DEFAULT FALSE;
+        ALTER TABLE conversations ADD COLUMN IF NOT EXISTS title VARCHAR(255);
+        ALTER TABLE conversations ADD COLUMN IF NOT EXISTS group_avatar TEXT;
+        ALTER TABLE conversations ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL;
+        ALTER TABLE conversations ALTER COLUMN user1_id DROP NOT NULL;
+        ALTER TABLE conversations ALTER COLUMN user2_id DROP NOT NULL;
+        ALTER TABLE messages ALTER COLUMN receiver_id DROP NOT NULL;
+      `).catch((e) => console.warn("[PostgreSQL] Group conv migration note:", e.message));
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS conversation_participants (
+          id SERIAL PRIMARY KEY,
+          conversation_id INTEGER NOT NULL REFERENCES conversations(id) ON DELETE CASCADE,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          role VARCHAR(50) NOT NULL DEFAULT 'member',
+          joined_at TIMESTAMP DEFAULT NOW(),
+          UNIQUE(conversation_id, user_id)
+        );
+      `).catch((e) => console.warn("[PostgreSQL] Conv participants migration note:", e.message));
     } catch (migErr) {
       console.warn("[PostgreSQL] Migration notice:", migErr.message);
     } finally {

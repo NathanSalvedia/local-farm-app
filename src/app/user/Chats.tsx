@@ -32,6 +32,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import ChatSidebarModal from "../../components/ChatSidebarModal";
+import CreateGroupChatModal from "../../components/CreateGroupChatModal";
 import BottomNavBar from "../../components/Navigation";
 
 export default function Chats() {
@@ -44,6 +45,7 @@ export default function Chats() {
   const [activeUsers, setActiveUsers] = useState<ActiveChatUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isCreateGroupModalVisible, setIsCreateGroupModalVisible] = useState(false);
 
   // Long-press modal state
   const [selectedChatForOptions, setSelectedChatForOptions] = useState<ConversationItem | null>(null);
@@ -81,6 +83,25 @@ export default function Chats() {
     }, [])
   );
 
+  const handleGroupCreated = (conversation: {
+    id: string;
+    title: string;
+    avatarUrl?: string;
+    isGroup: boolean;
+  }) => {
+    fetchChatsData(false, true);
+    router.push({
+      pathname: "/user/ChatConversation",
+      params: {
+        conversationId: conversation.id,
+        name: conversation.title,
+        avatarUrl: conversation.avatarUrl || "",
+        online: "true",
+        isGroup: "true",
+      },
+    } as any);
+  };
+
   const handleOpenConversation = (chat: ConversationItem) => {
     router.push({
       pathname: "/user/ChatConversation",
@@ -90,6 +111,7 @@ export default function Chats() {
         name: chat.name,
         avatarUrl: chat.avatarUrl || "",
         online: "true",
+        isGroup: chat.isGroup ? "true" : "false",
       },
     } as any);
   };
@@ -290,10 +312,10 @@ export default function Chats() {
       <View className="flex-row justify-between items-center px-5 pt-4 pb-2 bg-white">
         <Text className="text-3xl font-bold text-gray-900">Chats</Text>
         <TouchableOpacity
-          onPress={() => router.push("/user/People" as any)}
+          onPress={() => setIsCreateGroupModalVisible(true)}
           className="p-1 active:opacity-70"
           accessibilityRole="button"
-          accessibilityLabel="New message"
+          accessibilityLabel="New group chat"
         >
           <Ionicons name="create-outline" size={26} color="#374151" />
         </TouchableOpacity>
@@ -455,6 +477,10 @@ export default function Chats() {
                         className="w-full h-full"
                         resizeMode="cover"
                       />
+                    ) : chat.isGroup ? (
+                      <View className="w-full h-full bg-[#72AF5B]/15 items-center justify-center">
+                        <Ionicons name="people" size={26} color="#72AF5B" />
+                      </View>
                     ) : (
                       <Ionicons name="person" size={28} color="#6B7280" />
                     )}
@@ -725,6 +751,13 @@ export default function Chats() {
         isVisible={isSidebarVisible}
         onClose={() => setSidebarVisible(false)}
         activeItem="Messages"
+      />
+
+      {/* 8. Create Group Chat Modal */}
+      <CreateGroupChatModal
+        visible={isCreateGroupModalVisible}
+        onClose={() => setIsCreateGroupModalVisible(false)}
+        onGroupCreated={handleGroupCreated}
       />
     </SafeAreaView>
   );

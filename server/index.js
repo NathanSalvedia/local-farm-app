@@ -2373,6 +2373,7 @@ app.get(
           AND COALESCE(ucs.is_archived, FALSE) = FALSE
           AND COALESCE(ucs.is_spam, FALSE) = FALSE
           AND ru.restricted_user_id IS NULL
+          AND COALESCE(c.is_group, FALSE) = FALSE
           AND COALESCE(ucs.is_accepted, FALSE) = FALSE
           AND NOT EXISTS (
             SELECT 1 FROM connections conn
@@ -2386,9 +2387,10 @@ app.get(
         categoryClause = `
           AND COALESCE(ucs.is_archived, FALSE) = FALSE
           AND COALESCE(ucs.is_spam, FALSE) = FALSE
-          AND ru.restricted_user_id IS NULL
+          AND (COALESCE(c.is_group, FALSE) = TRUE OR ru.restricted_user_id IS NULL)
           AND (
-            COALESCE(ucs.is_accepted, FALSE) = TRUE
+            COALESCE(c.is_group, FALSE) = TRUE
+            OR COALESCE(ucs.is_accepted, FALSE) = TRUE
             OR EXISTS (
               SELECT 1 FROM connections conn
               WHERE ((conn.sender_id = $1 AND conn.receiver_id = u.id) OR (conn.sender_id = u.id AND conn.receiver_id = $1))
@@ -2400,30 +2402,41 @@ app.get(
       }
 
       const querySql = `
-        SELECT c.id AS conversation_id, c.last_message, c.last_message_time,
+        SELECT c.id AS conversation_id, c.is_group, c.title, c.group_avatar, c.created_by,
+               c.last_message, c.last_message_time,
                u.id AS other_user_id, u.first_name, u.last_name, u.username, u.avatar_url,
                COALESCE(ucs.is_archived, FALSE) AS is_archived,
                COALESCE(ucs.is_spam, FALSE) AS is_spam,
                COALESCE(ucs.is_accepted, FALSE) AS is_accepted,
                COALESCE(ucs.is_muted, FALSE) AS is_muted,
                (ru.restricted_user_id IS NOT NULL) AS is_restricted,
-               (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id AND m.receiver_id = $1 AND m.is_read = FALSE) AS unread_count,
+               (
+                 SELECT COUNT(*) FROM messages m 
+                 WHERE m.conversation_id = c.id 
+                   AND (m.receiver_id = $1 OR (COALESCE(c.is_group, FALSE) = TRUE AND m.sender_id != $1)) 
+                   AND m.is_read = FALSE
+               ) AS unread_count,
                (SELECT m.sender_id FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_sender_id,
+               (SELECT u2.first_name FROM messages m JOIN users u2 ON m.sender_id = u2.id WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS last_sender_first_name,
                (SELECT m.message_text FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_text,
                (SELECT m.message_type FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_type,
                (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_created_at,
                (SELECT m.is_read FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_is_read,
                (SELECT m.is_delivered FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1) AS latest_is_delivered,
+               (SELECT COUNT(*) FROM conversation_participants cp WHERE cp.conversation_id = c.id) AS member_count,
                EXISTS (
                  SELECT 1 FROM connections conn
-                 WHERE ((conn.sender_id = $1 AND conn.receiver_id = u.id) OR (conn.sender_id = u.id AND conn.receiver_id = $1))
+                 WHERE u.id IS NOT NULL AND ((conn.sender_id = $1 AND conn.receiver_id = u.id) OR (conn.sender_id = u.id AND conn.receiver_id = $1))
                    AND conn.status = 'accepted'
                ) AS is_friend
         FROM conversations c
-        JOIN users u ON (CASE WHEN c.user1_id = $1 THEN c.user2_id = u.id ELSE c.user1_id = u.id END)
+        LEFT JOIN users u ON (COALESCE(c.is_group, FALSE) = FALSE AND (CASE WHEN c.user1_id = $1 THEN c.user2_id = u.id ELSE c.user1_id = u.id END))
         LEFT JOIN user_conversation_settings ucs ON (ucs.conversation_id = c.id AND ucs.user_id = $1)
-        LEFT JOIN restricted_users ru ON (ru.user_id = $1 AND ru.restricted_user_id = u.id)
-        WHERE (c.user1_id = $1 OR c.user2_id = $1)
+        LEFT JOIN restricted_users ru ON (COALESCE(c.is_group, FALSE) = FALSE AND ru.user_id = $1 AND ru.restricted_user_id = u.id)
+        WHERE (
+          (COALESCE(c.is_group, FALSE) = FALSE AND (c.user1_id = $1 OR c.user2_id = $1))
+          OR (COALESCE(c.is_group, FALSE) = TRUE AND (c.created_by = $1 OR EXISTS (SELECT 1 FROM conversation_participants cp WHERE cp.conversation_id = c.id AND cp.user_id = $1)))
+        )
         ${categoryClause}
         ORDER BY COALESCE((SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.id DESC LIMIT 1), c.last_message_time) DESC
       `;
@@ -2453,6 +2466,8 @@ app.get(
         let snippet = rawSnippet;
         if (isMeSender && snippet) {
           snippet = `You: ${snippet}`;
+        } else if (row.is_group && row.last_sender_first_name && snippet) {
+          snippet = `${row.last_sender_first_name}: ${snippet}`;
         }
 
         // Format time
@@ -2467,17 +2482,19 @@ app.get(
           timeStr = `${formattedHours}:${minutes} ${ampm}`;
         }
 
-        const isOtherTyping = checkUserTyping(row.other_user_id, row.conversation_id, userId);
+        const isGroupConv = Boolean(row.is_group);
+        const isOtherTyping = !isGroupConv && checkUserTyping(row.other_user_id, row.conversation_id, userId);
 
         return {
           id: String(row.conversation_id),
-          otherUserId: String(row.other_user_id),
-          name:
-            `${row.first_name || ""} ${row.last_name || ""}`.trim() ||
-            row.username ||
-            "User",
-          username: row.username || "",
-          avatarUrl: row.avatar_url || "",
+          otherUserId: isGroupConv ? "" : String(row.other_user_id || ""),
+          name: isGroupConv
+            ? (row.title || "Group Chat")
+            : (`${row.first_name || ""} ${row.last_name || ""}`.trim() || row.username || "User"),
+          username: isGroupConv ? "" : (row.username || ""),
+          avatarUrl: isGroupConv ? (row.group_avatar || "") : (row.avatar_url || ""),
+          isGroup: isGroupConv,
+          memberCount: isGroupConv ? Number(row.member_count) : undefined,
           snippet,
           time: timeStr,
           unread: Number(row.unread_count) || 0,
@@ -2503,6 +2520,266 @@ app.get(
         .json({ message: err.message || "Failed to fetch conversations." });
     }
   },
+);
+
+// Create Group Chat
+app.post("/api/chats/groups", authenticateToken, async (req, res) => {
+  try {
+    const pool = getPool();
+    const userId = req.user.id;
+    const { title, participantIds, avatarUrl } = req.body;
+
+    if (!title || !title.trim()) {
+      return res.status(400).json({ message: "Group title is required." });
+    }
+
+    const uniqueParticipantIds = Array.from(
+      new Set(
+        (Array.isArray(participantIds) ? participantIds : [])
+          .map((id) => Number(id))
+          .filter((id) => Boolean(id) && id !== userId)
+      )
+    );
+
+    if (uniqueParticipantIds.length === 0) {
+      return res
+        .status(400)
+        .json({ message: "Please select at least one friend to add to the group." });
+    }
+
+    // 1. Get creator info
+    const { rows: creatorRows } = await pool.query(
+      "SELECT first_name, last_name, username FROM users WHERE id = $1",
+      [userId]
+    );
+    const creatorName = creatorRows[0]
+      ? `${creatorRows[0].first_name || ""} ${creatorRows[0].last_name || ""}`.trim() || creatorRows[0].username || "Someone"
+      : "Someone";
+
+    // 2. Insert into conversations
+    const cleanTitle = title.trim();
+    const lastMsg = `${creatorName} created the group "${cleanTitle}"`;
+    const { rows: convRows } = await pool.query(
+      `INSERT INTO conversations (is_group, title, group_avatar, created_by, last_message, last_message_time)
+       VALUES (TRUE, $1, $2, $3, $4, NOW())
+       RETURNING id, title, group_avatar, created_by, created_at`,
+      [cleanTitle, avatarUrl || null, userId, lastMsg]
+    );
+
+    const convId = convRows[0].id;
+
+    // 3. Add creator as admin
+    await pool.query(
+      "INSERT INTO conversation_participants (conversation_id, user_id, role) VALUES ($1, $2, 'admin')",
+      [convId, userId]
+    );
+
+    // 4. Add each participant as member
+    for (const pId of uniqueParticipantIds) {
+      await pool.query(
+        "INSERT INTO conversation_participants (conversation_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
+        [convId, pId]
+      );
+    }
+
+    // 5. Insert initial system message into messages
+    await pool.query(
+      `INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, is_read, is_delivered)
+       VALUES ($1, $2, NULL, $3, 'system', TRUE, TRUE)`,
+      [convId, userId, lastMsg]
+    );
+
+    // 6. Fetch participants list for response
+    const { rows: participants } = await pool.query(
+      `SELECT cp.user_id AS id, cp.role, u.first_name, u.last_name, u.username, u.avatar_url
+       FROM conversation_participants cp
+       JOIN users u ON cp.user_id = u.id
+       WHERE cp.conversation_id = $1
+       ORDER BY (CASE WHEN cp.role = 'admin' THEN 0 ELSE 1 END), cp.joined_at ASC`,
+      [convId]
+    );
+
+    res.status(201).json({
+      success: true,
+      conversation: {
+        id: String(convId),
+        title: convRows[0].title,
+        avatarUrl: convRows[0].group_avatar || "",
+        isGroup: true,
+        createdBy: String(userId),
+        participants: participants.map((p) => ({
+          id: String(p.id),
+          name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.username || "User",
+          username: p.username || "",
+          avatarUrl: p.avatar_url || "",
+          role: p.role,
+        })),
+      },
+    });
+  } catch (err) {
+    console.error("[Create Group Chat Error]", err);
+    res.status(500).json({ message: err.message || "Failed to create group chat." });
+  }
+});
+
+// Get Group Participants
+app.get(
+  "/api/chats/conversations/:id/participants",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const convId = req.params.id;
+
+      const { rows } = await pool.query(
+        `SELECT cp.user_id AS id, cp.role, cp.joined_at,
+                u.first_name, u.last_name, u.username, u.avatar_url,
+                EXISTS(SELECT 1 FROM user_sessions us WHERE us.user_id = u.id AND us.is_active = TRUE AND us.last_active_at > NOW() - INTERVAL '5 minutes') AS is_online
+         FROM conversation_participants cp
+         JOIN users u ON cp.user_id = u.id
+         WHERE cp.conversation_id = $1
+         ORDER BY (CASE WHEN cp.role = 'admin' THEN 0 ELSE 1 END), cp.joined_at ASC`,
+        [convId]
+      );
+
+      const participants = rows.map((p) => ({
+        id: String(p.id),
+        name: `${p.first_name || ""} ${p.last_name || ""}`.trim() || p.username || "User",
+        username: p.username || "",
+        avatarUrl: p.avatar_url || "",
+        role: p.role,
+        isOnline: Boolean(p.is_online),
+      }));
+
+      res.json({ participants, count: participants.length });
+    } catch (err) {
+      console.error("[Get Group Participants Error]", err);
+      res.status(500).json({ message: err.message || "Failed to fetch participants." });
+    }
+  }
+);
+
+// Add Group Participants
+app.post(
+  "/api/chats/conversations/:id/participants",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const convId = req.params.id;
+      const { userIds } = req.body;
+
+      if (!Array.isArray(userIds) || userIds.length === 0) {
+        return res.status(400).json({ message: "No users specified to add." });
+      }
+
+      // Check if current user is participant
+      const { rows: mePart } = await pool.query(
+        "SELECT role FROM conversation_participants WHERE conversation_id = $1 AND user_id = $2",
+        [convId, userId]
+      );
+      if (mePart.length === 0) {
+        return res.status(403).json({ message: "You are not a participant in this conversation." });
+      }
+
+      const { rows: userRows } = await pool.query(
+        "SELECT first_name, last_name, username FROM users WHERE id = $1",
+        [userId]
+      );
+      const adderName = userRows[0]
+        ? `${userRows[0].first_name || ""}`.trim() || "Someone"
+        : "Someone";
+
+      for (const uid of userIds) {
+        await pool.query(
+          "INSERT INTO conversation_participants (conversation_id, user_id, role) VALUES ($1, $2, 'member') ON CONFLICT DO NOTHING",
+          [convId, uid]
+        );
+        const { rows: addedUser } = await pool.query(
+          "SELECT first_name, last_name, username FROM users WHERE id = $1",
+          [uid]
+        );
+        const addedName = addedUser[0]
+          ? `${addedUser[0].first_name || ""}`.trim() || "a new member"
+          : "a new member";
+        const sysMsg = `${adderName} added ${addedName} to the group`;
+        await pool.query(
+          "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, is_read, is_delivered) VALUES ($1, $2, NULL, $3, 'system', TRUE, TRUE)",
+          [convId, userId, sysMsg]
+        );
+        await pool.query(
+          "UPDATE conversations SET last_message = $1, last_message_time = NOW() WHERE id = $2",
+          [sysMsg, convId]
+        );
+      }
+
+      res.json({ success: true, message: "Participants added successfully." });
+    } catch (err) {
+      console.error("[Add Group Participants Error]", err);
+      res.status(500).json({ message: err.message || "Failed to add participants." });
+    }
+  }
+);
+
+// Leave Group Chat
+app.delete(
+  "/api/chats/conversations/:id/leave",
+  authenticateToken,
+  async (req, res) => {
+    try {
+      const pool = getPool();
+      const userId = req.user.id;
+      const convId = req.params.id;
+
+      const { rows: userRows } = await pool.query(
+        "SELECT first_name, last_name, username FROM users WHERE id = $1",
+        [userId]
+      );
+      const leaverName = userRows[0]
+        ? `${userRows[0].first_name || ""}`.trim() || "A member"
+        : "A member";
+
+      await pool.query(
+        "DELETE FROM conversation_participants WHERE conversation_id = $1 AND user_id = $2",
+        [convId, userId]
+      );
+
+      const sysMsg = `${leaverName} left the group`;
+      await pool.query(
+        "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, is_read, is_delivered) VALUES ($1, $2, NULL, $3, 'system', TRUE, TRUE)",
+        [convId, userId, sysMsg]
+      );
+      await pool.query(
+        "UPDATE conversations SET last_message = $1, last_message_time = NOW() WHERE id = $2",
+        [sysMsg, convId]
+      );
+
+      // Check if any participants remain
+      const { rows: remaining } = await pool.query(
+        "SELECT user_id, role FROM conversation_participants WHERE conversation_id = $1 ORDER BY joined_at ASC",
+        [convId]
+      );
+      if (remaining.length === 0) {
+        // Delete empty group
+        await pool.query("DELETE FROM conversations WHERE id = $1", [convId]);
+      } else {
+        const hasAdmin = remaining.some((r) => r.role === "admin");
+        if (!hasAdmin) {
+          // Promote oldest member to admin
+          await pool.query(
+            "UPDATE conversation_participants SET role = 'admin' WHERE conversation_id = $1 AND user_id = $2",
+            [convId, remaining[0].user_id]
+          );
+        }
+      }
+
+      res.json({ success: true, message: "Left group successfully." });
+    } catch (err) {
+      console.error("[Leave Group Error]", err);
+      res.status(500).json({ message: err.message || "Failed to leave group." });
+    }
+  }
 );
 
 // Toggle Archive Conversation
@@ -2856,7 +3133,8 @@ app.get(
           conversationId: String(m.conversation_id || convId || ""),
           sender: isUser ? "user" : "other",
           senderId: String(m.sender_id),
-          receiverId: String(m.receiver_id),
+          senderName: `${m.first_name || ""} ${m.last_name || ""}`.trim() || "User",
+          receiverId: String(m.receiver_id || ""),
           type: m.message_type || "text",
           text: m.message_text,
           imageUrl: m.image_url,
@@ -2921,22 +3199,86 @@ app.post(
 
       let targetReceiverId = receiverId;
       let convId = conversationId;
+      let isGroupConv = false;
 
-      if (!targetReceiverId && convId) {
+      if (convId) {
         const { rows: convRows } = await pool.query(
-          "SELECT user1_id, user2_id FROM conversations WHERE id = $1",
+          "SELECT is_group, user1_id, user2_id FROM conversations WHERE id = $1",
           [convId],
         );
         if (convRows.length > 0) {
-          targetReceiverId =
-            convRows[0].user1_id === senderId
-              ? convRows[0].user2_id
-              : convRows[0].user1_id;
+          if (convRows[0].is_group) {
+            isGroupConv = true;
+          } else if (!targetReceiverId) {
+            targetReceiverId =
+              convRows[0].user1_id === senderId
+                ? convRows[0].user2_id
+                : convRows[0].user1_id;
+          }
         }
       }
 
-      if (!targetReceiverId) {
+      if (!isGroupConv && !targetReceiverId) {
         return res.status(400).json({ message: "Receiver ID is required." });
+      }
+
+      if (isGroupConv) {
+        let lastSnippet = autoReplyText ? String(autoReplyText).trim() : text;
+        if (messageType === "location") {
+          try {
+            const parsed = JSON.parse(text);
+            lastSnippet = `📍 ${parsed.title || "Shared a location pin"}`;
+          } catch {
+            lastSnippet = "📍 Shared a location pin";
+          }
+        } else if (!text && imageUrl) {
+          lastSnippet = "Sent an image";
+        } else if (!text) {
+          lastSnippet = "Sent a message";
+        }
+
+        await pool.query(
+          "UPDATE conversations SET last_message = $1, last_message_time = NOW() WHERE id = $2",
+          [lastSnippet, convId],
+        );
+
+        const { rows: mInsert } = await pool.query(
+          "INSERT INTO messages (conversation_id, sender_id, receiver_id, message_text, message_type, image_url, is_read, is_delivered) VALUES ($1, $2, NULL, $3, $4, $5, FALSE, TRUE) RETURNING id, created_at",
+          [convId, senderId, text, messageType || "text", imageUrl || null],
+        );
+
+        const { rows: senderInfo } = await pool.query(
+          "SELECT first_name, last_name, avatar_url FROM users WHERE id = $1",
+          [senderId],
+        );
+        const sName = senderInfo[0]
+          ? `${senderInfo[0].first_name || ""} ${senderInfo[0].last_name || ""}`.trim()
+          : "User";
+
+        const d = new Date(mInsert[0].created_at || Date.now());
+        const hours = d.getHours();
+        const minutes = d.getMinutes().toString().padStart(2, "0");
+        const ampm = hours >= 12 ? "PM" : "AM";
+        const formattedHours = hours % 12 || 12;
+        const timeStr = `${formattedHours}:${minutes} ${ampm}`;
+
+        return res.status(201).json({
+          message: "Message sent successfully.",
+          data: {
+            id: String(mInsert[0].id),
+            conversationId: String(convId),
+            sender: "user",
+            senderId: String(senderId),
+            senderName: sName,
+            avatarUrl: senderInfo[0]?.avatar_url || "",
+            type: messageType || "text",
+            text,
+            imageUrl: imageUrl || null,
+            time: timeStr,
+            isDelivered: true,
+            isSeen: false,
+          },
+        });
       }
 
       // Clear typing status on message send
